@@ -20,6 +20,6 @@ inline void lua_vec2f_init(luacpp::luactx& ctx) {
     ctx.provide(LUA_TNAME("__div"), &vec2f::operator/);
     ctx.provide_member<vec2f>(LUA_TNAME("magnitude"), [](const vec2f& v) { return magnitude(v); });
     ctx.provide_member<vec2f>(LUA_TNAME("__tostring"),
-                              [](const vec2f& v) { return format("{}", v); });
+                              [](const vec2f& v) { return dfdh::format("{}", v); });
 }
 } // namespace dfdh

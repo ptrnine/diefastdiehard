@@ -413,7 +413,7 @@ public:
 
     template <typename... Ts>
     void log(log_level level, std::string_view format_str, Ts&&... args) {
-        auto msg  = format(format_str, std::forward<Ts>(args)...);
+        auto msg  = dfdh::format(format_str, std::forward<Ts>(args)...);
         auto hash = fnv1a64(msg.data(), msg.size());
         auto time = current_datetime(log_time_format);
 
@@ -423,7 +423,7 @@ public:
 
     template <typename... Ts>
     void log_update(log_level level, uint16_t update_id, std::string_view format_str, Ts&&... args) {
-        auto msg  = format(format_str, std::forward<Ts>(args)...);
+        auto msg  = dfdh::format(format_str, std::forward<Ts>(args)...);
         auto time = current_datetime(log_time_format);
 
         std::shared_lock lock{mtx};

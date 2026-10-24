@@ -18,7 +18,6 @@
 #include "weapon.hpp"
 #include "player_configurator.hpp"
 #include "player_controller.hpp"
-#include "net_actions.hpp"
 
 namespace dfdh {
 
@@ -88,61 +87,6 @@ public:
 
     ~player() {
         _collision_box->delete_later();
-    }
-
-    void set_params_from_client(const player_skin_params_t& params) {
-        set_body(params.body_txtr, params.body_color);
-        set_face(params.face_txtr);
-        tracer_color(params.tracer_color);
-    }
-
-    void update_from_client(const player_move_states_t& st) {
-        if (st.jump) {
-            if (!_jump_pressed) {
-                jump();
-                _jump_pressed = true;
-            }
-        }
-        else {
-            _jump_pressed = false;
-        }
-
-        if (st.jump_down) {
-            if (!_jump_down_pressed) {
-                jump_down();
-                _jump_down_pressed = true;
-            }
-        }
-        else {
-            _jump_down_pressed = false;
-        }
-
-        if (st.mov_left) {
-            _cur_x_accel_l = -_x_accel;
-            _dir           = dir_left;
-        }
-        else {
-            _cur_x_accel_l = 0.f;
-        }
-
-        if (st.mov_right) {
-            _cur_x_accel_r = _x_accel;
-            _dir           = dir_right;
-        }
-        else {
-            _cur_x_accel_r = 0.f;
-        }
-
-        if (st.on_shot)
-            shot();
-        else {
-            relax();
-        }
-
-        if (st.lock_y)
-            _collision_box->lock_y();
-        else
-            _collision_box->unlock_y();
     }
 
     bool update_input(const player_controller& ks, sf::Event evt) {
@@ -600,28 +544,6 @@ public:
         return !is_float_zero(_cur_x_accel_l) ^ !is_float_zero(_cur_x_accel_r);
     }
 
-    [[nodiscard]]
-    player_move_states_t client_input_state() const {
-        return player_move_states_t{
-            _cur_x_accel_l < 0.f,
-            _cur_x_accel_r > 0.f,
-            _pistol ? _pistol.on_shot() : false,
-            _jump_pressed,
-            _jump_down_pressed,
-            _collision_box->is_lock_y()
-        };
-    }
-
-    std::optional<player_move_states_t> try_extract_client_input_state() {
-        //std::cout << "Movleft: " << (_cur_x_accel_l < 0.f) << " movright: " << (_cur_x_accel_r > 0.f) << std::endl;
-        auto states = client_input_state();
-        if (_last_states == states)
-            return {};
-        else {
-            _last_states = states;
-            return states;
-        }
-    }
 
     [[nodiscard]]
     std::optional<vec2f> position_trace_lookup(std::chrono::steady_clock::time_point now, float latency_offset) const {
@@ -788,7 +710,6 @@ private:
     sf::CircleShape _left_leg;
     sf::CircleShape _right_leg;
 
-    player_move_states_t _last_states;
     std::deque<std::pair<std::chrono::steady_clock::time_point, vec2f>> _position_trace;
 
 //    rand_float_pool _rand_pool;

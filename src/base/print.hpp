@@ -222,17 +222,17 @@ struct printer<std::chrono::duration<Rep, Period>> {
         auto time = time_nano.count();
 
         if (time < 1000LL)
-            return format("{}ns", time);
+            return dfdh::format("{}ns", time);
         else if (time < 1000000LL)
-            return format("{}us", time / 1000LL);
+            return dfdh::format("{}us", time / 1000LL);
         else if (time < 1000000000LL)
-            return format("{}ms", time / 1000000LL);
+            return dfdh::format("{}ms", time / 1000000LL);
         else if (time < 1000000000LL * 60)
-            return format("{}s", time / 1000000000LL);
+            return dfdh::format("{}s", time / 1000000000LL);
         else if (time < 1000000000LL * 60 * 60)
-            return format("{}minutes", time / (1000000000LL * 60));
+            return dfdh::format("{}minutes", time / (1000000000LL * 60));
         else
-            return format("{}hours", time / (1000000000LL * 60 * 60));
+            return dfdh::format("{}hours", time / (1000000000LL * 60 * 60));
     }
 
 

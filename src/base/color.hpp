@@ -45,7 +45,7 @@ struct printer<sf::Color> {
 };
 
 struct rgba_t {
-    DFDH_SERIALIZE(r, g, b, a)
+    SS_SERIALIZE(r, g, b, a)
 
     rgba_t() = default;
     rgba_t(const sf::Color& c): r(c.r), g(c.g), b(c.b), a(c.a) {}

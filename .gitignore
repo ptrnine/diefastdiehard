@@ -6,3 +6,4 @@ src/key_generated.hpp
 src/event_type_generated.hpp
 data/settings/*
 .luarc.json
+test_data/

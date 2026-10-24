@@ -305,7 +305,8 @@ public:
 
     [[nodiscard]]
     float accuracy() const {
-        auto v = (M_PI_4f32 - std::min(_dispersion, M_PI_4f32)) / M_PI_4f32;
+        constexpr float pi_4 = 0.7853981633974483f; // M_PI_4f32 as plain float (no _Float32 deduction clash)
+        auto v = (pi_4 - std::min(_dispersion, pi_4)) / pi_4;
         return v * v;
     }
 

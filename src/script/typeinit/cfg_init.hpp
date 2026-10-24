@@ -54,8 +54,8 @@ inline void lua_cfg_init(luacpp::luactx& ctx) {
     ctx.provide_member<cfg>(LUA_TNAME("get_section"), [](cfg& conf, const std::string& section_name) {
         return conf.try_get_section({section_name});
     });
-    ctx.provide_member<cfg*>(LUA_TNAME("__tostring"), [](const cfg_ptr_t& conf) { return format("{}", *conf); });
-    ctx.provide_member<cfg>(LUA_TNAME("__tostring"), [](const cfg& conf) { return format("{}", conf); });
+    ctx.provide_member<cfg*>(LUA_TNAME("__tostring"), [](const cfg_ptr_t& conf) { return dfdh::format("{}", *conf); });
+    ctx.provide_member<cfg>(LUA_TNAME("__tostring"), [](const cfg& conf) { return dfdh::format("{}", conf); });
 
     ctx.annotate({.explicit_type = "boolean"});
     ctx.set_member_table(

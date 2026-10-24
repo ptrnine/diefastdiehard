@@ -89,13 +89,13 @@ TEST_CASE("Cfg test") {
 
     auto&& [cfg, global_sect, sect0, sect1, sect2, sect3, file0, file1, file2] = reinit_cfg();
 
-    REQUIRE(format("{}", cfg) ==
+    REQUIRE(dfdh::format("{}", cfg) ==
             build_string(global_section, section0, "\n"sv, section1, section2, section3_part0, section3_part1));
-    REQUIRE(format("{}", sect0) == build_string(section0, "\n"sv));
-    REQUIRE(format("{}", sect1) == std::string(section1));
-    REQUIRE(format("{}", sect2) == std::string(section2));
-    REQUIRE(format("{}", cfg) == format("{}", file0));
-    REQUIRE(format("{}", file1) == build_string(global_section, section0));
+    REQUIRE(dfdh::format("{}", sect0) == build_string(section0, "\n"sv));
+    REQUIRE(dfdh::format("{}", sect1) == std::string(section1));
+    REQUIRE(dfdh::format("{}", sect2) == std::string(section2));
+    REQUIRE(dfdh::format("{}", cfg) == dfdh::format("{}", file0));
+    REQUIRE(dfdh::format("{}", file1) == build_string(global_section, section0));
 
     REQUIRE(cfg.list_sections() == std::set{""s, "section0"s, "section1"s, "section2"s, "section3"s});
     REQUIRE(global_sect.list_keys() == std::set{"global key"s});
@@ -135,10 +135,10 @@ TEST_CASE("Cfg test") {
         REQUIRE(sect1.get<int>("power").value() == 1000);
         REQUIRE(sect1.get<std::string>("name").value() == "new car name");
 
-        REQUIRE(format("{}", sect0) == "[section0]\nsome = new some value\n\n");
-        REQUIRE(format("{}", sect1) == "[section1]\nhealth = 400\npower  = 1000\nname   = new car name\n\n");
-        REQUIRE(format("{}", global_sect) == "global key = new global value\n");
-        REQUIRE(format("{}", sect2) == std::string(section2));
+        REQUIRE(dfdh::format("{}", sect0) == "[section0]\nsome = new some value\n\n");
+        REQUIRE(dfdh::format("{}", sect1) == "[section1]\nhealth = 400\npower  = 1000\nname   = new car name\n\n");
+        REQUIRE(dfdh::format("{}", global_sect) == "global key = new global value\n");
+        REQUIRE(dfdh::format("{}", sect2) == std::string(section2));
     }
 
     SECTION("remove/insert values") {
@@ -151,7 +151,7 @@ TEST_CASE("Cfg test") {
         REQUIRE(sect0.get<int>("newkey").has_value());
         REQUIRE(sect0.get<int>("newkey").value() == 1337);
         REQUIRE(v1.value() == 1337);
-        REQUIRE(format("{}", sect0) == "[section0]\nnewkey = 1337\n\n");
+        REQUIRE(dfdh::format("{}", sect0) == "[section0]\nnewkey = 1337\n\n");
 
         cfg.commit();
         reread_and_compare(cfg);
@@ -159,7 +159,7 @@ TEST_CASE("Cfg test") {
         sect0.get<int>("newkey").clear();
         REQUIRE(sect0.get_values().size() == 1);
         REQUIRE(!sect0.get<int>("newkey").has_value());
-        REQUIRE(format("{}", sect0) == "[section0]\nnewkey =\n\n");
+        REQUIRE(dfdh::format("{}", sect0) == "[section0]\nnewkey =\n\n");
 
         cfg.commit();
         reread_and_compare(cfg);
@@ -168,7 +168,7 @@ TEST_CASE("Cfg test") {
         REQUIRE(sect0.get_values().size() == 1);
         REQUIRE(sect0.get<int>("newkey").has_value());
         REQUIRE(sect0.get<int>("newkey").value() == 1338);
-        REQUIRE(format("{}", sect0) == "[section0]\nnewkey = 1338\n\n");
+        REQUIRE(dfdh::format("{}", sect0) == "[section0]\nnewkey = 1338\n\n");
 
         cfg.commit();
         reread_and_compare(cfg);
@@ -183,14 +183,14 @@ TEST_CASE("Cfg test") {
         REQUIRE(sect0.get_values().size() == 1);
         REQUIRE(sect0.get<int>("newkey").has_value());
         REQUIRE(sect0.get<int>("newkey").value() == 1339);
-        REQUIRE(format("{}", sect0) == "[section0]\nnewkey = 1339\n\n");
+        REQUIRE(dfdh::format("{}", sect0) == "[section0]\nnewkey = 1339\n\n");
 
         cfg.commit();
         reread_and_compare(cfg);
 
         sect0.delete_key("newkey");
         REQUIRE(sect0.get_values().size() == 0);
-        REQUIRE(format("{}", sect0) == "[section0]\n\n");
+        REQUIRE(dfdh::format("{}", sect0) == "[section0]\n\n");
 
         cfg.commit();
         reread_and_compare(cfg);
@@ -207,7 +207,7 @@ TEST_CASE("Cfg test") {
         auto v2 = sect0.set("another_key", std::string("value1"));
         auto v3 = sect0.set("zlast_key", 123.123);
         auto v4 = sect0.set("x", 1);
-        REQUIRE(format("{}", sect0) == "[section0]\nanother_key   = value1\nsome_long_key = 1234\nx             = "
+        REQUIRE(dfdh::format("{}", sect0) == "[section0]\nanother_key   = value1\nsome_long_key = 1234\nx             = "
                                        "1\nzlast_key     = 123.123\n\n");
 
         cfg.commit();
@@ -233,7 +233,7 @@ TEST_CASE("Cfg test") {
         REQUIRE(!v2.has_value());
         REQUIRE(!v3.has_value());
         REQUIRE(!v4.has_value());
-        REQUIRE(format("{}", sect0) ==
+        REQUIRE(dfdh::format("{}", sect0) ==
                 "[section0]\nanother_key   =\nsome_long_key =\nx             =\nzlast_key     =\n\n");
 
         cfg.commit();
@@ -251,7 +251,7 @@ TEST_CASE("Cfg test") {
         REQUIRE(v2.value() == "false");
         REQUIRE(approx_equal(v3.value(), 999.999, 0.0000001));
         REQUIRE(v4.value() == -9876);
-        REQUIRE(format("{}", sect0) == "[section0]\nanother_key   = false\nsome_long_key = 1111\nx             = "
+        REQUIRE(dfdh::format("{}", sect0) == "[section0]\nanother_key   = false\nsome_long_key = 1111\nx             = "
                                        "-9876\nzlast_key     = 999.999\n\n");
 
         sect0.get<int>("some_long_key").clear();
@@ -261,7 +261,7 @@ TEST_CASE("Cfg test") {
 
         sect0.clear();
         REQUIRE(sect0.get_values().empty());
-        REQUIRE(format("{}", sect0) == "[section0]\n");
+        REQUIRE(dfdh::format("{}", sect0) == "[section0]\n");
 
         cfg.commit();
         reread_and_compare(cfg);
@@ -272,7 +272,7 @@ TEST_CASE("Cfg test") {
         sect0.set<std::string>("c", "C");
 
         REQUIRE(sect0.get_values().size() == 4);
-        REQUIRE(format("{}", sect0) == "[section0]\na = A\nb = B\nc = C\nd = D\n");
+        REQUIRE(dfdh::format("{}", sect0) == "[section0]\na = A\nb = B\nc = C\nd = D\n");
 
         //for (auto p = cfg.head_node(); p; p = p->next.get()) {
         //    std::cerr << enum_name(p->tk.type) << ": (" << p->tk.value << ")  file: " << (p->file ? p->file->path : "null") << std::endl;
@@ -300,7 +300,7 @@ TEST_CASE("Cfg test") {
         cfg.commit();
         reread_and_compare(cfg);
 
-        REQUIRE(format("{}", cfg) == build_string(global_section,
+        REQUIRE(dfdh::format("{}", cfg) == build_string(global_section,
                                                   "\n[section]\ntest = 100\n\n"sv,
                                                   section0,
                                                   "\n\n[section01]\ntest = 200\n\n"sv,
@@ -311,9 +311,9 @@ TEST_CASE("Cfg test") {
                                                   section3_part1,
                                                   "\n[section31]\ntest = 400\n\n"sv));
 
-        REQUIRE(format("{}", file0) == format("{}", cfg));
-        REQUIRE(format("{}", file1) == build_string(global_section, "\n[section]\ntest = 100\n\n"sv, section0));
-        REQUIRE(format("{}", file2) == build_string(section3_part1, "\n[section31]\ntest = 400\n\n"sv));
+        REQUIRE(dfdh::format("{}", file0) == dfdh::format("{}", cfg));
+        REQUIRE(dfdh::format("{}", file1) == build_string(global_section, "\n[section]\ntest = 100\n\n"sv, section0));
+        REQUIRE(dfdh::format("{}", file2) == build_string(section3_part1, "\n[section31]\ntest = 400\n\n"sv));
     }
 
     SECTION("create sections 2") {
@@ -325,7 +325,7 @@ TEST_CASE("Cfg test") {
         cfg.commit();
         reread_and_compare(cfg);
 
-        REQUIRE(format("{}", cfg) == build_string(global_section,
+        REQUIRE(dfdh::format("{}", cfg) == build_string(global_section,
                                                   section0,
                                                   "\n\n[section]\ntest = 100\n"sv,
                                                   "\n[section01]\ntest = 200\n\n"sv,
@@ -336,8 +336,8 @@ TEST_CASE("Cfg test") {
                                                   section3_part1,
                                                   "\n\n[section31]\ntest = 400\n\n"sv));
 
-        REQUIRE(format("{}", file0) == format("{}", cfg));
-        REQUIRE(format("{}", file1) == build_string(global_section, section0));
-        REQUIRE(format("{}", file2) == section3_part1);
+        REQUIRE(dfdh::format("{}", file0) == dfdh::format("{}", cfg));
+        REQUIRE(dfdh::format("{}", file1) == build_string(global_section, section0));
+        REQUIRE(dfdh::format("{}", file2) == section3_part1);
     }
 }

@@ -550,36 +550,6 @@ $([ "$asan" == true ] && asan_flags)
     build_cmake_submodule "$builddir" $rebuild_submodules Catch2 -DCATCH_INSTALL_DOCS=OFF
     build_cmake_submodule "$builddir" $rebuild_submodules luacpp -DENABLE_TESTS=ON
 
-    if [ ! -f "$builddir/submodules/boost/.easybuild_done" ] || [ "$rebuild_submodules" == true ]; then
-        git submodule init submodules/boost || fail
-        git submodule update --init --recursive submodules/boost || fail
-
-        mkdir -p "$builddir/submodules/boost"
-        rm -rf "$builddir/submodules/boost/*"
-        pushd 'submodules/boost' &> /dev/null
-
-        local variant=
-        [ $debug = true ] && variant=debug || variant=release
-
-        if [ ! -f ./b2 ]; then
-            ./bootstrap.sh || fail
-        fi
-        sed -i "s|using gcc .*|using gcc : : $(basename "$CXX_COMPILER") ;|g" ./project-config.jam
-        ./b2 \
-            variant=$variant \
-            link=static \
-                --with-fiber \
-                --with-coroutine \
-            install \
-                --no-cmake-config \
-                --prefix="../../$builddir/3rd/" \
-            || fail
-
-        popd &> /dev/null
-
-        touch "$builddir/submodules/boost/.easybuild_done"
-    fi
-
     if [ ! -f "$builddir/3rd/include/nuklear.h" ]; then
         git submodule init submodules/Nuklear || fail ""
         git submodule update submodules/Nuklear || fail ""
@@ -625,17 +595,6 @@ $([ "$asan" == true ] && asan_flags)
     codegen_step \
         "$builddir" \
         "$CXX_COMPILER" \
-        src/net_actions.hpp \
-        net_actions_generator \
-        src/net_actions_generator.cpp \
-        src/net_actions_generated.hpp \
-        "$(include_list \
-            "system:$(pwd)/$builddir/3rd/include" \
-        )"
-
-    codegen_step \
-        "$builddir" \
-        "$CXX_COMPILER" \
         "$builddir/3rd/include/SFML/Window/Keyboard.hpp" \
         sfml_key_generator \
         src/key_generator.cpp \
@@ -663,7 +622,7 @@ $([ "$asan" == true ] && asan_flags)
         "$CXX_COMPILER" \
         "$debug" \
         "$hardening_flags" \
-        "-lboost_context -lboost_fiber -lnuklear -lsfml-system -lsfml-window -lsfml-graphics -lsfml-network -lsfml-audio -lpthread -lGL -lGLEW -lluajit-5.1" \
+        "-lnuklear -lsfml-system -lsfml-window -lsfml-graphics -lsfml-network -lsfml-audio -lpthread -lGL -lGLEW -lluajit-5.1" \
         "$(include_list \
             "$builddir/gch" \
             "system:$(pwd)/$builddir/submodules/luacpp/3rd/include/luajit-2.1" \
@@ -678,20 +637,7 @@ $([ "$asan" == true ] && asan_flags)
         "$CXX_COMPILER" \
         "$debug" \
         "$hardening_flags" \
-        "-lboost_context -lboost_fiber -lpthread -lCatch2Main -lCatch2" \
-        "$(include_list \
-            "system:$(pwd)/$builddir/3rd/include" \
-            "$(pwd)/src" \
-        )"
-
-    build_executable \
-        net_tests \
-        tests/net_tests.cpp \
-        "$builddir" \
-        "$CXX_COMPILER" \
-        "$debug" \
-        "$hardening_flags" \
-        "-lboost_context -lboost_fiber -lpthread -lCatch2Main -lCatch2" \
+        "-lpthread -lCatch2Main -lCatch2" \
         "$(include_list \
             "system:$(pwd)/$builddir/3rd/include" \
             "$(pwd)/src" \

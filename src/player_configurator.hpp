@@ -47,8 +47,8 @@ public:
         sect.set("pistol", pistol);
         sect.set("face_id", face_id);
         sect.set("body_id", body_id);
-        sect.set("body_color", format("{}", body_color));
-        sect.set("tracer_color", format("{}", tracer_color));
+        sect.set("body_color", dfdh::format("{}", body_color));
+        sect.set("tracer_color", dfdh::format("{}", tracer_color));
     }
 
     [[nodiscard]]

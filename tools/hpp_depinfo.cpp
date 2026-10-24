@@ -163,7 +163,7 @@ int main(int, char** argv) {
             "\n"sv);
 
     if (hash_output)
-        output = format("{}\n", md5(output));
+        output = dfdh::format("{}\n", md5(output));
 
     int rc = 0;
     if (check_path) {

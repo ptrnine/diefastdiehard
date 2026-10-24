@@ -318,6 +318,11 @@ public:
             pconf_ui->update(ui);
     }
 
+    struct bullet_data_t {
+        vec2f position;
+        vec2f velocity;
+    };
+
     struct bullet_spawn_callback {
         void operator()(const vec2f& position, const vec2f& velocity, float imass) {
             *mass = imass;
