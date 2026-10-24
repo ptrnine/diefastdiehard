@@ -33,7 +33,7 @@ void analyze_comments(bool& on_multiline_comment, std::string_view remains) {
             if (slash_pos != 0 && remains[slash_pos - 1] == '*')
                 on_multiline_comment = false;
         }
-        else if (slash_pos != remains.size() && remains[slash_pos + 1] == '*') {
+        else if (slash_pos + 1 < remains.size() && remains[slash_pos + 1] == '*') {
             on_multiline_comment = true;
         }
         pos = slash_pos + 1;
