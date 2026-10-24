@@ -382,6 +382,8 @@ public:
                 : size.y;
 
         target.create(u32(icon_x_size), u32(size.y));
+        /* New FBO texture contents are undefined until cleared (driver may keep stale pixels) */
+        target.clear({0, 0, 0, 0});
 
         auto body_txtr_size = body.getTexture()->getSize();
         auto face_txtr_size = face.getTexture()->getSize();

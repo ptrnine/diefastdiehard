@@ -7,6 +7,9 @@
 #include <SFML/Graphics/Sprite.hpp>
 #include <SFML/Graphics/RenderTexture.hpp>
 
+#include <string>
+#include <vector>
+
 namespace dfdh {
 
 class player_configurator_ui {
@@ -28,7 +31,6 @@ public:
             back.choosed = pistol_sect == pconf.pistol;
 
             auto& target = back.icon_trgt;
-            target->clear();
             float size_factor = 1.f;
             for (auto& layer : back.wpn->layers()) {
                 if (!layer.getTexture())
@@ -38,6 +40,8 @@ public:
                     auto sizef = vec2f(float(size.x), float(size.y));
                     size_factor = wpn_icon_h / sizef.y;
                     target->create(u32(sizef.x * size_factor), u32(sizef.y * size_factor));
+                    /* New FBO texture contents are undefined until cleared (driver may keep stale pixels) */
+                    target->clear({0, 0, 0, 0});
                     target->setView(sf::View(sf::FloatRect{0.f,
                                                            float(sizef.y * size_factor),
                                                            float(sizef.x * size_factor),
