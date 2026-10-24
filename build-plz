@@ -480,12 +480,12 @@ _build() {
             ;;
         --run)
             shift
-            run_args="LD_LIBRARY_PATH='$builddir/3rd/lib:$builddir/3rd/lib64' $builddir/$@"
+            run_args="LD_LIBRARY_PATH='$builddir/3rd/lib:$builddir/3rd/lib64:$builddir/submodules/luacpp/3rd/lib:$builddir/submodules/luacpp/3rd/lib64' $builddir/$@"
             break
             ;;
         --gdbrun)
             shift
-            run_args="LD_LIBRARY_PATH='$builddir/3rd/lib:$builddir/3rd/lib64' gdb --args $builddir/$@"
+            run_args="LD_LIBRARY_PATH='$builddir/3rd/lib:$builddir/3rd/lib64:$builddir/submodules/luacpp/3rd/lib:$builddir/submodules/luacpp/3rd/lib64' gdb --args $builddir/$@"
             break
             ;;
         --android)
