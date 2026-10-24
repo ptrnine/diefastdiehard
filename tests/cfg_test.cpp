@@ -341,3 +341,36 @@ TEST_CASE("Cfg test") {
         REQUIRE(dfdh::format("{}", file2) == section3_part1);
     }
 }
+
+TEST_CASE("Empty cfg files") {
+    using namespace dfdh;
+
+    fs::create_directories("test_data/configs/");
+
+    // A completely empty file is a valid (empty) config
+    {
+        std::ofstream("test_data/configs/empty.cfg").close();
+        auto cfg = dfdh::cfg("test_data/configs/empty.cfg");
+        REQUIRE(cfg.list_sections() == std::set<std::string>{});
+    }
+
+    // An empty included file must not unbalance the file stack
+    {
+        std::ofstream("test_data/configs/empty_incl.cfg")
+            << "[sect]"s
+            << "a = 1\n"s
+            << "#include empty.cfg\n"s
+            << "b = 2\n"s;
+        auto cfg = dfdh::cfg("test_data/configs/empty_incl.cfg");
+        auto sect = cfg.get_section("sect"_sect);
+        REQUIRE(sect.get<int>("a").value() == 1);
+        REQUIRE(sect.get<int>("b").value() == 2);
+    }
+
+    // A comments-only file has no tokens either
+    {
+        std::ofstream("test_data/configs/comments_only.cfg") << "# just a comment\n";
+        auto cfg = dfdh::cfg("test_data/configs/comments_only.cfg");
+        REQUIRE(cfg.list_sections() == std::set<std::string>{});
+    }
+}

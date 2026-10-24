@@ -2012,6 +2012,9 @@ private:
         auto mfv_begin = mfv.begin();
         auto mfv_end   = mfv.end();
 
+        /* file_stack is only balanced if this file produced at least one token */
+        bool pushed_file_node = false;
+
         /* Start parsing from specific section */
         if (start_section) {
             std::string_view file_data{mfv_begin, mfv_end};
@@ -2053,6 +2056,7 @@ private:
             if (!file_node) {
                 file_node = std::make_unique<cfg_file_node>(str_path, tail);
                 file_stack.push_back(file_node.get());
+                pushed_file_node = true;
                 for (auto f : file_stack)
                     file_node->inner.insert(f);
             }
@@ -2098,7 +2102,8 @@ private:
             }
         }
 
-        file_stack.pop_back();
+        if (pushed_file_node)
+            file_stack.pop_back();
         insert_next();
     }
 
