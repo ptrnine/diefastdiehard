@@ -307,9 +307,15 @@ build_cmake_submodule() {
     local rebuild_submodules="$1"; shift
     local submodule="$1"; shift
 
+    local done_marker="$builddir/submodules/$submodule/.easybuild_done"
+    # Track the cmake flags so a changed configuration triggers a rebuild
+    local flags_key
+    flags_key="$(printf '%s' "$*" | tr ' ' '|')"
+
     mkdir -p "$builddir/submodules/$submodule"
 
-    if [ ! -f "$builddir/submodules/$submodule/.easybuild_done" ] || [ "$rebuild_submodules" == true ]; then
+    if [ ! -f "$done_marker" ] || [ "$rebuild_submodules" == true ] || \
+        [ "$(cat "$done_marker" 2>/dev/null)" != "$flags_key" ]; then
         git submodule init "submodules/$submodule" || fail
         git submodule update --init --recursive "submodules/$submodule" || fail
         rm -f "$builddir/submodules/$submodule/.easybuild_done"
@@ -324,7 +330,7 @@ build_cmake_submodule() {
         make -j "$(nproc)" -C "$builddir/submodules/$submodule" install \
             || fail "$submodule submodule build failed"
 
-        touch "$builddir/submodules/$submodule/.easybuild_done"
+        printf '%s' "$flags_key" > "$done_marker"
     fi
 
 }
@@ -332,6 +338,29 @@ build_cmake_submodule() {
 install_headers() {
     mkdir -p "$builddir/3rd"
     cp "$@" "$builddir/3rd/"
+}
+
+build_dist() {
+    local builddir="$1"
+    local distdir="$builddir/dist"
+
+    [ -f "$(pwd)/$builddir/dfdh" ] || fail "dfdh binary not found in $builddir"
+    [ -d "$(pwd)/data" ] || fail "data/ directory not found in project root"
+
+    # The game resolves every asset relative to the working directory
+    # (<cwd>/data/... and <cwd>/fs.cfg), so the dist dir must be
+    # self-contained: the binary, the whole data/ tree (scripts, textures,
+    # sounds, fonts, cfg, settings) and the root-level fs.cfg. In the
+    # default static linking mode the binary has no non-system shared
+    # library dependencies, so nothing else is needed to run it.
+    [ -f "$(pwd)/fs.cfg" ] || fail "fs.cfg not found in project root"
+    rm -rf "$distdir"
+    mkdir -p "$distdir"
+    cp -a "$(pwd)/$builddir/dfdh" "$distdir/"
+    cp -a "$(pwd)/data" "$distdir/"
+    cp -a "$(pwd)/fs.cfg" "$distdir/"
+
+    colored lgreen "dist assembled at $distdir (run from inside it)"
 }
 
 take_greater_gcc_version() {
@@ -409,8 +438,13 @@ Generic options:
     --rebuild-subs        - trigger submodules rebuild
     --debug               - enable debug build
     --asab                - enable ASAN build
+    --static              - build dfdh fully statically, including glibc
+                            (default; --dynamic restores dynamic linking)
     --run NAME            - run specific executable after build
     --gdbrun NAME         - run specific executable under gdb after build
+    prod                  - build dfdh (release, like 'build-plz dfdh') and
+                            assemble a self-contained dist dir at
+                            <builddir>/dist with the binary and the data/ tree
     --help                - prints this help message
 
 Environment variables:
@@ -448,9 +482,11 @@ _build() {
     local compodb_source=
     local debug=false
     local asan=false
+    local static_link=true
     local android_abi=
     local android_platform=
     local android_ndk=
+    local prod=false
     local run_args=
 
     while [ -n "$1" ]; do
@@ -477,6 +513,14 @@ _build() {
         --asan)
             asan=true
             builddir="$builddir-asan"
+            # ASan needs its shared runtime, a fully static binary won't work
+            static_link=false
+            ;;
+        --static)
+            static_link=true
+            ;;
+        --dynamic)
+            static_link=false
             ;;
         --run)
             shift
@@ -526,6 +570,10 @@ _build() {
         --*)
             fail "Invalid option: $1"
             ;;
+        prod)
+            prod=true
+            TARGET="dfdh"
+            ;;
         *)
             TARGET+="$1"
             #fail "Unknown argument $1"
@@ -559,7 +607,8 @@ $([ "$asan" == true ] && asan_flags)
     mkdir -p "$builddir/3rd"
     mkdir -p "$builddir/.ezbld"
 
-    build_cmake_submodule "$builddir" $rebuild_submodules SFML
+    # static mode: SFML produces libsfml-*-s.a; dynamic mode: libsfml-*.so
+    build_cmake_submodule "$builddir" $rebuild_submodules SFML -DBUILD_SHARED_LIBS=$([ "$static_link" == true ] && echo OFF || echo ON)
     build_cmake_submodule "$builddir" $rebuild_submodules Catch2 -DCATCH_INSTALL_DOCS=OFF
     build_cmake_submodule "$builddir" $rebuild_submodules luacpp -DENABLE_TESTS=ON
 
@@ -628,14 +677,36 @@ $([ "$asan" == true ] && asan_flags)
         )"
 
 
+    local static_flags static_libs extra_link_path
+    if [ "$static_link" == true ]; then
+        # Static = project-pinned libs only (SFML 2.5.1, nuklear, luajit):
+        # they are not in every distro at this version, so we bundle them.
+        # Everything with a stable ABI that ships in every distro stays
+        # dynamic: glibc, GL, GLEW, OpenAL, X11, codecs, freetype, udev.
+        # glibc must be dynamic anyway: GLVND dlopens the mesa ICD
+        # (libGLX_mesa -> libgallium -> libLLVM), which uses TLS, and
+        # fully-static glibc cannot dlopen TLS-using libraries (glibc 2.41
+        # deprecated "statically linked applications which call dlopen").
+        # -fno-lto: this gcc build auto-attaches the LTO plugin which breaks
+        # extraction of plain objects from static archives (luajit).
+        static_flags="-static-libgcc -static-libstdc++ -fno-lto"
+        extra_link_path=""
+        # -start-group resolves cyclic deps between the SFML module archives.
+        static_libs="-Wl,--start-group $(pwd)/$builddir/libnuklear.a $(pwd)/$builddir/3rd/lib/libsfml-system-s.a $(pwd)/$builddir/3rd/lib/libsfml-window-s.a $(pwd)/$builddir/3rd/lib/libsfml-graphics-s.a $(pwd)/$builddir/3rd/lib/libsfml-network-s.a $(pwd)/$builddir/3rd/lib/libsfml-audio-s.a $(pwd)/$builddir/submodules/luacpp/3rd/lib/libluajit-5.1.a -Wl,--end-group -lGL -lGLX -lGLEW -lopenal -lfreetype -lFLAC -logg -lvorbis -lvorbisenc -lvorbisfile -lX11 -lXext -lXcursor -lXrandr -lXfixes -lXrender -lXau -lXdmcp -ludev -lpthread -ldl -lm"
+    else
+        extra_link_path=""
+        static_flags=""
+        static_libs="-lnuklear -lsfml-system -lsfml-window -lsfml-graphics -lsfml-network -lsfml-audio -lpthread -lGL -lGLEW -lluajit-5.1"
+    fi
+
     build_executable \
         dfdh \
         diefastdiehard.cpp \
         "$builddir" \
         "$CXX_COMPILER" \
         "$debug" \
-        "$hardening_flags" \
-        "-lnuklear -lsfml-system -lsfml-window -lsfml-graphics -lsfml-network -lsfml-audio -lpthread -lGL -lGLEW -lluajit-5.1" \
+        "$hardening_flags $static_flags" \
+        "$extra_link_path $static_libs" \
         "$(include_list \
             "$builddir/gch" \
             "system:$(pwd)/$builddir/submodules/luacpp/3rd/include/luajit-2.1" \
@@ -682,6 +753,20 @@ $([ "$asan" == true ] && asan_flags)
             "$(pwd)/src" \
         )"
 
+    build_executable \
+        net_test \
+        tests/net_test.cpp \
+        "$builddir" \
+        "$CXX_COMPILER" \
+        "$debug" \
+        "$hardening_flags" \
+        "-lnuklear -lsfml-system -lsfml-window -lsfml-graphics -lsfml-network -lsfml-audio -lpthread -lGL -lGLEW -lluajit-5.1 -lCatch2Main -lCatch2" \
+        "$(include_list \
+            "system:$(pwd)/$builddir/submodules/luacpp/3rd/include/luajit-2.1" \
+            "system:$(pwd)/$builddir/3rd/include" \
+            "$(pwd)/src" \
+        )"
+
 
 #    build_executable \
 #        gui-test \
@@ -691,6 +776,8 @@ $([ "$asan" == true ] && asan_flags)
 #        "$debug" \
 #        "$hardening_flags" \
 #        "-lnuklear -lsfml-system -lsfml-window -lsfml-graphics -lGL -lGLEW"
+
+    [ "$prod" = true ] && build_dist "$builddir"
 
     [ "$compodb" = true ] && gen_compodb "$builddir" "$compodb_source"
 
