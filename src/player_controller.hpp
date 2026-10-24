@@ -36,6 +36,7 @@ static inline key_str_map_t& key_str_map() {
 
 struct player_controller {
     player_controller(u32 id): _id(id) {
+
         auto sect_name = cfg_section_name{"player_controller_" + std::to_string(_id)};
         auto path      = "data/settings/players_settings.cfg"s;
         auto conf      = cfg(path, cfg_mode::create_if_not_exists | cfg_mode::commit_at_destroy);
@@ -72,6 +73,8 @@ struct player_controller {
         // XXX: wtf
         //cfg().try_refresh_file("player_controller_" + std::to_string(_id));
     }
+
+    virtual ~player_controller() = default;
 
     int up, down, left, right, shot, adjust_up, grenade;
     u32 _id;

@@ -18,6 +18,7 @@
 #include "weapon.hpp"
 #include "player_configurator.hpp"
 #include "player_controller.hpp"
+#include "net/net_protocol.hpp"
 
 namespace dfdh {
 
@@ -151,6 +152,32 @@ public:
             ++_evt_counter;
 
         return update_was;
+    }
+
+    /**
+     * Apply a per-frame input state (network or AI driven).
+     * Held state + one-frame edges.
+     */
+    void apply_input(const net::player_input_state& in) {
+        if (in.left && !in.right)
+            move_left();
+        else if (in.right && !in.left)
+            move_right();
+        else
+            stop();
+
+        if (in.jump)
+            jump();
+        if (in.jump_down)
+            jump_down();
+        if (in.shot)
+            shot();
+        if (in.shot_release)
+            relax();
+        if (in.long_shot)
+            enable_long_shot();
+
+        increment_evt_counter();
     }
 
     void stop() {
@@ -526,6 +553,38 @@ public:
     }
 
     [[nodiscard]]
+    bool shotting() const {
+        return _pistol && _pistol.on_shot();
+    }
+
+    /**
+     * Whether this player's weapon spawns bullets locally
+     * (disabled for the client-side local player: bullets arrive from the server)
+     */
+    void set_spawn_bullets(bool value) {
+        _spawn_bullets = value;
+    }
+
+    [[nodiscard]]
+    bool spawn_bullets_enabled() const {
+        return _spawn_bullets;
+    }
+
+    /**
+     * Marked for players driven by the network server (no local controller needed
+     * so the host keyboard does not drive them); they get full simulation,
+     * including local bullet spawning
+     */
+    void set_net_controlled(bool value) {
+        _net_controlled = value;
+    }
+
+    [[nodiscard]]
+    bool net_controlled() const {
+        return _net_controlled;
+    }
+
+    [[nodiscard]]
     sf::Color tracer_color() const {
         return _tracer_color;
     }
@@ -744,6 +803,8 @@ private:
 
     enum player_dir_t { dir_none = 0, dir_left, dir_right } _dir;
     bool _on_left            = false;
+    bool _spawn_bullets      = true;
+    bool _net_controlled     = false;
     bool _jump_pressed       = false;
     bool _jump_down_pressed  = false;
     bool _long_shot_enabled  = false;
@@ -800,7 +861,17 @@ public:
     }
 
     void on_left(bool value) {
+        if (value == _on_left)
+            return;
+
         _on_left = value;
+        _dir     = dir_none;
+
+        /* Flip the body sprites to match the new facing direction */
+        auto flip = [&](auto& spr) { spr.setScale(value ? -std::fabs(spr.getScale().x) : std::fabs(spr.getScale().x), spr.getScale().y); };
+        flip(_body);
+        flip(_face);
+        flip(_hat);
     }
 
     [[nodiscard]]

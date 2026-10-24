@@ -10,6 +10,11 @@
 
 #include "script/lua_init.hpp"
 
+#include "net/net_server.hpp"
+#include "net/net_client.hpp"
+#include "net_player_controller.hpp"
+
+#include <SFML/Network/IpAddress.hpp>
 #include <SFML/Graphics/RectangleShape.hpp>
 
 inline constexpr bool MP_MOVE_ADJUSTMENT = true;
@@ -77,20 +82,45 @@ public:
         if (args.get("--physic-debug"))
             gs.debug_physics = true;
 
+        if (args.get("--server"))
+            init_server(args);
+        else if (args.get("--client"))
+            init_client(args);
+
         init_lua();
     }
 
     void on_destroy() final {
+        if (net_cli)
+            net_cli->leave();
+
         if (!gs.ai_operators.empty())
             ai_mgr().worker_stop();
     }
 
     void game_update() final {
         gs.game_update();
+
+        if (net_cli) {
+            /* Client mode: free the keyboard from the level bot (recreated on each level load) */
+            if (gs.has_controller(0))
+                gs.controller_delete(0);
+
+            if (net_ctrl)
+                net_cli->send_input(net_ctrl->take_input_state());
+            net_cli->update(gs);
+        }
+
+        if (net_srv)
+            net_srv->update(gs);
+
         lua_game_update(&gs);
     }
 
     void handle_event(const sf::Event& evt) final {
+        if (net_ctrl)
+            net_ctrl->track_event(evt);
+
         gs.handle_event(evt);
         lua_handle_event(evt);
     }
@@ -233,6 +263,82 @@ private:
     std::optional<luactx_mgr>          lua;
     lua_caller<void(const sf::Event&)> lua_handle_event;
     lua_caller<void(game_state*)>      lua_game_update;
+
+    std::shared_ptr<net::net_server>        net_srv;
+    std::shared_ptr<net::net_client>        net_cli;
+    std::shared_ptr<net_player_controller>  net_ctrl;
+    player_name_t                            my_player_name;
+
+    void init_server(args_view& args) {
+        u16 port = 10443;
+        if (auto port_arg = args.by_key_opt<std::string>("--port"))
+            port = ston<u16>(*port_arg);
+
+        net_srv = std::make_shared<net::net_server>(port);
+
+        if (!net_srv->is_ready())
+            glog().error("multiplayer: can't start the server on port {}", port);
+        else
+            glog().info("multiplayer: server started on port {}", port);
+    }
+
+    void init_client(args_view& args) {
+        auto addr_str = args.next("missing <ip:port> after --client");
+        auto pos = addr_str.rfind(':');
+        if (pos == std::string::npos || pos == 0) {
+            glog().error("multiplayer: invalid server address '{}', expected <ip:port>", addr_str);
+            return;
+        }
+
+        auto ip = sf::IpAddress(addr_str.substr(0, pos));
+        auto port = ston<u16>(std::string(addr_str.substr(pos + 1)));
+        if (ip == sf::IpAddress::None) {
+            glog().error("multiplayer: invalid server ip '{}'", std::string(addr_str.substr(0, pos)));
+            return;
+        }
+
+        auto name = args.by_key_default<std::string>("--name", "client0");
+        my_player_name = name;
+
+        /* Load skin, tracer and gun settings from the local player config */
+        player_configurator pc{name};
+        pc.write_on_delete = false;
+
+        net_cli = std::make_shared<net::net_client>(
+            ip, port, name, pc.pistol, pc.face_id, pc.body_id, pc.body_color, pc.tracer_color);
+
+        if (!net_cli->is_ready()) {
+            glog().error("multiplayer: can't connect to {}", addr_str);
+            return;
+        }
+
+        net_cli->sig_joined.attach_function("mp_joined", [this](const player_name_t& pname) {
+            auto pl = gs.player_create(pname);
+            if (!pl)
+                return;
+
+            /*
+             * Local bullet spawning is disabled for the client-side local player:
+             * the server is authoritative and broadcasts the actual bullets
+             */
+            pl->set_spawn_bullets(false);
+
+            net_ctrl = std::make_shared<net_player_controller>(1000);
+            net_ctrl->player_name = pname;
+            if (!gs.controller_attach(1000, net_ctrl)) {
+                net_ctrl.reset();
+                return;
+            }
+            gs.rebuild_controlled_players();
+            gs.player_spawn(pl);
+            gs.game_run(true);
+            glog().info("multiplayer: controlling player {}", pname);
+        });
+
+        net_cli->sig_error.attach_function("mp_error", [](const std::string& msg) {
+            glog().error("multiplayer: join failed: {}", msg);
+        });
+    }
 };
 }
 

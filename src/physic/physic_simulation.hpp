@@ -460,7 +460,7 @@ private:
     std::set<std::shared_ptr<physic_point>> _lineonly;
     u32                                     _steps        = 20;
     float                                   _collide_dist = 0.001f;
-    vec2f                                   _gravity      = {0.f, 9.8f};
+    vec2f                                   _gravity      = {0.f, 0.f};
     float                                   _last_timestep        = 1.f / 60.f;
     float                                   _prev_timestep        = 1.f / 60.f;
     u32                                     _last_rps             = 60;

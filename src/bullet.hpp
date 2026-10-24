@@ -11,6 +11,14 @@
 
 namespace dfdh {
 
+/*
+ * Global bullet gravity flag: when false, newly spawned bullets ignore the
+ * physics simulation gravity. game_state::gravity_for_bullets references
+ * this variable, so it can be toggled from Lua via GS.gravity_for_bullets
+ * (existing bullets keep the gravity flag they were spawned with).
+ */
+inline bool bullet_gravity_enabled = false;
+
 class bullet_sprite_cache {
 public:
     static constexpr float bullet_x_max = 150.f;

@@ -25,8 +25,8 @@ public:
 
     template <size_t SS>
     constexpr fixed_str_t(const C(&str)[SS]): _len(std::min(SS - 1, max_size_w_nt - 1)) {
-        std::memcpy(_data.data(), str, _len - 1);
-        _data[_len - 1] = C('\0');
+        std::memcpy(_data.data(), str, _len);
+        _data[_len] = C('\0');
     }
 
     fixed_str_t(const char* str, size_t size): _len(std::min(size, max_size_w_nt - 1)) {

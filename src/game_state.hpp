@@ -21,7 +21,8 @@ public:
     game_state():
         blt_mgr("blt_mgr", sim, player_hit_callback),
         kick_mgr("kick_mgr", sim, player_hit_callback),
-        conf_watcher(&cfg::mutable_global()) {
+        conf_watcher(&cfg::mutable_global()),
+        gravity_for_bullets(bullet_gravity_enabled) {
         sim.add_update_callback("player", [this](const physic_simulation& sim, float timestep) {
             for (auto& [_, p] : players)
                 p->physic_update(sim, timestep);
@@ -63,6 +64,11 @@ public:
         return players.emplace(player_name, player).first->second.get();
     }
 
+    [[nodiscard]]
+    bool has_controller(u32 controller_id) const {
+        return controllers.contains(controller_id);
+    }
+
     bool controller_delete(u32 controller_id) {
         auto found_controller = controllers.find(controller_id);
         if (found_controller == controllers.end()) {
@@ -72,6 +78,28 @@ public:
 
         controllers.erase(found_controller);
         glog().info("player controller{} deleted", controller_id);
+
+        return true;
+    }
+
+    /**
+     * Attach an already-created controller (e.g. a network player controller)
+     */
+    bool controller_attach(u32 controller_id, const std::shared_ptr<player_controller>& controller) {
+        auto found_player = players.find(controller->player_name);
+        if (found_player == players.end()) {
+            glog().error("failed to attach player controller{}: player {} not found",
+                    controller_id,
+                    controller->player_name);
+            return false;
+        }
+
+        auto& c =
+            controllers
+                .emplace(controller_id, controller)
+                .first->second;
+        c->player_name = controller->player_name;
+        glog().info("player controller{} was attached to player {}", controller_id, controller->player_name);
 
         return true;
     }
@@ -323,6 +351,21 @@ public:
         vec2f velocity;
     };
 
+    /**
+     * Bullets spawned during the last game_update() frame,
+     * collected for the server to broadcast to clients
+     */
+    struct bullet_event_t {
+        player_name_t owner;
+        vec2f         position;
+        vec2f         velocity;
+        float         hit_mass;
+        sf::Color     tracer_color;
+        bool          gravity; // gravity flag the bullet was spawned with
+    };
+
+    std::vector<bullet_event_t> cur_frame_bullets;
+
     struct bullet_spawn_callback {
         void operator()(const vec2f& position, const vec2f& velocity, float imass) {
             *mass = imass;
@@ -345,12 +388,18 @@ public:
         if (on_game) {
             sim.update(60, game_speed);
 
+            cur_frame_bullets.clear();
+
             for (auto& [_, pl] : players) {
-                if (controlled_players.contains(pl->name()) || ai_operators.contains(pl->name())) {
+                if (controlled_players.contains(pl->name()) || ai_operators.contains(pl->name()) || pl->net_controlled()) {
                     std::vector<bullet_data_t> bullets;
                     float                      mass = 0.f;
                     pl->game_update(
-                        sim, blt_mgr, cam_pos, gravity_for_bullets, true, bullet_spawn_callback{&bullets, &mass});
+                        sim, blt_mgr, cam_pos, gravity_for_bullets, pl->spawn_bullets_enabled(), bullet_spawn_callback{&bullets, &mass});
+
+                    for (auto& bd : bullets)
+                        cur_frame_bullets.push_back(bullet_event_t{pl->name(), bd.position, bd.velocity, mass, pl->tracer_color(),
+                                                                  gravity_for_bullets});
                 }
                 else {
                     pl->game_update(sim, blt_mgr, cam_pos, gravity_for_bullets, false, {});
@@ -485,7 +534,8 @@ public:
 
     bool on_game             = false;
     bool debug_physics       = false;
-    bool gravity_for_bullets = true;
+    /* References the global dfdh::bullet_gravity_enabled flag */
+    bool& gravity_for_bullets;
     bool lua_cmd_enabled     = true;
     bool ai_profiler_enabled = false;
 

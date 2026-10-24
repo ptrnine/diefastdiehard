@@ -6,15 +6,17 @@ cmd [[
 
     player create 'name=lol group=1'
     player controller0 lol
-    player wpn lol wpn_416
-    ai bind lol
-    ai difficulty lol insane
-
-    player create mda
-    player wpn mda wpn_416
-    ai bind mda
-    ai difficulty mda hard
 ]]
+
+--    player wpn lol wpn_416
+--    ai bind lol
+--    ai difficulty lol insane
+--
+--    player create mda
+--    player wpn mda wpn_416
+--    ai bind mda
+--    ai difficulty mda hard
+
 
 --[[
     ai bind mda
