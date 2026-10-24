@@ -13,6 +13,7 @@
 #include "player_controller.hpp"
 #include "level.hpp"
 #include "ai.hpp"
+#include "crate.hpp"
 
 namespace dfdh {
 
@@ -153,6 +154,7 @@ public:
                 glog().info("current level already reseted");
             } else {
                 cur_level.reset();
+                crates.clear();
                 glog().info("current level has been reseted");
             }
             return true;
@@ -167,6 +169,7 @@ public:
         if (found_lvl != levels.end()) {
             cur_level = found_lvl->second;
             cur_level->setup_to(sim);
+            crates.clear();
             sig_level_changed.emit_deferred(level_name);
 
             glog().info("level {} was loaded", level_name);
@@ -177,6 +180,7 @@ public:
 
         cur_level = levels.at(level_name);
         cur_level->setup_to(sim);
+        crates.clear();
         sig_level_changed.emit_deferred(level_name);
 
         glog().info("level {} was loaded", level_name);
@@ -286,6 +290,7 @@ public:
                     found_lvl->second->cfg_reload();
                     if (cur_level == found_lvl->second) {
                         cur_level->setup_to(sim);
+                        crates.clear();
                         sig_level_changed.emit_deferred(section_name);
                     }
                 }
@@ -304,6 +309,9 @@ public:
 
         for (auto& [_, player] : players)
             player->draw(wnd, sim.interpolation_factor(), sim.last_timestep(), gravity_for_bullets);
+
+        for (auto& crate_ : crates)
+            crate_->draw(wnd, sim.interpolation_factor(), sim.last_timestep());
 
         blt_mgr.draw(wnd, sim.interpolation_factor(), sim.last_timestep());
 
@@ -412,6 +420,8 @@ public:
             kick_mgr.update();
             adj_box_mgr.update(sim);
 
+            crates_update();
+
             if (!ai_operators.empty())
                 ai_operators_consume();
 
@@ -423,6 +433,105 @@ public:
         else {
             sim.update_pass();
         }
+    }
+
+    /* Crates */
+
+    static constexpr float crate_spawn_interval = 15.f; /* seconds between crate drops */
+    static constexpr float crate_spawn_height   = 200.f; /* above the most top platform */
+
+    void crates_clear() {
+        crates.clear();
+    }
+
+    void crates_update() {
+        if (!cur_level) {
+            crates.clear();
+            return;
+        }
+
+        if (crate_timer.getElapsedTime().asSeconds() >= crate_spawn_interval)
+            crates_spawn();
+
+        for (auto& c : crates)
+            c->update();
+
+        /* Pick up: the first player overlapping a crate takes it */
+        for (auto& [_, pl] : players) {
+            auto pbb = [](player* p) {
+                auto pos = p->get_position();
+                auto sz  = p->get_size();
+                return sf::FloatRect(pos.x, pos.y - sz.y, sz.x, sz.y);
+            }(pl.get());
+
+            for (auto it = crates.begin(); it != crates.end();) {
+                if (!(*it)->bb().intersects(pbb)) {
+                    ++it;
+                    continue;
+                }
+
+                if (auto wpn = crate_loot_table::random_pick()) {
+                    pl->setup_pistol(*wpn);
+                    glog().info("player {} picked up a crate and got weapon {}", pl->name(), *wpn);
+                } else
+                    glog().warn("player {} picked up a crate but the loot table is empty", pl->name());
+
+                it = crates.erase(it);
+            }
+        }
+    }
+
+    void crates_spawn() {
+        auto& platforms = cur_level->get_platforms();
+        if (platforms.empty()) {
+            glog().warn("can't spawn crate: level has no platforms");
+            return;
+        }
+
+        /* Map horizontal bounding box and the most top platform */
+        float min_x = std::numeric_limits<float>::max();
+        float max_x = -std::numeric_limits<float>::max();
+        float top_y = std::numeric_limits<float>::max();
+        for (auto& p : platforms) {
+            auto pos = p.ph.get_position();
+            min_x = std::min(min_x, pos.x);
+            max_x = std::max(max_x, pos.x + p.ph.length());
+            top_y = std::min(top_y, pos.y);
+        }
+
+        /* Random x inside the bounding box, trace platforms under it */
+        float x = rand_float(min_x, max_x);
+        std::vector<const level::platform_t*> under;
+        for (auto& p : platforms) {
+            auto pos = p.ph.get_position();
+            if (x >= pos.x && x <= pos.x + p.ph.length())
+                under.push_back(&p);
+        }
+
+        if (under.empty()) {
+            /* x landed in a gap between platforms: clamp to the nearest one */
+            auto* nearest  = &platforms.front();
+            float best_dist = std::numeric_limits<float>::max();
+            for (auto& p : platforms) {
+                auto l = p.ph.get_position().x;
+                auto r = l + p.ph.length();
+                auto d = x < l ? l - x : x > r ? x - r : 0.f;
+                if (d < best_dist) {
+                    best_dist = d;
+                    nearest   = &p;
+                }
+            }
+            auto nl = nearest->ph.get_position().x;
+            x       = rand_float(nl, nl + nearest->ph.length());
+            under.push_back(nearest);
+        }
+
+        /* Random platform under x is the drop target */
+        auto* target = under[rand_num<u32>(0, u32(under.size() - 1))];
+
+        crates.push_back(std::make_unique<crate>(sim, vec2f{x, top_y - crate_spawn_height}, target->ph.get_position().y));
+        crate_timer.restart();
+        glog().info("crate spawned at ({}, {}), target platform y={}", x, top_y - crate_spawn_height, target->ph.get_position().y);
     }
 
     /* AI operators */
@@ -529,6 +638,9 @@ public:
     std::unique_ptr<player_configurator_ui>               pconf_ui;
     std::optional<cfg_value_control>                      cfgval_ctrl;
     cfg_watcher                                           conf_watcher;
+
+    std::vector<std::unique_ptr<crate>> crates;
+    sf::Clock crate_timer;
 
     vec2f cam_pos = {0.f, 0.f};
 
