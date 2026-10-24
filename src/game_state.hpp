@@ -450,8 +450,10 @@ public:
             return;
         }
 
-        if (crate_timer.getElapsedTime().asSeconds() >= crate_spawn_interval)
+        if (crate_timer.getElapsedTime().asSeconds() >= crate_spawn_interval) {
             crates_spawn();
+            crate_timer.restart();
+        }
 
         for (auto& c : crates)
             c->update();
@@ -530,7 +532,6 @@ public:
         auto* target = under[rand_num<u32>(0, u32(under.size() - 1))];
 
         crates.push_back(std::make_unique<crate>(sim, vec2f{x, top_y - crate_spawn_height}, target->ph.get_position().y));
-        crate_timer.restart();
         glog().info("crate spawned at ({}, {}), target platform y={}", x, top_y - crate_spawn_height, target->ph.get_position().y);
     }
 

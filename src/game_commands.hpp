@@ -26,6 +26,7 @@ public:
         command_buffer().add_handler("game", &game_commands::cmd_game, this);
         command_buffer().add_handler("game speed", &game_commands::cmd_game_speed, this);
         command_buffer().add_handler("level", &game_commands::cmd_level, this);
+        command_buffer().add_handler("spawn", &game_commands::cmd_spawn, this);
         command_buffer().add_handler("ai", &game_commands::cmd_ai, this);
         command_buffer().add_handler("ai difficulty", &game_commands::cmd_ai_difficulty, this);
         command_buffer().add_handler("ai profiler", &game_commands::cmd_ai_profiler, this);
@@ -43,6 +44,7 @@ public:
         command_buffer().remove_handler("list");
         command_buffer().remove_handler("game");
         command_buffer().remove_handler("level");
+        command_buffer().remove_handler("spawn");
         command_buffer().remove_handler("ai");
         command_buffer().remove_handler("connect");
         command_buffer().remove_handler("srv init");
@@ -102,6 +104,11 @@ public:
                    "    difficulty: easy medium hard\n"
                    "  ai profiler [on/off]                       - enable/disable ai profiler";
         }
+        else if (cmd == "spawn") {
+            help = "spawn options\n"
+                   "available commands:\n"
+                   "  spawn crate  - spawn a crate that drops to a platform";
+        }
         else if (gs.lua_cmd_enabled && cmd == "lua") {
             help = "Lua interpreter\n"
                    "lua [command]    - execute lua line";
@@ -153,6 +160,21 @@ public:
 
     void cmd_lua(const std::string& cmd) {
         gs.sig_execute_lua.emit_immediate(cmd);
+    }
+
+    void cmd_spawn(const std::string& cmd, const std::optional<std::string>& value) {
+        if (cmd == "crate") {
+            if (value) {
+                glog().error("spawn crate: takes no arguments");
+                return;
+            }
+            gs.crates_spawn();
+        }
+        else if (cmd == "help") {
+            cmd_help("spawn");
+        }
+        else
+            glog().error("spawn: unknown subcommand '{}'", cmd);
     }
 
     void cmd_player(const std::string& cmd, const std::optional<std::string>& value) {
