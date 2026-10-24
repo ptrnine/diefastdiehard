@@ -149,9 +149,52 @@ public:
     crate(const crate&) = delete;
     crate& operator=(const crate&) = delete;
 
+    /**
+     * Mark the crate as server-synchronized (client side). A net-synced crate
+     * has no local physics: position and velocity are driven by the server
+     * state broadcast, it never lands locally and can't be picked up
+     * locally (the server is authoritative for pickup)
+     */
+    void net_sync(bool value) {
+        _net_synced = value;
+        _box->enable_gravity(!value);
+    }
+
+    [[nodiscard]]
+    bool net_synced() const {
+        return _net_synced;
+    }
+
+    void id(u32 value) {
+        _id = value;
+    }
+
+    [[nodiscard]]
+    u32 id() const {
+        return _id;
+    }
+
+    void position(const vec2f& value) {
+        _box->position(value);
+    }
+
+    [[nodiscard]]
+    vec2f get_position() const {
+        return _box->get_position();
+    }
+
+    void velocity(const vec2f& value) {
+        _box->velocity(value);
+    }
+
+    [[nodiscard]]
+    vec2f get_velocity() const {
+        return _box->get_velocity();
+    }
+
     /** Snap the crate onto its target platform once it has reached it */
     void update() {
-        if (_landed)
+        if (_landed || _net_synced)
             return;
 
         auto pos = _box->get_position();
@@ -190,7 +233,9 @@ private:
     std::shared_ptr<physic_group> _box;
     vec2f                         _size;
     float                         _target_y;
-    bool                          _landed = false;
+    bool                          _landed      = false;
+    bool                          _net_synced  = false;
+    u32                           _id          = 0;
 
     sf::Texture _txtr;
     sf::Sprite  _sprite;

@@ -185,7 +185,47 @@ struct bullet_info {
     }
 };
 
+/**
+ * A crate in the server-authoritative simulation
+ */
+struct crate_info {
+    u32  id = 0;
+    float pos_x = 0.f;
+    float pos_y = 0.f;
+    float vel_x = 0.f;
+    float vel_y = 0.f;
+    u8   landed = 0;
+
+    void serialize(auto& s) const {
+        s.write(id, pos_x, pos_y, vel_x, vel_y, landed);
+    }
+
+    void deserialize(auto& d) {
+        d.read(id, pos_x, pos_y, vel_x, vel_y, landed);
+    }
+};
+
 struct state {
+    u16 tick = 0;
+    std::vector<state_player> players;
+    std::vector<bullet_info>  bullets;
+    std::vector<crate_info>   crates;
+
+    void serialize(auto& s) const {
+        s.write(tick, players, bullets, crates);
+    }
+
+    void deserialize(auto& d) {
+        d.read(tick, players, bullets, crates);
+    }
+};
+
+/**
+ * Legacy state layout without crates (older servers).
+ * Crates are appended at the end of the new layout, so old clients can still
+ * read new states (they just skip the trailing data)
+ */
+struct state_legacy {
     u16 tick = 0;
     std::vector<state_player> players;
     std::vector<bullet_info>  bullets;

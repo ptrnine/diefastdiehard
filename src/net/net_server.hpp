@@ -103,6 +103,13 @@ public:
                                                  be.gravity});
             }
 
+            for (auto& c : gs.crates) {
+                auto pos = c->get_position();
+                auto vel = c->get_velocity();
+                st.crates.push_back(crate_info{c->id(), pos.x, pos.y, vel.x, vel.y,
+                                               c->landed() ? 1 : 0});
+            }
+
             auto data = encode_msg(msg_type::state, st);
 
             for (auto& [key, client] : _clients) {

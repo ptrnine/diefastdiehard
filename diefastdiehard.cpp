@@ -333,6 +333,9 @@ private:
             gs.player_spawn(pl);
             gs.game_run(true);
             glog().info("multiplayer: controlling player {}", pname);
+
+            /* Crates are server-authoritative: no local spawn, physics or pickup */
+            gs.crates_networked = true;
         });
 
         net_cli->sig_error.attach_function("mp_error", [](const std::string& msg) {

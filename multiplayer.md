@@ -42,7 +42,7 @@ client A                          server                         client B
 | 1   | C → S      | HELLO: player name, pistol section, face_id, body_id, body color, tracer color |
 | 2   | S → C      | WELCOME: player name |
 | 3   | C → S      | INPUT: `u16 seq`, `u16 bits` (see below) |
-| 4   | S → C      | STATE: `u16 tick`, per player: name, pistol, face_id, body_id, body color, tracer color, pos.xy, vel.xy, jumps_left, on_left, shooting; then the bullets spawned this frame by any server player (owner, pos.xy, vel.xy, hit_mass, tracer color, gravity) |
+| 4   | S → C      | STATE: `u16 tick`, per player: name, pistol, face_id, body_id, body color, tracer color, pos.xy, vel.xy, jumps_left, on_left, shooting; then the bullets spawned this frame by any server player (owner, pos.xy, vel.xy, hit_mass, tracer color, gravity); then the crates (id, pos.xy, vel.xy, landed) — crates are server-authoritative, the client renders them as ghosts driven by the broadcast (pickup happens on the server, the weapon arrives via the player's pistol in the state snapshot) |
 | 5   | C → S      | LEAVE: player name |
 | 6   | S → C      | ERROR: message string (join failed, etc.) |
 

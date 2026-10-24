@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 
@@ -136,8 +137,16 @@ private:
 
     void handle_state(game_state& gs, const net_msg& msg) {
         state st;
-        if (!try_read_msg(msg.payload, st))
-            return;
+        if (!try_read_msg(msg.payload, st)) {
+            /* Older server without crate sync: crates are appended last, so
+             * a full read fails and the legacy layout is tried instead */
+            state_legacy legacy;
+            if (!try_read_msg(msg.payload, legacy))
+                return;
+            st.tick     = legacy.tick;
+            st.players = std::move(legacy.players);
+            st.bullets = std::move(legacy.bullets);
+        }
 
         for (auto& sp : st.players) {
             auto is_local = _joined && sp.name == _name;
@@ -190,6 +199,33 @@ private:
                             {b.vel_x, b.vel_y},
                             unpack_color(b.tracer_color),
                             b.gravity);
+
+        /* Sync server crates: create ghost crates for new ids, drive their
+         * position/velocity, remove crates picked up (or gone) on the server */
+        std::vector<u32> received_ids;
+        for (auto& ci : st.crates) {
+            crate* local = nullptr;
+            for (auto& c : gs.crates)
+                if (c->id() == ci.id) {
+                    local = c.get();
+                    break;
+                }
+
+            if (!local) {
+                local = gs.crate_create_net();
+                local->id(ci.id);
+                glog().info("net client: crate {} synced at ({}, {})", ci.id, ci.pos_x, ci.pos_y);
+            }
+
+            local->position({ci.pos_x, ci.pos_y});
+            local->velocity({ci.vel_x, ci.vel_y});
+            received_ids.push_back(ci.id);
+        }
+
+        for (auto it = gs.crates.begin(); it != gs.crates.end();) {
+            bool keep = std::find(received_ids.begin(), received_ids.end(), (*it)->id()) != received_ids.end();
+            it = keep ? std::next(it) : gs.crates.erase(it);
+        }
     }
 
     static void apply_player_config(player& pl, const state_player& sp) {

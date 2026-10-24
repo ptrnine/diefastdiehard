@@ -444,11 +444,24 @@ public:
         crates.clear();
     }
 
+    /* Creates a server-driven (ghost) crate on the client side */
+    crate* crate_create_net() {
+        auto c = std::make_unique<crate>(sim, vec2f{0.f, 0.f}, 0.f);
+        c->net_sync(true);
+        auto* ptr = c.get();
+        crates.push_back(std::move(c));
+        return ptr;
+    }
+
     void crates_update() {
         if (!cur_level) {
             crates.clear();
             return;
         }
+
+        /* On the client the server is authoritative for crates */
+        if (crates_networked)
+            return;
 
         if (crate_timer.getElapsedTime().asSeconds() >= crate_spawn_interval) {
             crates_spawn();
@@ -467,7 +480,8 @@ public:
             }(pl.get());
 
             for (auto it = crates.begin(); it != crates.end();) {
-                if (!(*it)->bb().intersects(pbb)) {
+                /* Net-synced crates are picked up on the server */
+                if ((*it)->net_synced() || !(*it)->bb().intersects(pbb)) {
                     ++it;
                     continue;
                 }
@@ -531,7 +545,9 @@ public:
         /* Random platform under x is the drop target */
         auto* target = under[rand_num<u32>(0, u32(under.size() - 1))];
 
-        crates.push_back(std::make_unique<crate>(sim, vec2f{x, top_y - crate_spawn_height}, target->ph.get_position().y));
+        auto c = std::make_unique<crate>(sim, vec2f{x, top_y - crate_spawn_height}, target->ph.get_position().y);
+        c->id(_next_crate_id++);
+        crates.push_back(std::move(c));
         glog().info("crate spawned at ({}, {}), target platform y={}", x, top_y - crate_spawn_height, target->ph.get_position().y);
     }
 
@@ -642,11 +658,14 @@ public:
 
     std::vector<std::unique_ptr<crate>> crates;
     sf::Clock crate_timer;
+    u32   _next_crate_id    = 1;
 
     vec2f cam_pos = {0.f, 0.f};
 
     bool on_game             = false;
     bool debug_physics       = false;
+    /* true on the multiplayer client: crates are driven by the server state */
+    bool crates_networked    = false;
     /* References the global dfdh::bullet_gravity_enabled flag */
     bool& gravity_for_bullets;
     bool lua_cmd_enabled     = true;
