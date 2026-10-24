@@ -109,6 +109,7 @@ build_static_lib() {
 
     local cmd_path="$builddir/.ezbld/$name-command"
     ! is_commands_equal "$cmd" "$cmd_path" && already_built=false
+    [ -f "$(pwd)/$builddir/lib$name.a" ] || already_built=false
 
     if [ $already_built = true ]; then
         colored lpurple "$name already built"
@@ -171,6 +172,7 @@ build_executable() {
 
     local cmd_path="$builddir/.ezbld/$name-command"
     ! is_commands_equal "$cmd" "$cmd_path" && already_built=false
+    [ -f "$(pwd)/$builddir/$name" ] || already_built=false
 
     if [ $already_built = true ]; then
         colored lpurple "$name already built"
@@ -227,6 +229,7 @@ codegen_step() {
 
     local cmd_path="$builddir/.ezbld/codegen-$generator_name-command"
     ! is_commands_equal "$cmd" "$cmd_path" && already_gen=false
+    [ -f "$output_header" ] || already_gen=false
 
     if [ "$already_gen" = true ]; then
         colored lpurple "$generator_name already generated"
@@ -280,6 +283,7 @@ make_pch() {
 
     local cmd_path="$builddir/.ezbld/pch-$name-command"
     ! is_commands_equal "$cmd" "$cmd_path" && already_built=false
+    [ -f "$output" ] || already_built=false
 
     if [ $already_built = true ]; then
         colored lpurple "pch $name already built"
@@ -420,10 +424,19 @@ EOF
 }
 
 take_greater_version() {
-    for path in $(ls "$1"*); do
-        local postfix="${path#$1}"
-        [[ "$postfix" =~ ^[0-9.]+$ ]] && echo "$path $postfix"
-    done | sort -t2 -k2 -n -r | head -n1 | cut -d " " -f1
+    # Pick the newest compiler among versioned /usr/bin/<tool>-N entries and the
+    # unversioned /usr/local/bin/<tool> (if present), comparing actual --version.
+    local prefix="$1"
+    local plain="/usr/local/bin/$(basename "${prefix%?}")"
+    local path postfix
+    {
+        for path in $(ls "$prefix"* 2>/dev/null); do
+            postfix="${path#$prefix}"
+            [[ "$postfix" =~ ^[0-9.]+$ ]] || continue
+            echo "$path $("$path" --version 2>/dev/null | head -n1 | grep -oE '[0-9]+(\.[0-9]+)+' | tail -n1)"
+        done
+        [ -x "$plain" ] && echo "$plain $("$plain" --version 2>/dev/null | head -n1 | grep -oE '[0-9]+(\.[0-9]+)+' | tail -n1)"
+    } | sort -k2 -V -r | head -n1 | cut -d " " -f1
 }
 
 _build() {
