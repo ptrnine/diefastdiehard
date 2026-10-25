@@ -855,16 +855,17 @@ TEST_CASE("net_client: join and state application") {
     }
 }
 
-#if defined(DFDH_DEBUG_PING)
-TEST_CASE("udp_channel simulates ~250ms ping (DFDH_DEBUG_PING)") {
+TEST_CASE("udp_channel simulates ~250ms ping") {
     using namespace net;
 
     udp_channel srv;
     REQUIRE(srv.bind(0));
     auto port = srv.local_port();
+    srv.set_simulated_latency(80, 170);
 
     udp_channel cli;
     REQUIRE(cli.bind(0));
+    cli.set_simulated_latency(80, 170);
 
     const std::vector<u8> data = {1, 2, 3, 4};
     auto t0 = std::chrono::steady_clock::now();
@@ -896,4 +897,3 @@ TEST_CASE("udp_channel simulates ~250ms ping (DFDH_DEBUG_PING)") {
     }
     REQUIRE(arrived);
 }
-#endif

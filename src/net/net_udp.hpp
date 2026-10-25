@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <random>
@@ -75,16 +76,16 @@ public:
         if (!_open || data.empty())
             return false;
 
-#if defined(DFDH_DEBUG_PING)
-        /* Simulated latency: queue the datagram and let it go out only after
-         * its one-way delay has elapsed */
-        flush_due_sends();
-        _pending_sends.push_back({std::chrono::steady_clock::now() + one_way_delay(),
-                                  address, port, std::vector<u8>(data.begin(), data.end())});
-        return true;
-#else
+        if (simulated_latency()) {
+            /* Simulated latency: queue the datagram and let it go out only after
+             * its one-way delay has elapsed */
+            flush_due_sends();
+            _pending_sends.push_back({std::chrono::steady_clock::now() + one_way_delay(),
+                                      address, port, std::vector<u8>(data.begin(), data.end())});
+            return true;
+        }
+
         return _sock.send(data.data(), data.size(), address, port) == sf::Socket::Done;
-#endif
     }
 
     /* Send to the connected peer (connect() required) */
@@ -101,19 +102,13 @@ public:
         if (!_open)
             return out;
 
-#if defined(DFDH_DEBUG_PING)
         flush_due_sends();
-#endif
 
         sf::SocketSelector selector;
         selector.add(_sock);
         selector.wait(sf::milliseconds(static_cast<i32>(timeout.count())));
         if (!selector.isReady(_sock))
-#if defined(DFDH_DEBUG_PING)
             return release_due_recvs();
-#else
-            return out;
-#endif
 
         for (;;) {
             size_t recv_size = 0;
@@ -128,35 +123,46 @@ public:
             d.address = addr;
             d.port    = port;
             d.data    = std::vector<u8>(data, data + recv_size);
-#if defined(DFDH_DEBUG_PING)
-            /* Simulated latency: deliver the datagram only after its
-             * one-way delay has elapsed */
-            _held_recvs.push_back({std::chrono::steady_clock::now() + one_way_delay(),
-                                   std::move(d)});
-#else
-            out.push_back(std::move(d));
-#endif
+            if (simulated_latency())
+                /* Simulated latency: deliver the datagram only after its
+                 * one-way delay has elapsed */
+                _held_recvs.push_back({std::chrono::steady_clock::now() + one_way_delay(), std::move(d)});
+            else
+                out.push_back(std::move(d));
         }
 
-#if defined(DFDH_DEBUG_PING)
-        return release_due_recvs();
-#else
+        for (auto& d : release_due_recvs())
+            out.push_back(std::move(d));
         return out;
-#endif
+    }
+
+    /*
+     * Simulated network latency: every datagram sent and received through
+     * this channel is delayed by a random duration in [min_ms, max_ms], so
+     * datagrams also get reordered. 0, 0 disables it. With DFDH_DEBUG_PING
+     * it defaults to 80..170 ms per hop (~250 ms round-trip ping between
+     * a client and a server)
+     */
+    void set_simulated_latency(double min_ms, double max_ms) {
+        _delay_min_ms = min_ms;
+        _delay_max_ms = std::max(min_ms, max_ms);
+    }
+
+    [[nodiscard]]
+    bool simulated_latency() const {
+        return _delay_max_ms > 0.0;
     }
 
 private:
     static constexpr size_t max_datagram_size = 65536;
 
 #if defined(DFDH_DEBUG_PING)
-    /*
-     * Simulated network latency (DFDH_DEBUG_PING): every one-way hop
-     * (client->server, server->client) is delayed by a random duration
-     * between 80ms and 170ms (average ~125ms), so the round-trip ping
-     * between client and server is around 250ms
-     */
-    static constexpr double one_way_delay_min_ms = 80.0;
-    static constexpr double one_way_delay_max_ms = 170.0;
+    double _delay_min_ms = 80.0;
+    double _delay_max_ms = 170.0;
+#else
+    double _delay_min_ms = 0.0;
+    double _delay_max_ms = 0.0;
+#endif
 
     struct delayed_send {
         std::chrono::steady_clock::time_point deadline;
@@ -171,7 +177,7 @@ private:
     };
 
     std::chrono::steady_clock::duration one_way_delay() {
-        std::uniform_real_distribution<double> dist(one_way_delay_min_ms, one_way_delay_max_ms);
+        std::uniform_real_distribution<double> dist(_delay_min_ms, _delay_max_ms);
         return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
             std::chrono::duration<double, std::milli>(dist(_ping_rng)));
     }
@@ -211,7 +217,6 @@ private:
     std::mt19937              _ping_rng{std::random_device{}()};
     std::vector<delayed_send> _pending_sends;
     std::vector<delayed_recv> _held_recvs;
-#endif
 
     sf::UdpSocket _sock;
     bool          _open      = false;
