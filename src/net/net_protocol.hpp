@@ -264,7 +264,7 @@ struct gun_info {
 
 struct state {
     u32 tick           = 0;
-    u32 server_time_ms = 0; // server clock at the broadcast
+    u32 server_time_ms = 0; // server clock at the simulation tick of this state
 
     /* Per receiving client */
     u32 ack_seq             = 0; // last input tick applied to the client's player

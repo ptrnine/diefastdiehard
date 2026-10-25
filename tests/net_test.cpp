@@ -622,20 +622,23 @@ TEST_CASE("net_server: handshake, rename and leave") {
         REQUIRE(gs.players.contains("test1"));
         auto& pl = *gs.players.at("test1");
 
+        /* Fill the input jitter buffer */
+        auto L = net::in_bit_left;
         net::input in;
-        in.last_seq = 1;
-        in.bits     = {net::in_bit_left};
+        in.last_seq = 3;
+        in.bits     = {L, L, L};
         REQUIRE(cli.send(net::encode_msg(net::msg_type::input, in)));
 
         srv.update(gs);
         sim_tick(gs);
         CHECK(pl.is_walking());
 
-        in.last_seq = 2;
-        in.bits     = {net::in_bit_left, 0};
+        in.last_seq = 6;
+        in.bits     = {L, L, L, 0, 0, 0};
         REQUIRE(cli.send(net::encode_msg(net::msg_type::input, in)));
         srv.update(gs);
-        sim_tick(gs);
+        for (int i = 0; i < 3; ++i)
+            sim_tick(gs);
         CHECK_FALSE(pl.is_walking());
     }
 
@@ -698,14 +701,17 @@ TEST_CASE("net_server: handshake, rename and leave") {
         cli.recv(std::chrono::milliseconds(50));
         auto& pl = *gs.players.at("test1");
 
+        auto R = net::in_bit_right;
         REQUIRE(cli.send(net::encode_msg(net::msg_type::input,
-                                         net::input{.last_seq = 1, .bits = {net::in_bit_right | net::in_bit_jump}})));
+                                         net::input{.last_seq = 3, .bits = {R | net::in_bit_jump, R, R}})));
         srv.update(gs);
         sim_tick(gs);
         CHECK(pl.is_walking());
 
-        /* No new input: the held movement repeats */
+        /* Not enough queued after running dry (jitter buffer): the held movement repeats */
         sim_tick(gs);
+        sim_tick(gs);
+
         sim_tick(gs);
         CHECK(pl.is_walking());
 
@@ -802,7 +808,8 @@ TEST_CASE("net_client: join and state application") {
     auto send_input = [&](const net::player_input_state& in) {
         cli_input = in;
         cli.update(gs_cli);
-        sim_tick(gs_cli);
+        for (size_t i = 0; i < net::net_server::target_queued_inputs; ++i)
+            sim_tick(gs_cli);
         cli.update(gs_cli);
         srv.update(gs_srv);
         sim_tick(gs_srv);
@@ -957,6 +964,240 @@ TEST_CASE("net_client: join and state application") {
 
         CHECK(gs_cli.blt_mgr.bullets().empty());
     }
+}
+
+TEST_CASE("net_sync: server clock and snapshot interpolation") {
+    using namespace net;
+
+    SECTION("server clock follows the least delayed state, interpolation covers the jitter") {
+        server_clock clk;
+        /* Server clock = local - 10s, one-way delay 80..170ms */
+        for (int i = 0; i < 60; ++i) {
+            double local = 100.0 + i * 0.016;
+            double delay = 0.08 + 0.09 * double((i * 7) % 10) / 9.0;
+            clk.on_state(local, local - 10.0 - delay);
+        }
+        auto now = 100.0 + 60 * 0.016;
+        CHECK(clk.server_now(now) == Catch::Approx(now - 10.0 - 0.08).margin(0.001));
+        CHECK(clk.interp_delay() == Catch::Approx(0.09 + server_clock::interp_margin_s).margin(0.001));
+
+        /* Render time is monotonic and moves with the local clock */
+        double prev = clk.render_time(now);
+        for (int i = 1; i < 100; ++i) {
+            double t = clk.render_time(now + i * 0.01);
+            CHECK(t >= prev);
+            CHECK(t - prev == Catch::Approx(0.01).margin(0.0011));
+            prev = t;
+        }
+    }
+
+    SECTION("snapshot buffer interpolates and clamps") {
+        struct val {
+            float x;
+            static val interpolate(const val& a, const val& b, float f) {
+                return {a.x + (b.x - a.x) * f};
+            }
+        };
+
+        snapshot_buffer<val> buf;
+        CHECK_FALSE(buf.sample(1.0));
+
+        buf.push(2.0, {20.f});
+        buf.push(1.0, {10.f}); /* out of order */
+        buf.push(1.0, {99.f}); /* duplicate time is ignored */
+
+        CHECK(buf.sample(0.5)->x == Catch::Approx(10.f));
+        CHECK(buf.sample(1.25)->x == Catch::Approx(12.5f));
+        CHECK(buf.sample(3.0)->x == Catch::Approx(20.f));
+    }
+
+    SECTION("input history") {
+        input_history<int, int, int> h;
+        for (u32 seq = 1; seq <= 10; ++seq)
+            h.push({seq, int(seq), 0, 1.f / 60.f});
+        REQUIRE(h.find(5));
+        CHECK(h.find(5)->input == 5);
+        CHECK_FALSE(h.find(11));
+
+        h.drop_up_to(7);
+        CHECK(h.size() == 3);
+        CHECK_FALSE(h.find(7));
+        CHECK(h.find(8)->input == 8);
+    }
+}
+
+/*
+ * Real-time loopback game: a server and a client game_state, both on the same
+ * level, stepped like the game main loop
+ */
+struct net_game_fixture {
+    u16             port = free_udp_port();
+    game_state      gs_srv;
+    game_state      gs_cli;
+    net::net_server srv{port};
+    std::optional<net::net_client> cli;
+    net::player_input_state       input;
+
+    net_game_fixture(double latency_min_ms, double latency_max_ms) {
+        REQUIRE(gs_srv.level_current("lvl_aes"));
+        REQUIRE(gs_cli.level_current("lvl_aes"));
+        srv.channel().set_simulated_latency(latency_min_ms, latency_max_ms);
+
+        cli.emplace(sf::IpAddress("127.0.0.1"), port, "me", "wpn_glk17", 0, 0,
+                    sf::Color(255, 255, 255), sf::Color(255, 255, 0));
+        cli->channel().set_simulated_latency(latency_min_ms, latency_max_ms);
+        cli->input_source([this] { return input; });
+
+        /* Join: create the local player like the game does on WELCOME */
+        for (int i = 0; i < 400 && !cli->joined(); ++i)
+            frame();
+        REQUIRE(cli->joined());
+        if (!gs_cli.players.contains("me"))
+            REQUIRE(gs_cli.player_create("me"));
+        gs_cli.players.at("me")->set_server_driven(true);
+        gs_cli.crates_networked = true;
+
+        gs_srv.game_run(true);
+        gs_cli.game_run(true);
+    }
+
+    ~net_game_fixture() {
+        cli.reset();
+    }
+
+    void frame() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        gs_cli.game_update();
+        cli->update(gs_cli);
+        gs_srv.game_update();
+        srv.update(gs_srv);
+    }
+
+    void run_for(std::chrono::milliseconds duration, auto&& on_frame) {
+        auto end = std::chrono::steady_clock::now() + duration;
+        while (std::chrono::steady_clock::now() < end) {
+            frame();
+            on_frame();
+        }
+    }
+
+    void run_for(std::chrono::milliseconds duration) {
+        run_for(duration, [] {});
+    }
+
+    player& local() {
+        return *gs_cli.players.at("me");
+    }
+
+    player& server_side() {
+        return *gs_srv.players.at("me");
+    }
+};
+
+TEST_CASE("net: client-side prediction under ~250ms ping") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{80, 170};
+
+    /* Settle on the spawn platform */
+    f.run_for(3000ms);
+    REQUIRE(f.local().collision_box()->is_lock_y());
+
+    /* Input applies locally immediately: the client moves before the server even got the input */
+    auto x0 = f.local().get_position().x;
+    f.input  = {.right = true};
+    f.run_for(50ms);
+    CHECK(f.local().get_position().x > x0 + 0.5f);
+    CHECK(f.server_side().get_position().x == Catch::Approx(x0).margin(0.01f));
+
+    /* Hold right, jump, keep running: no visible jumps of the local player */
+    f.cli->reset_correction_stats();
+    vec2f prev_visual = f.local().get_position() + f.local().render_offset();
+    float max_step    = 0.f;
+    int   frames      = 0;
+    f.run_for(1500ms, [&] {
+        if (++frames == 30)
+            f.input.jump = true;
+        else
+            f.input.jump = false;
+
+        auto visual = f.local().get_position() + f.local().render_offset();
+        max_step    = std::max(max_step, std::abs(visual.x - prev_visual.x));
+        prev_visual = visual;
+    });
+
+    /* A 5ms frame can contain at most a couple of 60Hz ticks of movement at max speed */
+    CHECK(max_step < 2.f * f.local().get_max_speed() / 60.f + 1.f);
+    /*
+     * Mispredictions are rare and small: a few ticks of movement when the
+     * server input queue ran dry or merged ticks after a burst. They are
+     * smoothed out (well below the render offset snap threshold)
+     */
+    CHECK(f.cli->max_correction() < 64.f);
+    CHECK(f.cli->corrections() < 20);
+
+    /* Release and let the server catch up: prediction converges to the server state */
+    f.input = {};
+    f.run_for(1000ms);
+    CHECK(f.local().get_position().x == Catch::Approx(f.server_side().get_position().x).margin(1.f));
+    CHECK(f.local().get_position().y == Catch::Approx(f.server_side().get_position().y).margin(1.f));
+    UNSCOPED_INFO("corrections: " << f.cli->corrections() << ", max " << f.cli->max_correction() << " px");
+}
+
+TEST_CASE("net: remote players are interpolated smoothly") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{80, 170};
+
+    /* A player that exists on the server only (host player / bot) */
+    auto bot = f.gs_srv.player_create("bot");
+    REQUIRE(bot != nullptr);
+    f.run_for(3000ms);
+    REQUIRE(f.gs_cli.players.contains("bot"));
+    auto& remote = *f.gs_cli.players.at("bot");
+
+    bot->move_right();
+    float prev_x      = remote.get_position().x;
+    float window_x    = prev_x;
+    float max_speed   = 0.f;
+    float min_step    = 0.f;
+    auto  window_from = std::chrono::steady_clock::now();
+    f.run_for(1500ms, [&] {
+        auto x   = remote.get_position().x;
+        min_step = std::min(min_step, x - prev_x);
+        prev_x   = x;
+
+        /* Speed over ~50ms windows: never faster than the max speed (no catch-up jumps) */
+        auto now = std::chrono::steady_clock::now();
+        auto dt  = std::chrono::duration<float>(now - window_from).count();
+        if (dt >= 0.05f) {
+            max_speed   = std::max(max_speed, (x - window_x) / dt);
+            window_x    = x;
+            window_from = now;
+        }
+    });
+
+    CHECK(max_speed < bot->get_max_speed() * 1.3f);
+    CHECK(min_step > -0.5f); /* never moves backwards */
+    CHECK(remote.get_position().x > 400.f + 100.f);
+
+    /* The remote player is shown in the past, by about the interpolation delay */
+    CHECK(remote.get_position().x < bot->get_position().x);
+}
+
+TEST_CASE("net: server-only knockback is reconciled on the client") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{80, 170};
+
+    f.run_for(3000ms);
+    REQUIRE(f.local().collision_box()->is_lock_y());
+    auto corrections = f.cli->corrections();
+
+    /* An impulse the client could not predict (e.g. a hit on the server) */
+    f.server_side().apply_impulse(vec2f{300.f, -500.f} * f.server_side().collision_box()->get_mass());
+    f.run_for(1500ms);
+
+    CHECK(f.cli->corrections() > corrections);
+    CHECK(f.local().get_position().x == Catch::Approx(f.server_side().get_position().x).margin(1.f));
+    CHECK(f.local().get_position().y == Catch::Approx(f.server_side().get_position().y).margin(1.f));
 }
 
 TEST_CASE("udp_channel simulates ~250ms ping") {

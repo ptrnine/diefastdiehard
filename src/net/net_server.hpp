@@ -33,8 +33,14 @@ class net_server {
 public:
     using clock = std::chrono::steady_clock;
 
+    /*
+     * Input jitter buffer: after running dry, the queue refills to this many
+     * ticks before it is consumed again (absorbs the arrival jitter, each
+     * starving tick is a tick the client did not predict)
+     */
+    static constexpr size_t target_queued_inputs = 3;
     /* Queued input ticks above this are merged to bound the input latency */
-    static constexpr size_t max_queued_inputs = 6;
+    static constexpr size_t max_queued_inputs = 8;
     /* Without inputs for this long the client's player gets a neutral input */
     static constexpr auto input_timeout = std::chrono::milliseconds(500);
 
@@ -50,6 +56,7 @@ public:
         u32                ack_seq       = 0; // last applied seq
         u16                held_bits     = 0; // held part of the last applied input
         u16                pending_edges = 0; // edges of inputs merged away, applied with the next one
+        bool               buffering     = true; // refilling the jitter buffer
         clock::time_point  last_input_time;
 
         /* Newest input's client time, echoed back for the client's RTT measurement */
@@ -123,7 +130,10 @@ public:
         if (!_clients.empty()) {
             net::state st;
             st.tick           = u32(gs.sim.tick());
-            st.server_time_ms = u32(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - _start_time).count());
+            /* Time of the simulated state (the last tick), not of the broadcast */
+            st.server_time_ms = u32(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        gs.sim.current_update_time() - _start_time)
+                                        .count());
             for (auto& [name, pl] : gs.players)
                 st.players.push_back(make_state_player(*pl));
 
@@ -259,8 +269,13 @@ private:
                 q.erase(q.begin());
             }
 
+            if (q.empty())
+                client.buffering = true;
+            else if (q.size() >= target_queued_inputs)
+                client.buffering = false;
+
             u16 bits;
-            if (!q.empty()) {
+            if (!client.buffering) {
                 /* Missing seqs before the head are lost for good (they would be in every newer window) */
                 auto head            = q.begin();
                 bits                 = head->second | client.pending_edges;
@@ -270,7 +285,7 @@ private:
                 client.pending_edges = 0;
                 q.erase(head);
             }
-            else if (now - client.last_input_time > input_timeout) {
+            else if (q.empty() && now - client.last_input_time > input_timeout) {
                 /* Lost client: release everything */
                 bits             = 0;
                 client.held_bits = 0;
@@ -354,6 +369,7 @@ private:
         client.next_seq      = 0;
         client.held_bits     = 0;
         client.pending_edges = 0;
+        client.buffering     = true;
         client.echo_seq      = 0;
 
         /* Create or reconfigure the player */

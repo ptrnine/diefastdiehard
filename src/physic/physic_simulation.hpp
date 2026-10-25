@@ -89,9 +89,10 @@ public:
         _last_speed = speed;
         _last_rps   = rps;
 
+        /* Every tick is stamped with its scheduled time (current_update_time), not the catch-up time */
         auto now = tp_now();
         while (now > _next_update_time) {
-            update_immediate(duration_cast<float_seconds>(min_timestep).count() * speed, now);
+            update_immediate(duration_cast<float_seconds>(min_timestep).count() * speed, _next_update_time);
             _next_update_time += min_timestep;
         }
 

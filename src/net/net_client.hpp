@@ -13,12 +13,38 @@
 #include "base/signals.hpp"
 #include "net/net_protocol.hpp"
 #include "net/net_udp.hpp"
+#include "net/net_sync.hpp"
 #include "game_state.hpp"
 
 namespace dfdh::net {
 
+/* Interpolated state of a remote player */
+struct remote_player_snapshot {
+    player::physic_state ph;
+    bool                 on_left  = false;
+    bool                 shooting = false;
+
+    static remote_player_snapshot interpolate(const remote_player_snapshot& a, const remote_player_snapshot& b, float f) {
+        auto res   = f < 1.f ? a : b;
+        res.ph.pos = lerp(a.ph.pos, b.ph.pos, f);
+        res.ph.vel = lerp(a.ph.vel, b.ph.vel, f);
+        return res;
+    }
+};
+
+inline player::physic_state to_physic_state(const state_player& sp) {
+    return {{sp.pos_x, sp.pos_y}, {sp.vel_x, sp.vel_y}, sp.lock_y != 0, sp.jumps_left, sp.accel_lf, sp.accel_rf};
+}
+
 /**
  * Multiplayer client.
+ *
+ * The local player is predicted: the input is applied locally every tick and
+ * kept in a history until the server acknowledges it. When the server state
+ * for an acknowledged tick differs from the prediction, the local player is
+ * reset to the server state and the unacknowledged inputs are re-simulated
+ * (rollback). Remote players are interpolated between server snapshots,
+ * slightly in the past (server_clock::interp_delay).
  *
  * Sends HELLO on creation, call update(game_state) once per game frame
  * (from the main thread).
@@ -60,8 +86,10 @@ public:
     /** The game_state passed to update() must outlive the client (it hooks into the simulation ticks) */
     ~net_client() {
         leave();
-        if (_gs)
+        if (_gs) {
             _gs->sim.remove_tick_begin_callback("net_client");
+            _gs->sim.remove_tick_end_callback("net_client");
+        }
     }
 
     [[nodiscard]]
@@ -100,13 +128,38 @@ public:
         return _rtt_s;
     }
 
+    /** Number of prediction corrections (rollbacks) so far */
+    [[nodiscard]]
+    u64 corrections() const {
+        return _corrections;
+    }
+
+    /** Largest position change caused by a correction so far, px */
+    [[nodiscard]]
+    float max_correction() const {
+        return _max_correction;
+    }
+
+    void reset_correction_stats() {
+        _corrections    = 0;
+        _max_correction = 0.f;
+    }
+
+    [[nodiscard]]
+    const server_clock& clock_estimate() const {
+        return _clock;
+    }
+
     void update(game_state& gs) {
         if (!is_ready())
             return;
 
         if (!_gs) {
             _gs = &gs;
-            gs.sim.add_tick_begin_callback("net_client", [this](const physic_simulation&, float) { sample_input(*_gs); });
+            gs.sim.add_tick_begin_callback("net_client", [this](const physic_simulation&, float timestep) {
+                sample_input(*_gs, timestep);
+            });
+            gs.sim.add_tick_end_callback("net_client", [this](const physic_simulation&, float) { record_prediction(*_gs); });
         }
 
         for (auto& datagram : _sock.recv(std::chrono::milliseconds(2))) {
@@ -127,6 +180,7 @@ public:
             }
         }
 
+        apply_remote_snapshots(gs);
         send_input_window();
     }
 
@@ -147,27 +201,128 @@ public:
 private:
     using clock = std::chrono::steady_clock;
 
+    using history_t = input_history<player_input_state, player::physic_state, vec2f>;
+
     [[nodiscard]]
     u32 time_ms() const {
         return u32(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - _start_time).count());
     }
 
-    /* Simulation tick: sample the local input and apply it to the local player */
-    void sample_input(game_state& gs) {
+    [[nodiscard]]
+    double time_s() const {
+        return std::chrono::duration<double>(clock::now() - _start_time).count();
+    }
+
+    [[nodiscard]]
+    player* local_player(game_state& gs) const {
+        auto found = gs.players.find(_name);
+        return found == gs.players.end() ? nullptr : found->second.get();
+    }
+
+    /* Simulation tick begin: sample the local input and apply it to the local player */
+    void sample_input(game_state& gs, float timestep) {
         if (!_joined || !_input_source)
             return;
 
-        auto found = gs.players.find(_name);
-        if (found == gs.players.end())
+        auto pl = local_player(gs);
+        if (!pl)
             return;
 
         auto in = _input_source();
-        found->second->apply_input(in);
+        pl->apply_input(in);
 
         _sent_inputs.push_back(in.to_bits());
         if (_sent_inputs.size() > input::max_window)
             _sent_inputs.pop_front();
         ++_input_seq;
+
+        /* The impulses applied since the previous tick (recoil) belong to this tick */
+        _history.push({_input_seq, in, pl->take_pending_impulse(), timestep});
+    }
+
+    /* Simulation tick end: remember the predicted state */
+    void record_prediction(game_state& gs) {
+        auto entry = _history.back();
+        auto pl    = local_player(gs);
+        if (entry && pl && entry->seq == _input_seq)
+            entry->state = pl->get_physic_state();
+    }
+
+    [[nodiscard]]
+    static bool diverged(const player::physic_state& a, const player::physic_state& b) {
+        constexpr float pos_eps = 1.f;   /* px */
+        constexpr float vel_eps = 10.f;  /* px/s */
+        return magnitude(a.pos - b.pos) > pos_eps || magnitude(a.vel - b.vel) > vel_eps ||
+               a.lock_y != b.lock_y || a.jumps_left != b.jumps_left;
+    }
+
+    /**
+     * Reconcile the local player with the server state of the tick ack_seq:
+     * on divergence restore it and re-simulate the unacknowledged ticks
+     */
+    void reconcile(game_state& gs, player& pl, const player::physic_state& server_st, u32 ack_seq) {
+        /* Reordered older state, or the same ack again (already reconciled) */
+        if (ack_seq < _last_ack || (ack_seq == _last_ack && ack_seq != 0))
+            return;
+        _last_ack = ack_seq;
+
+        auto predicted = _history.find(ack_seq);
+        if (!predicted || diverged(predicted->state, server_st)) {
+            auto old_pos = pl.get_position();
+
+            pl.restore_physic_state(server_st);
+            pl.replaying(true);
+            for (auto& e : _history) {
+                if (e.seq <= ack_seq)
+                    continue;
+                pl.apply_movement_input(e.input);
+                pl.apply_impulse(e.extra);
+                gs.sim.step_isolated(pl.collision_box(), e.timestep, [&](float dt) { pl.physic_update(gs.sim, dt); });
+                e.state = pl.get_physic_state();
+            }
+            pl.replaying(false);
+
+            auto correction = old_pos - pl.get_position();
+            pl.add_render_offset(correction);
+            ++_corrections;
+            _max_correction = std::max(_max_correction, magnitude(correction));
+            glog().detail("net client: prediction correction at tick {}: {} px", ack_seq, magnitude(correction));
+        }
+
+        _history.drop_up_to(ack_seq);
+    }
+
+    /* Every frame: show remote players at the interpolated server time */
+    void apply_remote_snapshots(game_state& gs) {
+        if (!_clock.valid())
+            return;
+
+        auto t = _clock.render_time(time_s());
+        for (auto& [name, snaps] : _remote) {
+            /* A state received before WELCOME could not tell the local player apart */
+            if (_joined && name == _name)
+                continue;
+
+            auto found = gs.players.find(name);
+            if (found == gs.players.end())
+                continue;
+            auto snap = snaps.sample(t);
+            if (!snap)
+                continue;
+
+            auto& pl = *found->second;
+            pl.restore_physic_state(snap->ph);
+            pl.on_left(snap->on_left);
+
+            /*
+             * Drive the remote player's pistol locally (muzzle flash, recoil,
+             * sounds). The actual bullets arrive via the state broadcast
+             */
+            if (snap->shooting)
+                pl.shot();
+            else
+                pl.relax();
+        }
     }
 
     /* Send the window of the latest input ticks (redundant: lost datagrams cost nothing) */
@@ -179,7 +334,7 @@ private:
         msg.last_seq       = _input_seq;
         msg.client_time_ms = time_ms();
         msg.rtt_ms         = u16(std::min(_rtt_s * 1000.f, 65535.f));
-        msg.interp_ms      = u16(std::min(_interp_s * 1000.f, 65535.f));
+        msg.interp_ms      = u16(std::min(_clock.interp_delay() * 1000.0, 65535.0));
         msg.bits.assign(_sent_inputs.begin(), _sent_inputs.end());
         _sock.send(encode_msg(msg_type::input, msg));
         _last_sent_seq = _input_seq;
@@ -192,7 +347,8 @@ private:
         auto sample = float(i64(time_ms()) - i64(st.echo_client_time_ms) - i64(st.echo_hold_ms)) / 1000.f;
         if (sample < 0.f)
             return;
-        _rtt_s = _rtt_s == 0.f ? sample : _rtt_s + (sample - _rtt_s) * 0.1f;
+        _rtt_s = _rtt_measured ? _rtt_s + (sample - _rtt_s) * 0.1f : sample;
+        _rtt_measured = true;
     }
 
     void handle_welcome(const net_msg& msg) {
@@ -221,6 +377,13 @@ private:
 
         update_rtt(st);
 
+        _clock.on_state(time_s(), double(st.server_time_ms) / 1000.0);
+
+        /* States may arrive out of order: only the newest one updates the world state */
+        bool newest = st.tick >= _last_state_tick;
+        if (newest)
+            _last_state_tick = st.tick;
+
         for (auto& sp : st.players) {
             auto is_local = _joined && sp.name == _name;
 
@@ -231,7 +394,7 @@ private:
                     continue;
                 apply_player_config(*pl, sp);
             }
-            else {
+            else if (newest) {
                 apply_player_config_if_changed(*found->second, sp);
             }
 
@@ -244,24 +407,11 @@ private:
              */
             pl->set_server_driven(true);
 
-            /*
-             * Server state overwrites the position for ALL players, including the
-             * locally controlled one (local simulation is prediction only)
-             */
-            pl->position({sp.pos_x, sp.pos_y});
-            pl->velocity({sp.vel_x, sp.vel_y});
-            pl->on_left(sp.on_left != 0);
-
-            if (!is_local) {
-                /*
-                 * Drive the remote player's pistol locally (muzzle flash, recoil,
-                 * sounds). The actual bullets arrive via the state broadcast
-                 */
-                if (sp.shooting)
-                    pl->shot();
-                else
-                    pl->relax();
-            }
+            if (is_local)
+                reconcile(gs, *pl, to_physic_state(sp), st.ack_seq);
+            else
+                _remote[sp.name].push(double(st.server_time_ms) / 1000.0,
+                                      remote_player_snapshot{to_physic_state(sp), sp.on_left != 0, sp.shooting != 0});
         }
 
         /* Spawn the server-side bullets in the local simulation */
@@ -276,6 +426,9 @@ private:
 
             blt.net_id(b.id);
         }
+
+        if (!newest)
+            return;
 
         /*
          * Drop local bullets the server no longer lists as alive: they hit
@@ -379,7 +532,15 @@ private:
     u32               _input_seq     = 0; // seq of the newest input tick
     u32               _last_sent_seq = 0;
     float             _rtt_s         = 0.f;
-    float             _interp_s      = 0.f;
+    bool              _rtt_measured  = false;
+
+    history_t    _history;
+    u32          _last_ack        = 0;
+    u32          _last_state_tick = 0;
+    u64          _corrections     = 0;
+    float        _max_correction  = 0.f;
+    server_clock _clock;
+    std::map<player_name_t, snapshot_buffer<remote_player_snapshot>> _remote;
 };
 
 } // namespace dfdh::net
