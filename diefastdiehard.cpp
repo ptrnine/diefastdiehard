@@ -106,8 +106,6 @@ public:
             if (gs.has_controller(0))
                 gs.controller_delete(0);
 
-            if (net_ctrl)
-                net_cli->send_input(net_ctrl->take_input_state());
             net_cli->update(gs);
         }
 
@@ -326,18 +324,19 @@ private:
                 return;
 
             /*
-             * Local bullet spawning is disabled for the client-side local player:
-             * the server is authoritative and broadcasts the actual bullets
+             * The server is authoritative for the local player as well: no local
+             * bullets, the actual ones arrive with the server broadcast
              */
             pl->set_server_driven(true);
 
+            /*
+             * The keyboard drives the local player through per-tick input
+             * sampling only (the same input stream the server applies), so the
+             * controller is not attached as a regular event-driven controller
+             */
             net_ctrl = std::make_shared<net_player_controller>(1000);
             net_ctrl->player_name = pname;
-            if (!gs.controller_attach(1000, net_ctrl)) {
-                net_ctrl.reset();
-                return;
-            }
-            gs.rebuild_controlled_players();
+            net_cli->input_source([ctrl = net_ctrl] { return ctrl->take_input_state(); });
             gs.player_spawn(pl);
             gs.game_run(true);
             glog().info("multiplayer: controlling player {}", pname);

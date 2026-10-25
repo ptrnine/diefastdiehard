@@ -31,20 +31,47 @@ inline sf::Color unpack_color(u32 v) {
  */
 class net_server {
 public:
+    using clock = std::chrono::steady_clock;
+
+    /* Queued input ticks above this are merged to bound the input latency */
+    static constexpr size_t max_queued_inputs = 6;
+    /* Without inputs for this long the client's player gets a neutral input */
+    static constexpr auto input_timeout = std::chrono::milliseconds(500);
+
     struct client_t {
         sf::IpAddress    address;
         u16              port         = 0;
         player_name_t    player_name;
         bool             joined       = false;
-        u16              input_seq    = 0;
-        u16              latest_bits  = 0;
-        std::vector<u16> pending_bits; // input edges accumulated since the last tick
+
+        /* Received, not yet applied input ticks (seq -> bits), applied one per tick in seq order */
+        std::map<u32, u16> inputs;
+        u32                next_seq      = 0; // first seq not applied yet, 0 = none received yet
+        u32                ack_seq       = 0; // last applied seq
+        u16                held_bits     = 0; // held part of the last applied input
+        u16                pending_edges = 0; // edges of inputs merged away, applied with the next one
+        clock::time_point  last_input_time;
+
+        /* Newest input's client time, echoed back for the client's RTT measurement */
+        u32               echo_seq            = 0;
+        u32               echo_client_time_ms = 0;
+        clock::time_point echo_recv_time;
+        float             rtt_s    = 0.f;
+        float             interp_s = 0.f;
 
         [[nodiscard]]
         static std::string key(const sf::IpAddress& addr) {
             return addr.toString();
         }
     };
+
+    net_server(const net_server&) = delete;
+    net_server& operator=(const net_server&) = delete;
+
+    ~net_server() {
+        if (_gs)
+            _gs->sim.remove_tick_begin_callback("net_server");
+    }
 
     net_server(u16 port): _port(port) {
         if (!_sock.bind(port))
@@ -76,17 +103,27 @@ public:
         return found == _clients.end() ? nullptr : &found->second;
     }
 
+    /**
+     * The game_state must outlive the server (the server hooks into its
+     * simulation ticks)
+     */
     void update(game_state& gs) {
         if (!_sock.is_open())
             return;
 
+        if (!_gs) {
+            _gs = &gs;
+            gs.sim.add_tick_begin_callback("net_server", [this](const physic_simulation&, float) { apply_inputs(*_gs); });
+        }
+
         for (auto& datagram : _sock.recv(std::chrono::milliseconds(2)))
             handle_msg(gs, datagram);
 
-        /* Apply inputs and broadcast state once per frame */
+        /* Broadcast the state once per frame */
         if (!_clients.empty()) {
             net::state st;
-            st.tick = ++_tick;
+            st.tick           = u32(gs.sim.tick());
+            st.server_time_ms = u32(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - _start_time).count());
             for (auto& [name, pl] : gs.players)
                 st.players.push_back(make_state_player(*pl));
 
@@ -98,6 +135,9 @@ public:
              */
             for (auto& be : gs.cur_frame_bullets) {
                 st.bullets.push_back(bullet_info{std::string(be.owner),
+                                                 0,
+                                                 be.position.x,
+                                                 be.position.y,
                                                  be.position.x,
                                                  be.position.y,
                                                  be.velocity.x,
@@ -131,7 +171,8 @@ public:
              * diverge, drop the ids for this frame rather than zip wrongly
              */
             if (spawn_ids.size() == st.bullets.size())
-                st.spawn_bullet_ids = std::move(spawn_ids);
+                for (size_t i = 0; i < spawn_ids.size(); ++i)
+                    st.bullets[i].id = spawn_ids[i];
             st.alive_bullet_ids = std::move(alive_ids);
 
             for (auto& c : gs.crates) {
@@ -156,22 +197,17 @@ public:
                                            static_cast<u8>(g->long_shot())});
             }
 
-            auto data = encode_msg(msg_type::state, st);
-
             for (auto& [key, client] : _clients) {
                 if (!client.joined)
                     continue;
 
-                auto found = gs.players.find(client.player_name);
-                if (found != gs.players.end() && found->second)
-                    apply_input_per_tick(*found->second, client);
-
-                _sock.send_to(client.address, client.port, data);
+                st.ack_seq             = client.ack_seq;
+                st.echo_client_time_ms = client.echo_client_time_ms;
+                st.echo_hold_ms        = u16(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          clock::now() - client.echo_recv_time).count());
+                _sock.send_to(client.address, client.port, encode_msg(msg_type::state, st));
             }
         }
-
-        for (auto& [key, client] : _clients)
-            client.pending_bits.clear();
     }
 
 private:
@@ -189,23 +225,66 @@ private:
         sp.pos_y        = pos.y;
         sp.vel_x        = vel.x;
         sp.vel_y        = vel.y;
-        sp.jumps_left   = u8(pl.get_available_jumps());
+        auto ph         = pl.get_physic_state();
+        sp.jumps_left   = u8(ph.jumps_left);
+        sp.lock_y       = ph.lock_y ? 1 : 0;
+        sp.accel_lf     = ph.accel_left_f;
+        sp.accel_rf     = ph.accel_right_f;
         sp.on_left      = pl.get_on_left() ? 1 : 0;
         sp.shooting     = pl.shotting() ? 1 : 0;
         return sp;
     }
 
-    static void apply_input_per_tick(player& pl, client_t& client) {
-        auto in = player_input_state::from_bits(client.latest_bits);
-        for (auto bits : client.pending_bits) {
-            auto edge = player_input_state::from_bits(bits);
-            in.jump         |= edge.jump;
-            in.jump_down    |= edge.jump_down;
-            in.shot         |= edge.shot;
-            in.drop         |= edge.drop;
-        }
+    /**
+     * Simulation tick: apply the next queued input tick of every client.
+     * Inputs are applied exactly once and in seq order, so a late or
+     * duplicated datagram can never bring back an old input state
+     */
+    void apply_inputs(game_state& gs) {
+        auto now = clock::now();
 
-        pl.apply_input(in);
+        for (auto& [key, client] : _clients) {
+            if (!client.joined)
+                continue;
+
+            auto found = gs.players.find(client.player_name);
+            if (found == gs.players.end() || !found->second)
+                continue;
+
+            auto& q = client.inputs;
+
+            /* Too many queued ticks (client clock runs faster, burst after a stall): merge the oldest */
+            while (q.size() > max_queued_inputs) {
+                client.pending_edges |= u16(q.begin()->second & in_edge_bits);
+                q.erase(q.begin());
+            }
+
+            u16 bits;
+            if (!q.empty()) {
+                /* Missing seqs before the head are lost for good (they would be in every newer window) */
+                auto head            = q.begin();
+                bits                 = head->second | client.pending_edges;
+                client.ack_seq       = head->first;
+                client.next_seq      = head->first + 1;
+                client.held_bits     = u16(head->second & ~in_edge_bits);
+                client.pending_edges = 0;
+                q.erase(head);
+            }
+            else if (now - client.last_input_time > input_timeout) {
+                /* Lost client: release everything */
+                bits             = 0;
+                client.held_bits = 0;
+            }
+            else {
+                /* Starving: hold the last state, no edges, without consuming a seq */
+                bits = client.held_bits;
+            }
+
+            found->second->apply_input(player_input_state::from_bits(bits));
+
+            auto lag = client.rtt_s * 0.5f + float(q.size()) / 60.f;
+            found->second->lag_compensation({lag, lag + client.interp_s});
+        }
     }
 
     void handle_msg(game_state& gs, const received_datagram& datagram) {
@@ -231,6 +310,14 @@ private:
         hello h;
         if (!try_read_msg(msg.payload, h)) {
             glog().warn("net server: bad HELLO from {}:{}", addr.toString(), port);
+            return;
+        }
+
+        if (h.version != protocol_version) {
+            glog().error("net server: client {}:{} uses protocol version {}, the server uses {}",
+                         addr.toString(), port, h.version, protocol_version);
+            auto data = encode_msg(msg_type::error, error{"protocol version mismatch"});
+            _sock.send_to(addr, port, data);
             return;
         }
 
@@ -263,8 +350,11 @@ private:
         client.port        = port;
         client.player_name = h.name;
         client.joined      = true;
-        client.latest_bits = 0;
-        client.pending_bits.clear();
+        client.inputs.clear();
+        client.next_seq      = 0;
+        client.held_bits     = 0;
+        client.pending_edges = 0;
+        client.echo_seq      = 0;
 
         /* Create or reconfigure the player */
         player* pl = nullptr;
@@ -305,13 +395,29 @@ private:
             return;
 
         input in;
-        if (!try_read_msg(msg.payload, in))
+        if (!try_read_msg(msg.payload, in) || in.bits.empty())
             return;
 
-        client->input_seq   = in.seq;
-        client->latest_bits = in.bits;
-        if (client->pending_bits.size() < 32)
-            client->pending_bits.push_back(in.bits);
+        auto now = clock::now();
+
+        /* Newest input: RTT echo and lag compensation parameters */
+        if (in.last_seq > client->echo_seq) {
+            client->echo_seq            = in.last_seq;
+            client->echo_client_time_ms = in.client_time_ms;
+            client->echo_recv_time      = now;
+            client->rtt_s               = float(in.rtt_ms) / 1000.f;
+            client->interp_s            = float(in.interp_ms) / 1000.f;
+            client->last_input_time     = now;
+        }
+
+        if (client->next_seq == 0)
+            client->next_seq = in.first_seq();
+
+        for (u32 i = 0; i < in.bits.size(); ++i) {
+            auto seq = in.first_seq() + i;
+            if (seq >= client->next_seq)
+                client->inputs.emplace(seq, in.bits[i]);
+        }
     }
 
     void handle_leave(game_state& gs, const sf::IpAddress& addr) {
@@ -336,10 +442,18 @@ private:
         pl.tracer_color(unpack_color(h.tracer_color));
     }
 
+public:
+    /* For tests: the channel (e.g. to simulate latency) */
+    udp_channel& channel() {
+        return _sock;
+    }
+
+private:
     udp_channel                  _sock;
     u16                          _port;
-    u16                          _tick = 0;
     u32                          _next_bullet_id = 0;
+    game_state*                  _gs             = nullptr;
+    clock::time_point            _start_time     = clock::now();
     std::map<std::string, client_t> _clients;
 };
 

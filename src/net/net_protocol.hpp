@@ -22,6 +22,9 @@ namespace dfdh::net {
  */
 
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
+
+/* Bumped on every incompatible protocol change; HELLO with another version is rejected */
+inline constexpr u16 protocol_version = 2;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -90,6 +93,7 @@ struct player_input_state {
 };
 
 struct hello {
+    u16           version = protocol_version;
     player_name_t name;
     std::string   pistol;
     u32           face_id      = 0;
@@ -98,11 +102,14 @@ struct hello {
     u32           tracer_color = 0; // packed 0xRRGGBBAA
 
     void serialize(auto& s) const {
-        s.write(std::string(name), pistol, face_id, body_id, body_color, tracer_color);
+        s.write(version, std::string(name), pistol, face_id, body_id, body_color, tracer_color);
     }
 
     void deserialize(auto& d) {
         std::string n;
+        d.read(version);
+        if (version != protocol_version)
+            return; /* the rest of the layout is unknown */
         d.read(n, pistol, face_id, body_id, body_color, tracer_color);
         name = n;
     }
@@ -122,16 +129,33 @@ struct welcome {
     }
 };
 
+/**
+ * Client input: a window of the last per-tick input states (redundant, so a
+ * lost or reordered datagram costs nothing: every datagram carries the
+ * recent history). bits[i] is the input of tick seq first_seq() + i
+ */
 struct input {
-    u16 seq  = 0;
-    u16 bits = 0;
+    static constexpr size_t max_window = 32;
+
+    u32              last_seq       = 0;
+    u32              client_time_ms = 0; // echoed back in the state for RTT measurement
+    u16              rtt_ms         = 0; // client-measured round-trip time
+    u16              interp_ms      = 0; // client remote-player interpolation delay
+    std::vector<u16> bits;
+
+    [[nodiscard]]
+    u32 first_seq() const {
+        return last_seq + 1 - u32(bits.size());
+    }
 
     void serialize(auto& s) const {
-        s.write(seq, bits);
+        s.write(last_seq, client_time_ms, rtt_ms, interp_ms, bits);
     }
 
     void deserialize(auto& d) {
-        d.read(seq, bits);
+        d.read(last_seq, client_time_ms, rtt_ms, interp_ms, bits);
+        if (bits.size() > max_window || bits.size() > size_t(last_seq))
+            throw std::out_of_range("net: bad input window");
     }
 };
 
@@ -143,32 +167,41 @@ struct state_player {
     u32           body_color   = 0;
     u32           tracer_color = 0;
 
-    float pos_x  = 0.f;
-    float pos_y  = 0.f;
-    float vel_x  = 0.f;
-    float vel_y  = 0.f;
-    u8  jumps_left = 0;
-    u8  on_left    = 0;
-    u8  shooting   = 0; // trigger held
+    /* Physic state (see player::physic_state) */
+    float pos_x      = 0.f;
+    float pos_y      = 0.f;
+    float vel_x      = 0.f;
+    float vel_y      = 0.f;
+    u8    jumps_left = 0;
+    u8    lock_y     = 0;
+    float accel_lf   = 1.f;
+    float accel_rf   = 1.f;
+
+    u8 on_left  = 0;
+    u8 shooting = 0; // trigger held
 
     void serialize(auto& s) const {
         s.write(std::string(name), pistol, face_id, body_id, body_color, tracer_color,
-                pos_x, pos_y, vel_x, vel_y, jumps_left, on_left, shooting);
+                pos_x, pos_y, vel_x, vel_y, jumps_left, lock_y, accel_lf, accel_rf, on_left, shooting);
     }
 
     void deserialize(auto& d) {
         std::string n;
         d.read(n, pistol, face_id, body_id, body_color, tracer_color,
-               pos_x, pos_y, vel_x, vel_y, jumps_left, on_left, shooting);
+               pos_x, pos_y, vel_x, vel_y, jumps_left, lock_y, accel_lf, accel_rf, on_left, shooting);
         name = n;
     }
 };
 
 /**
- * A bullet spawned on the server this frame (for client-side spawning)
+ * A bullet spawned on the server this frame (for client-side spawning).
+ * start is the muzzle position, pos the (lag-forwarded) server spawn position
  */
 struct bullet_info {
     std::string owner; // player name
+    u32         id      = 0;
+    float       start_x = 0.f;
+    float       start_y = 0.f;
     float       pos_x  = 0.f;
     float       pos_y  = 0.f;
     float       vel_x  = 0.f;
@@ -178,11 +211,11 @@ struct bullet_info {
     bool        gravity = false; // gravity flag the bullet was spawned with
 
     void serialize(auto& s) const {
-        s.write(owner, pos_x, pos_y, vel_x, vel_y, hit_mass, tracer_color, gravity);
+        s.write(owner, id, start_x, start_y, pos_x, pos_y, vel_x, vel_y, hit_mass, tracer_color, gravity);
     }
 
     void deserialize(auto& d) {
-        d.read(owner, pos_x, pos_y, vel_x, vel_y, hit_mass, tracer_color, gravity);
+        d.read(owner, id, start_x, start_y, pos_x, pos_y, vel_x, vel_y, hit_mass, tracer_color, gravity);
     }
 };
 
@@ -230,65 +263,33 @@ struct gun_info {
 };
 
 struct state {
-    u16 tick = 0;
+    u32 tick           = 0;
+    u32 server_time_ms = 0; // server clock at the broadcast
+
+    /* Per receiving client */
+    u32 ack_seq             = 0; // last input tick applied to the client's player
+    u32 echo_client_time_ms = 0; // client_time_ms of the client's newest input
+    u16 echo_hold_ms        = 0; // time since that input was received
+
     std::vector<state_player> players;
     std::vector<bullet_info>  bullets;
     std::vector<crate_info>   crates;
     std::vector<gun_info>     guns;
     /*
-     * Bullet ids, appended at the end so old clients still parse the state
-     * (they just skip the trailing data). spawn_bullet_ids is parallel to
-     * bullets, alive_bullet_ids lists every bullet currently alive on the
-     * server: clients drop their local bullets that are no longer listed
-     * (e.g. hit a player whose local position diverged)
+     * Every bullet id currently alive on the server: clients drop their local
+     * bullets that are no longer listed (e.g. hit a player whose local
+     * position diverged)
      */
-    std::vector<u32> spawn_bullet_ids;
     std::vector<u32> alive_bullet_ids;
 
     void serialize(auto& s) const {
-        s.write(tick, players, bullets, crates, guns, spawn_bullet_ids, alive_bullet_ids);
+        s.write(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms,
+                players, bullets, crates, guns, alive_bullet_ids);
     }
 
     void deserialize(auto& d) {
-        d.read(tick, players, bullets, crates, guns, spawn_bullet_ids, alive_bullet_ids);
-    }
-};
-
-/**
- * Legacy state layout with crates but without dropped guns (older servers).
- * The client falls back to this, then to state_legacy
- */
-struct state_v1 {
-    u16 tick = 0;
-    std::vector<state_player> players;
-    std::vector<bullet_info>  bullets;
-    std::vector<crate_info>   crates;
-
-    void serialize(auto& s) const {
-        s.write(tick, players, bullets, crates);
-    }
-
-    void deserialize(auto& d) {
-        d.read(tick, players, bullets, crates);
-    }
-};
-
-/**
- * Legacy state layout without crates (older servers).
- * Crates are appended at the end of the new layout, so old clients can still
- * read new states (they just skip the trailing data)
- */
-struct state_legacy {
-    u16 tick = 0;
-    std::vector<state_player> players;
-    std::vector<bullet_info>  bullets;
-
-    void serialize(auto& s) const {
-        s.write(tick, players, bullets);
-    }
-
-    void deserialize(auto& d) {
-        d.read(tick, players, bullets);
+        d.read(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms,
+               players, bullets, crates, guns, alive_bullet_ids);
     }
 };
 

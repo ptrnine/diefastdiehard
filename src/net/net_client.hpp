@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <deque>
+#include <functional>
 #include <string>
 
 #include <SFML/Network/IpAddress.hpp>
@@ -52,8 +54,14 @@ public:
         _sock.send(encode_msg(msg_type::hello, h));
     }
 
+    net_client(const net_client&) = delete;
+    net_client& operator=(const net_client&) = delete;
+
+    /** The game_state passed to update() must outlive the client (it hooks into the simulation ticks) */
     ~net_client() {
         leave();
+        if (_gs)
+            _gs->sim.remove_tick_begin_callback("net_client");
     }
 
     [[nodiscard]]
@@ -76,19 +84,30 @@ public:
     /** Fired (deferred) when the server rejected the client */
     signal<void(std::string)>    sig_error;
 
-    void send_input(const player_input_state& in) {
-        if (!is_ready() || !_joined)
-            return;
+    using input_source_t = std::function<player_input_state()>;
 
-        input msg;
-        msg.seq  = ++_input_seq;
-        msg.bits = in.to_bits();
-        _sock.send(encode_msg(msg_type::input, msg));
+    /**
+     * Source of the local player's input, sampled once per simulation tick
+     * (e.g. net_player_controller::take_input_state)
+     */
+    void input_source(input_source_t source) {
+        _input_source = std::move(source);
+    }
+
+    /** Smoothed round-trip time to the server, seconds */
+    [[nodiscard]]
+    float rtt() const {
+        return _rtt_s;
     }
 
     void update(game_state& gs) {
         if (!is_ready())
             return;
+
+        if (!_gs) {
+            _gs = &gs;
+            gs.sim.add_tick_begin_callback("net_client", [this](const physic_simulation&, float) { sample_input(*_gs); });
+        }
 
         for (auto& datagram : _sock.recv(std::chrono::milliseconds(2))) {
             net_msg msg;
@@ -107,10 +126,17 @@ public:
             default: break;
             }
         }
+
+        send_input_window();
+    }
+
+    /* For tests: the channel (e.g. to simulate latency) */
+    udp_channel& channel() {
+        return _sock;
     }
 
     void leave() {
-        if (!is_ready() || !leave_sent)
+        if (!is_ready() || leave_sent)
             return;
 
         leave_sent = true;
@@ -119,6 +145,56 @@ public:
     }
 
 private:
+    using clock = std::chrono::steady_clock;
+
+    [[nodiscard]]
+    u32 time_ms() const {
+        return u32(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - _start_time).count());
+    }
+
+    /* Simulation tick: sample the local input and apply it to the local player */
+    void sample_input(game_state& gs) {
+        if (!_joined || !_input_source)
+            return;
+
+        auto found = gs.players.find(_name);
+        if (found == gs.players.end())
+            return;
+
+        auto in = _input_source();
+        found->second->apply_input(in);
+
+        _sent_inputs.push_back(in.to_bits());
+        if (_sent_inputs.size() > input::max_window)
+            _sent_inputs.pop_front();
+        ++_input_seq;
+    }
+
+    /* Send the window of the latest input ticks (redundant: lost datagrams cost nothing) */
+    void send_input_window() {
+        if (!_joined || _sent_inputs.empty() || _input_seq == _last_sent_seq)
+            return;
+
+        input msg;
+        msg.last_seq       = _input_seq;
+        msg.client_time_ms = time_ms();
+        msg.rtt_ms         = u16(std::min(_rtt_s * 1000.f, 65535.f));
+        msg.interp_ms      = u16(std::min(_interp_s * 1000.f, 65535.f));
+        msg.bits.assign(_sent_inputs.begin(), _sent_inputs.end());
+        _sock.send(encode_msg(msg_type::input, msg));
+        _last_sent_seq = _input_seq;
+    }
+
+    void update_rtt(const state& st) {
+        if (st.echo_client_time_ms == 0)
+            return;
+
+        auto sample = float(i64(time_ms()) - i64(st.echo_client_time_ms) - i64(st.echo_hold_ms)) / 1000.f;
+        if (sample < 0.f)
+            return;
+        _rtt_s = _rtt_s == 0.f ? sample : _rtt_s + (sample - _rtt_s) * 0.1f;
+    }
+
     void handle_welcome(const net_msg& msg) {
         welcome w;
         if (!try_read_msg(msg.payload, w))
@@ -140,27 +216,10 @@ private:
 
     void handle_state(game_state& gs, const net_msg& msg) {
         state st;
-        bool bullet_ids = try_read_msg(msg.payload, st);
-        if (!bullet_ids) {
-            /* Older server without gun sync: guns are appended last, so a
-             * full read fails and the crates layout is tried instead */
-            state_v1 v1;
-            if (try_read_msg(msg.payload, v1)) {
-                st.tick     = v1.tick;
-                st.players  = std::move(v1.players);
-                st.bullets  = std::move(v1.bullets);
-                st.crates   = std::move(v1.crates);
-            }
-            else {
-                /* Even older server without crate sync */
-                state_legacy legacy;
-                if (!try_read_msg(msg.payload, legacy))
-                    return;
-                st.tick     = legacy.tick;
-                st.players  = std::move(legacy.players);
-                st.bullets  = std::move(legacy.bullets);
-            }
-        }
+        if (!try_read_msg(msg.payload, st))
+            return;
+
+        update_rtt(st);
 
         for (auto& sp : st.players) {
             auto is_local = _joined && sp.name == _name;
@@ -215,8 +274,7 @@ private:
                                         unpack_color(b.tracer_color),
                                         b.gravity);
 
-            if (bullet_ids && i < st.spawn_bullet_ids.size())
-                blt.net_id(st.spawn_bullet_ids[i]);
+            blt.net_id(b.id);
         }
 
         /*
@@ -224,8 +282,7 @@ private:
          * something on the server but may have missed locally because the
          * local simulation diverged slightly
          */
-        if (bullet_ids)
-            gs.blt_mgr.remove_not_in(st.alive_bullet_ids);
+        gs.blt_mgr.remove_not_in(st.alive_bullet_ids);
 
         /* Sync server crates: create ghost crates for new ids, drive their
          * position/velocity, remove crates picked up (or gone) on the server */
@@ -312,9 +369,17 @@ private:
     sf::IpAddress   _server_ip;
     u16             _server_port  = 0;
     player_name_t   _name;
-    u16             _input_seq    = 0;
     bool            _joined       = false;
     bool            leave_sent    = false;
+
+    game_state*       _gs = nullptr;
+    clock::time_point _start_time = clock::now();
+    input_source_t    _input_source;
+    std::deque<u16>   _sent_inputs;       // the last input::max_window input ticks
+    u32               _input_seq     = 0; // seq of the newest input tick
+    u32               _last_sent_seq = 0;
+    float             _rtt_s         = 0.f;
+    float             _interp_s      = 0.f;
 };
 
 } // namespace dfdh::net

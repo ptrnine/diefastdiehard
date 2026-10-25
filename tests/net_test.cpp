@@ -15,6 +15,11 @@
 
 using namespace dfdh;
 
+/* One simulation tick (inputs are applied by the network layer on ticks) */
+static void sim_tick(game_state& gs) {
+    gs.sim.update_immediate(1.f / 60.f, std::chrono::steady_clock::now());
+}
+
 static u16 free_udp_port() {
     net::udp_channel ch;
     REQUIRE(ch.bind(0));
@@ -39,6 +44,7 @@ TEST_CASE("protocol: message round-trips") {
         REQUIRE(msg.type == msg_type::hello);
 
         hello r = read_msg<hello>(msg.payload);
+        CHECK(r.version == protocol_version);
         CHECK(std::string(r.name) == "tester");
         CHECK(r.pistol == "wpn_glk17");
         CHECK(r.face_id == 1);
@@ -58,24 +64,42 @@ TEST_CASE("protocol: message round-trips") {
 
     SECTION("input") {
         input in;
-        in.seq  = 42;
-        in.bits = in_bit_left | in_bit_shot;
+        in.last_seq       = 42;
+        in.client_time_ms = 1234;
+        in.rtt_ms         = 250;
+        in.interp_ms      = 90;
+        in.bits           = {in_bit_left, in_bit_left | in_bit_shot};
 
         auto data = encode_msg(msg_type::input, in);
         auto msg  = decode_msg({data.data(), data.size()});
         REQUIRE(msg.type == msg_type::input);
 
         auto r = read_msg<input>(msg.payload);
-        CHECK(r.seq == 42);
-        CHECK(r.bits == (in_bit_left | in_bit_shot));
+        CHECK(r.last_seq == 42);
+        CHECK(r.first_seq() == 41);
+        CHECK(r.client_time_ms == 1234);
+        CHECK(r.rtt_ms == 250);
+        CHECK(r.interp_ms == 90);
+        REQUIRE(r.bits.size() == 2);
+        CHECK(r.bits[1] == (in_bit_left | in_bit_shot));
+
+        /* A window reaching before seq 1 is malformed */
+        in.last_seq = 1;
+        auto bad    = encode_msg(msg_type::input, in);
+        input r_bad;
+        CHECK_FALSE(try_read_msg(decode_msg({bad.data(), bad.size()}).payload, r_bad));
     }
 
     SECTION("state") {
         state st;
-        st.tick = 7;
+        st.tick                = 7;
+        st.server_time_ms      = 5000;
+        st.ack_seq             = 77;
+        st.echo_client_time_ms = 900;
+        st.echo_hold_ms        = 16;
         st.players.push_back(state_player{.name = "p1", .pos_x = 10.f, .pos_y = 20.f,
-                                          .vel_x = -3.f, .vel_y = 4.f, .jumps_left = 1,
-                                          .on_left = 1, .shooting = 1});
+                                          .vel_x = -3.f, .vel_y = 4.f, .jumps_left = 1, .lock_y = 1,
+                                          .accel_lf = 0.5f, .on_left = 1, .shooting = 1});
         st.players.push_back(state_player{.name = "p2", .pistol = "wpn_m40", .face_id = 3});
         st.bullets.push_back(bullet_info{.owner = "p1", .pos_x = 11.f, .pos_y = 21.f,
                                          .vel_x = 900.f, .vel_y = -10.f, .hit_mass = 2.f,
@@ -87,7 +111,14 @@ TEST_CASE("protocol: message round-trips") {
 
         auto r = read_msg<state>(msg.payload);
         CHECK(r.tick == 7);
+        CHECK(r.server_time_ms == 5000);
+        CHECK(r.ack_seq == 77);
+        CHECK(r.echo_client_time_ms == 900);
+        CHECK(r.echo_hold_ms == 16);
         REQUIRE(r.players.size() == 2);
+        CHECK(r.players[0].lock_y == 1);
+        CHECK(r.players[0].accel_lf == Catch::Approx(0.5f));
+        CHECK(r.players[0].accel_rf == Catch::Approx(1.f));
         CHECK(std::string(r.players[0].name) == "p1");
         CHECK(r.players[0].pos_x == Catch::Approx(10.f));
         CHECK(r.players[0].pos_y == Catch::Approx(20.f));
@@ -112,10 +143,9 @@ TEST_CASE("protocol: message round-trips") {
     SECTION("state with bullet ids") {
         state st;
         st.tick = 5;
-        st.bullets.push_back(bullet_info{.owner = "p1", .pos_x = 1.f, .pos_y = 2.f,
-                                         .vel_x = 100.f, .vel_y = 0.f, .hit_mass = 1.f,
-                                         .tracer_color = 0x11223344});
-        st.spawn_bullet_ids.push_back(1);
+        st.bullets.push_back(bullet_info{.owner = "p1", .id = 1, .start_x = -1.f, .start_y = 2.f,
+                                         .pos_x = 1.f, .pos_y = 2.f, .vel_x = 100.f, .vel_y = 0.f,
+                                         .hit_mass = 1.f, .tracer_color = 0x11223344});
         st.alive_bullet_ids.push_back(1);
         st.alive_bullet_ids.push_back(2);
 
@@ -124,27 +154,10 @@ TEST_CASE("protocol: message round-trips") {
         auto r    = read_msg<state>(msg.payload);
         CHECK(r.tick == 5);
         REQUIRE(r.bullets.size() == 1);
-        REQUIRE(r.spawn_bullet_ids.size() == 1);
-        CHECK(r.spawn_bullet_ids[0] == 1);
+        CHECK(r.bullets[0].id == 1);
+        CHECK(r.bullets[0].start_x == Catch::Approx(-1.f));
         REQUIRE(r.alive_bullet_ids.size() == 2);
         CHECK(r.alive_bullet_ids[1] == 2);
-
-        /* old client (v1 layout) reads a new payload: trailing ids are ignored */
-        state_v1 old_read;
-        CHECK(try_read_msg(msg.payload, old_read));
-        CHECK(old_read.tick == 5);
-        CHECK(old_read.bullets.size() == 1);
-
-        /* new client against an old server: full read fails, v1 fallback works */
-        state_v1 v1;
-        v1.tick = 6;
-        auto v1_data = encode_msg(msg_type::state, v1);
-        auto v1_msg  = decode_msg({v1_data.data(), v1_data.size()});
-        state full;
-        CHECK_FALSE(try_read_msg(v1_msg.payload, full));
-        state_v1 v1_back;
-        CHECK(try_read_msg(v1_msg.payload, v1_back));
-        CHECK(v1_back.tick == 6);
     }
 
     SECTION("leave") {
@@ -185,11 +198,10 @@ TEST_CASE("protocol: malformed datagrams") {
     }
 
     SECTION("header/payload size mismatch") {
-        auto data = encode_msg(msg_type::input, input{.seq = 1, .bits = 0});
-        REQUIRE(data.size() == net_header_size + 4);
+        auto data = encode_msg(msg_type::input, input{.last_seq = 1, .bits = {0}});
         /* claim a bigger payload than actually present */
-        data[2] = u8(8);
-        data[3] = 0;
+        auto claimed = u16(data.size() - net_header_size + 4);
+        std::memcpy(data.data() + 2, &claimed, sizeof(claimed));
         REQUIRE_THROWS_AS(decode_msg({data.data(), data.size()}), std::out_of_range);
 
         /* truncated payload read */
@@ -221,10 +233,10 @@ TEST_CASE("protocol: input bits mapping") {
     CHECK(back.long_shot == true);
 
     /* Round-trip through the wire */
-    auto data = encode_msg(msg_type::input, input{.seq = 1, .bits = bits});
+    auto data = encode_msg(msg_type::input, input{.last_seq = 1, .bits = {bits}});
     auto msg  = decode_msg({data.data(), data.size()});
     auto wire = read_msg<input>(msg.payload);
-    back = player_input_state::from_bits(wire.bits);
+    back = player_input_state::from_bits(wire.bits.at(0));
     CHECK(back.left == in.left);
     CHECK(back.right == in.right);
     CHECK(back.jump == in.jump);
@@ -263,24 +275,6 @@ TEST_CASE("protocol: dropped gun state sync") {
     CHECK(wire.guns[0].angle == 45.f);
     CHECK(wire.guns[0].on_left == 1);
     CHECK(wire.guns[0].long_shot == 0);
-
-    /* v1 payload (crates, no guns): full read fails, state_v1 fallback works */
-    state_v1 v1;
-    v1.tick = 7;
-    v1.crates.push_back(crate_info{1, 5.f, 6.f, 7.f, 8.f, 1});
-    auto v1_data = encode_msg(msg_type::state, v1);
-    auto v1_msg  = decode_msg({v1_data.data(), v1_data.size()});
-    state full;
-    CHECK_FALSE(try_read_msg(v1_msg.payload, full));
-    state_v1 v1_back;
-    CHECK(try_read_msg(v1_msg.payload, v1_back));
-    CHECK(v1_back.tick == 7);
-    CHECK(v1_back.crates.size() == 1);
-
-    /* an old client (v1 layout) reads a new payload: trailing guns are ignored */
-    state_v1 old_read;
-    CHECK(try_read_msg(msg.payload, old_read));
-    CHECK(old_read.tick == 42);
 }
 
 TEST_CASE("udp channel: loopback") {
@@ -306,7 +300,7 @@ TEST_CASE("udp channel: loopback") {
     }
 
     SECTION("drain multiple datagrams") {
-        auto data = encode_msg(msg_type::input, input{.seq = 1, .bits = in_bit_left});
+        auto data = encode_msg(msg_type::input, input{.last_seq = 1, .bits = {in_bit_left}});
         for (int i = 0; i < 5; ++i)
             REQUIRE(cli.send_to(sf::IpAddress("127.0.0.1"), port, data));
 
@@ -629,16 +623,114 @@ TEST_CASE("net_server: handshake, rename and leave") {
         auto& pl = *gs.players.at("test1");
 
         net::input in;
-        in.bits = net::in_bit_left;
+        in.last_seq = 1;
+        in.bits     = {net::in_bit_left};
         REQUIRE(cli.send(net::encode_msg(net::msg_type::input, in)));
 
         srv.update(gs);
+        sim_tick(gs);
         CHECK(pl.is_walking());
 
-        in.bits = 0;
+        in.last_seq = 2;
+        in.bits     = {net::in_bit_left, 0};
         REQUIRE(cli.send(net::encode_msg(net::msg_type::input, in)));
         srv.update(gs);
+        sim_tick(gs);
         CHECK_FALSE(pl.is_walking());
+    }
+
+    SECTION("protocol version mismatch is rejected") {
+        net::hello h;
+        h.version = net::protocol_version + 1;
+        h.name    = "test1";
+        REQUIRE(cli.send(net::encode_msg(net::msg_type::hello, h)));
+        srv.update(gs);
+
+        auto recvs = cli.recv(std::chrono::milliseconds(50));
+        REQUIRE(recvs.size() == 1);
+        auto msg = net::decode_msg({recvs[0].data.data(), recvs[0].data.size()});
+        CHECK(msg.type == net::msg_type::error);
+        CHECK_FALSE(gs.players.contains("test1"));
+    }
+
+    SECTION("inputs apply once, in seq order, whatever the datagram order") {
+        net::hello h;
+        h.name = "test1";
+        REQUIRE(cli.send(net::encode_msg(net::msg_type::hello, h)));
+        srv.update(gs);
+        cli.recv(std::chrono::milliseconds(50));
+        auto& pl = *gs.players.at("test1");
+
+        auto window = [](u32 last_seq, std::vector<u16> bits) {
+            return net::encode_msg(net::msg_type::input, net::input{.last_seq = last_seq, .bits = std::move(bits)});
+        };
+        auto S = net::in_bit_shot;
+
+        /* Ticks 1-2 shoot, tick 3 releases the trigger */
+        auto press   = window(2, {S, S});
+        auto release = window(3, {S, S, 0});
+
+        /* The release window arrives first, the stale press window arrives late */
+        REQUIRE(cli.send(release));
+        srv.update(gs);
+        REQUIRE(cli.send(press));
+        srv.update(gs);
+
+        sim_tick(gs);
+        CHECK(pl.shotting());
+        sim_tick(gs);
+        CHECK(pl.shotting());
+        sim_tick(gs);
+        CHECK_FALSE(pl.shotting());
+
+        /* A duplicate of an old window is ignored: the trigger stays released */
+        REQUIRE(cli.send(press));
+        srv.update(gs);
+        sim_tick(gs);
+        CHECK_FALSE(pl.shotting());
+    }
+
+    SECTION("starving server holds the last input, timeout releases it") {
+        net::hello h;
+        h.name = "test1";
+        REQUIRE(cli.send(net::encode_msg(net::msg_type::hello, h)));
+        srv.update(gs);
+        cli.recv(std::chrono::milliseconds(50));
+        auto& pl = *gs.players.at("test1");
+
+        REQUIRE(cli.send(net::encode_msg(net::msg_type::input,
+                                         net::input{.last_seq = 1, .bits = {net::in_bit_right | net::in_bit_jump}})));
+        srv.update(gs);
+        sim_tick(gs);
+        CHECK(pl.is_walking());
+
+        /* No new input: the held movement repeats */
+        sim_tick(gs);
+        sim_tick(gs);
+        CHECK(pl.is_walking());
+
+        std::this_thread::sleep_for(net::net_server::input_timeout + std::chrono::milliseconds(50));
+        sim_tick(gs);
+        CHECK_FALSE(pl.is_walking());
+    }
+
+    SECTION("input queue overflow merges the oldest ticks, keeping their edges") {
+        net::hello h;
+        h.name = "test1";
+        REQUIRE(cli.send(net::encode_msg(net::msg_type::hello, h)));
+        srv.update(gs);
+        cli.recv(std::chrono::milliseconds(50));
+        auto& pl = *gs.players.at("test1");
+        pl.velocity({0.f, 0.f});
+
+        /* 10 ticks queued at once, a jump edge in the oldest one */
+        std::vector<u16> bits(10, 0);
+        bits[0] = net::in_bit_jump;
+        REQUIRE(cli.send(net::encode_msg(net::msg_type::input, net::input{.last_seq = 10, .bits = bits})));
+        srv.update(gs);
+
+        sim_tick(gs);
+        CHECK(pl.get_velocity().y < -500.f); /* the merged jump edge was applied */
     }
 
     SECTION("leave removes the player") {
@@ -703,14 +795,28 @@ TEST_CASE("net_client: join and state application") {
         CHECK(gs_srv.players.contains("me"));
     }
 
+    net::player_input_state cli_input;
+    cli.input_source([&] { return cli_input; });
+
+    /* Sample the client input on a client tick, send it and apply it on a server tick */
+    auto send_input = [&](const net::player_input_state& in) {
+        cli_input = in;
+        cli.update(gs_cli);
+        sim_tick(gs_cli);
+        cli.update(gs_cli);
+        srv.update(gs_srv);
+        sim_tick(gs_srv);
+    };
+
     SECTION("client sends input to the server") {
         srv.update(gs_srv);
         cli.update(gs_cli);
 
-        cli.send_input(net::player_input_state{.left = true});
+        send_input({.left = true});
         REQUIRE(gs_srv.players.contains("me"));
-        srv.update(gs_srv);
         CHECK(gs_srv.players.at("me")->is_walking());
+        /* ...and applies it locally as well */
+        CHECK(local->is_walking());
     }
 
     SECTION("server state is applied to remote and local players") {
@@ -745,8 +851,7 @@ TEST_CASE("net_client: join and state application") {
         cli.update(gs_cli);
 
         /* Hold the trigger on the client */
-        cli.send_input(net::player_input_state{.shot = true});
-        srv.update(gs_srv); /* apply shot to the server player */
+        send_input({.shot = true}); /* apply shot to the server player */
         CHECK(gs_srv.players.at("me")->net_controlled());
         CHECK(gs_srv.players.at("me")->shotting());
 
@@ -816,8 +921,7 @@ TEST_CASE("net_client: join and state application") {
         cli.update(gs_cli);
 
         /* Hold the trigger so the server spawns an authoritative bullet */
-        cli.send_input(net::player_input_state{.shot = true});
-        srv.update(gs_srv);
+        send_input({.shot = true});
 
         gs_srv.game_run(true);
 
