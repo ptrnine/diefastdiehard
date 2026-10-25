@@ -672,13 +672,14 @@ public:
         if (pos == _position_trace.end())
             return {};
 
+        /* Interpolate between the last sample older than now - latency_offset and the first newer one */
         if (pos != _position_trace.begin()) {
-            auto before = pos - 1;
-            auto dist_before = std::fabs(time_dur(now, before->first));
-            auto dist = std::fabs(time_dur(now, pos->first));
-            auto f = dist_before / (dist + dist_before);
+            auto before     = pos - 1;
+            auto age_before = time_dur(now, before->first);
+            auto age        = time_dur(now, pos->first);
+            auto f          = (age_before - latency_offset) / (age_before - age);
 
-            return lerp(before->second, pos->second, dist_before / f);
+            return lerp(before->second, pos->second, f);
         }
 
         return pos->second;

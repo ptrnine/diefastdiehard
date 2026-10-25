@@ -475,6 +475,34 @@ TEST_CASE("player: apply_input") {
     }
 }
 
+TEST_CASE("player: position_trace_lookup") {
+    using namespace std::chrono_literals;
+
+    game_state gs;
+    auto pl = gs.player_create("trace_test");
+    REQUIRE(pl != nullptr);
+
+    /* Samples at t0, t0+100ms, t0+200ms with x = 0, 100, 200 */
+    auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < 3; ++i) {
+        pl->position({float(i) * 100.f, 0.f});
+        pl->velocity({0.f, 0.f});
+        gs.sim.update_immediate(1.f / 60.f, t0 + i * 100ms); /* records a trace sample */
+    }
+
+    auto now = t0 + 200ms;
+
+    auto mid = pl->position_trace_lookup(now, 0.15f); /* t0+50ms: between the first two samples */
+    REQUIRE(mid);
+    CHECK(mid->x == Catch::Approx(50.f).margin(1.f));
+
+    auto late = pl->position_trace_lookup(now, 0.025f); /* t0+175ms */
+    REQUIRE(late);
+    CHECK(late->x == Catch::Approx(175.f).margin(1.f));
+
+    CHECK_FALSE(pl->position_trace_lookup(now, 0.f)); /* newer than every sample */
+}
+
 TEST_CASE("net_server: handshake, rename and leave") {
     auto port = free_udp_port();
     game_state gs;
