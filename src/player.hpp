@@ -1,6 +1,7 @@
 #pragma once
 
 #include <deque>
+#include <functional>
 
 #include <SFML/Graphics/RenderWindow.hpp>
 #include <SFML/Graphics/Sprite.hpp>
@@ -21,6 +22,8 @@
 #include "net/net_protocol.hpp"
 
 namespace dfdh {
+
+class dropped_gun;
 
 class player {
 public:
@@ -118,6 +121,9 @@ public:
             else if (c == ks.shot) {
                 update_was = shot();
             }
+            else if (c == ks.drop) {
+                update_was = drop_gun() != nullptr;
+            }
             else if (c == ks.adjust_up) {
                 _long_shot_enabled = true;
             }
@@ -201,6 +207,62 @@ public:
         if (_pistol)
             return _pistol.pull_trigger(_tracer_color);
         return false;
+    }
+
+    /**
+     * Description of a gun to be dropped: it spawns at the same position,
+     * orientation and mirroring as the gun drawn in the player's hands.
+     * velocity is the starting x velocity ("drop_velocity" mirrored when the
+     * player faces left), angle_velocity rotates the sprite only
+     * ("drop_angle_velocity", also mirrored when the player faces left)
+     */
+    struct drop_gun_spec_t {
+        std::string section;
+        vec2f       position;
+        bool        on_left;
+        bool        long_shot;
+        int         group;
+        vec2f       velocity;
+        float       angle_velocity;
+    };
+
+    using drop_gun_fn_t = std::function<dropped_gun*(const drop_gun_spec_t&)>;
+
+    void set_drop_gun_cb(drop_gun_fn_t callback) {
+        _drop_gun_cb = std::move(callback);
+    }
+
+    /**
+     * Drop the currently held gun: a dropped gun spawns at the arm position
+     * and the gun disappears from the player's hands. Returns the spawned
+     * dropped gun, or nullptr if the player has no gun or no callback set
+     */
+    dropped_gun* drop_gun() {
+        if (!_pistol || !_drop_gun_cb)
+            return nullptr;
+
+        auto pos       = collision_box()->get_position();
+        auto arm_pos_f = _pistol.arm_position_factors(_on_left, _bobbing);
+        pos += vec2f(_size.x * arm_pos_f.x, _size.y * arm_pos_f.y);
+
+        auto* wpn = _pistol.get_weapon();
+        auto lf   = _on_left ? -1.f : 1.f;
+
+        auto* gun = _drop_gun_cb(drop_gun_spec_t{
+            _pistol_section,
+            pos,
+            _on_left,
+            _long_shot_enabled,
+            _group,
+            vec2f{wpn->drop_velocity() * lf, 0.f},
+            wpn->drop_angle_velocity() * lf});
+
+        if (gun) {
+            _pistol          = {};
+            _pistol_section.clear();
+        }
+
+        return gun;
     }
 
     bool relax() {
@@ -822,6 +884,8 @@ private:
     bool                 _step_sound_active = false;
     std::optional<float> _fall_velocity;
     sf::Clock _step_sound_timer;
+
+    drop_gun_fn_t _drop_gun_cb;
 
 public:
     u64 last_state_packet_id = 0;

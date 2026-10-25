@@ -14,7 +14,7 @@
 namespace dfdh {
 
 struct user_data_type {
-    enum : u64 { player = 0xdeadf00d, adjustment_box = 0xdeaddead, bullet = 0xdeadbeef, crate = 0xdeadc47e };
+    enum : u64 { player = 0xdeadf00d, adjustment_box = 0xdeaddead, bullet = 0xdeadbeef, crate = 0xdeadc47e, dropped_gun = 0xdead4742 };
 };
 
 class physic_group;

@@ -123,6 +123,11 @@ public:
         _shot_snd_path   = sect.value_or_default("shot_sound", "none"s);
         _mass            = sect.value_or_default("mass", 0.5f);
 
+        /* Dropped gun parameters */
+        _dropped_bb          = sect.value_or_default<vec2f>("dropped_bb", _size);
+        _drop_velocity       = sect.value_or_default("drop_velocity", 0.f);
+        _drop_angle_velocity = sect.value_or_default("drop_angle_velocity", 0.f);
+
         if (_eject_shell) {
             _shell_pos   = sect.value<vec2f>("shell_pos");
             _shell_dir   = normalize(sect.get<vec2f>("shell_dir").value());
@@ -278,6 +283,10 @@ private:
     sf::Sprite _shell_sprite;
     float      _mass;
 
+    vec2f _dropped_bb;
+    float _drop_velocity       = 0.f;
+    float _drop_angle_velocity = 0.f;
+
     std::string _shot_snd_path;
 
     weapon_class _wpn_class;
@@ -362,6 +371,26 @@ public:
     [[nodiscard]]
     float long_shot_angle() const {
         return _long_shot_angle;
+    }
+
+    [[nodiscard]]
+    const vec2f& dropped_bb() const {
+        return _dropped_bb;
+    }
+
+    [[nodiscard]]
+    float drop_velocity() const {
+        return _drop_velocity;
+    }
+
+    [[nodiscard]]
+    float drop_angle_velocity() const {
+        return _drop_angle_velocity;
+    }
+
+    [[nodiscard]]
+    float mass() const {
+        return _mass;
     }
 };
 

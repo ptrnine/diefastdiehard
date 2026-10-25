@@ -49,6 +49,7 @@ struct player_controller {
         shot      = key_str_map().to_key(sect.value_or_default_and_set("key_shot", "Comma"s));
         adjust_up = key_str_map().to_key(sect.value_or_default_and_set("key_adjust_up", "M"s));
         grenade   = key_str_map().to_key(sect.value_or_default_and_set("key_grenade", "Period"s));
+        drop      = key_str_map().to_key(sect.value_or_default_and_set("key_drop", "G"s));
     }
 
     /*
@@ -76,7 +77,7 @@ struct player_controller {
 
     virtual ~player_controller() = default;
 
-    int up, down, left, right, shot, adjust_up, grenade;
+    int up, down, left, right, shot, adjust_up, grenade, drop;
     u32 _id;
     player_name_t player_name;
 };

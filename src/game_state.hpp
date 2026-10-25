@@ -14,6 +14,7 @@
 #include "level.hpp"
 #include "ai.hpp"
 #include "crate.hpp"
+#include "dropped_gun.hpp"
 
 namespace dfdh {
 
@@ -23,6 +24,7 @@ public:
         blt_mgr("blt_mgr", sim, player_hit_callback),
         kick_mgr("kick_mgr", sim, player_hit_callback),
         conf_watcher(&cfg::mutable_global()),
+        dropped_guns(sim, players),
         gravity_for_bullets(bullet_gravity_enabled) {
         sim.add_update_callback("player", [this](const physic_simulation& sim, float timestep) {
             for (auto& [_, p] : players)
@@ -62,6 +64,11 @@ public:
 
         auto player = player::create(player_name, sim, player::default_size());
         player->set_from_config();
+        player->set_drop_gun_cb([this](const player::drop_gun_spec_t& spec) {
+            return dropped_guns.spawn(spec.section, spec.position, spec.on_left,
+                                      spec.long_shot, spec.group, spec.velocity,
+                                      spec.angle_velocity);
+        });
         auto [it, _] = players.emplace(player_name, player);
         player_spawn(it->second.get());
         return it->second.get();
@@ -334,6 +341,8 @@ public:
         for (auto& crate_ : crates)
             crate_->draw(wnd, sim.interpolation_factor(), sim.last_timestep());
 
+        dropped_guns.draw(wnd, sim.interpolation_factor(), sim.last_timestep());
+
         blt_mgr.draw(wnd, sim.interpolation_factor(), sim.last_timestep());
 
         if (debug_physics) {
@@ -415,6 +424,9 @@ public:
             reload_section(section_name);
 
         if (on_game) {
+            if (cur_level)
+                dropped_guns.set_level_size(cur_level->level_size());
+
             sim.update(60, game_speed);
 
             cur_frame_bullets.clear();
@@ -679,6 +691,7 @@ public:
     std::unique_ptr<player_configurator_ui>               pconf_ui;
     std::optional<cfg_value_control>                      cfgval_ctrl;
     cfg_watcher                                           conf_watcher;
+    dropped_gun_mgr                                       dropped_guns;
 
     std::vector<std::unique_ptr<crate>> crates;
     sf::Clock crate_timer;
