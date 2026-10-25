@@ -257,7 +257,10 @@ public:
                                                  .long_shot      = _long_shot_enabled,
                                                  .group          = _group,
                                                  .velocity       = start_velocity,
-                                                 .angle_velocity = wpn->drop_angle_velocity() * lf});
+                                                 /* angle_velocity is passed unmirrored: weapon::draw inverts the
+                                                  * angle (and flips the x scale) when on_left, which is exactly
+                                                  * the mirror of the right-facing rotation */
+                                                 .angle_velocity = wpn->drop_angle_velocity()});
 
         if (gun) {
             _pistol = {};
