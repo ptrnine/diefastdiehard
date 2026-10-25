@@ -48,6 +48,10 @@ public:
         auto bg = sect.try_get<float>("bullet_gravity");
         _bullet_gravity = bg ? std::optional<float>(bg->value()) : std::nullopt;
 
+        /* Optional crate drop cooldown period (seconds); key absent or 0 means crates never drop */
+        auto cpd = sect.try_get<float>("crate_drop_period");
+        _crate_drop_period = (cpd && cpd->value() > 0.f) ? std::optional<float>(cpd->value()) : std::nullopt;
+
         _player_spawn_points.clear();
         u32 sp = 0;
         while (auto sp_data = sect.try_get<vec2f>("player_spawn_point" + std::to_string(sp))) {
@@ -169,6 +173,7 @@ private:
     vec2f _level_size;
     vec2f _gravity;
     std::optional<float> _bullet_gravity;
+    std::optional<float> _crate_drop_period;
     std::vector<vec2f> _player_spawn_points;
 
     std::vector<platform_t> _platforms;
@@ -179,6 +184,12 @@ public:
     [[nodiscard]]
     const std::optional<float>& bullet_gravity() const {
         return _bullet_gravity;
+    }
+
+    /* Crate drop cooldown period in seconds; nullopt means crates never drop */
+    [[nodiscard]]
+    const std::optional<float>& crate_drop_period() const {
+        return _crate_drop_period;
     }
 
     [[nodiscard]]

@@ -157,6 +157,7 @@ public:
             } else {
                 cur_level.reset();
                 crates.clear();
+                crate_timer.restart();
                 apply_cur_level_bullet_gravity();
                 glog().info("current level has been reseted");
             }
@@ -174,6 +175,7 @@ public:
             cur_level->setup_to(sim);
             apply_cur_level_bullet_gravity();
             crates.clear();
+            crate_timer.restart();
             sig_level_changed.emit_deferred(level_name);
 
             glog().info("level {} was loaded", level_name);
@@ -186,6 +188,7 @@ public:
         cur_level->setup_to(sim);
         apply_cur_level_bullet_gravity();
         crates.clear();
+        crate_timer.restart();
         sig_level_changed.emit_deferred(level_name);
 
         glog().info("level {} was loaded", level_name);
@@ -308,6 +311,7 @@ public:
                         cur_level->setup_to(sim);
                         apply_cur_level_bullet_gravity();
                         crates.clear();
+                        crate_timer.restart();
                         sig_level_changed.emit_deferred(section_name);
                     }
                 }
@@ -454,8 +458,7 @@ public:
 
     /* Crates */
 
-    static constexpr float crate_spawn_interval = 15.f; /* seconds between crate drops */
-    static constexpr float crate_spawn_height   = 200.f; /* above the most top platform */
+    static constexpr float crate_spawn_height = 200.f; /* above the most top platform */
 
     void crates_clear() {
         crates.clear();
@@ -480,9 +483,12 @@ public:
         if (crates_networked)
             return;
 
-        if (crate_timer.getElapsedTime().asSeconds() >= crate_spawn_interval) {
-            crates_spawn();
-            crate_timer.restart();
+        /* Drop period is defined by the level; no period means crates never drop */
+        if (auto period = cur_level->crate_drop_period()) {
+            if (crate_timer.getElapsedTime().asSeconds() >= *period) {
+                crates_spawn();
+                crate_timer.restart();
+            }
         }
 
         for (auto& c : crates)
