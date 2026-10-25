@@ -313,7 +313,15 @@ private:
         }
 
         net_cli->sig_joined.attach_function("mp_joined", [this](const player_name_t& pname) {
-            auto pl = gs.player_create(pname);
+            /*
+             * The first server state broadcast may be processed before this
+             * deferred WELCOME handler runs (datagrams can be reordered, e.g.
+             * under DFDH_DEBUG_PING), in which case handle_state has already
+             * created the local player: reuse it instead of failing
+             */
+            auto found = gs.players.find(pname);
+            player* pl = found != gs.players.end() ? found->second.get()
+                                                   : gs.player_create(pname);
             if (!pl)
                 return;
 
