@@ -176,40 +176,29 @@ public:
             return true;
         }
 
-        auto found_lvl = levels.find(level_name);
-        if (found_lvl != levels.end()) {
-            cur_level = found_lvl->second;
-            cur_level->setup_to(sim);
-            apply_cur_level_bullet_gravity();
-            crates.clear();
-            crate_timer.restart();
-            sig_level_changed.emit_deferred(level_name);
-
-            glog().info("level {} was loaded", level_name);
-            return true;
-        }
-        else if (!level_cache(level_name))
-                return false;
+        if (!levels.contains(level_name) && !level_cache(level_name))
+            return false;
 
         cur_level = levels.at(level_name);
-        cur_level->setup_to(sim);
-        apply_cur_level_bullet_gravity();
-        crates.clear();
-        crate_timer.restart();
-        sig_level_changed.emit_deferred(level_name);
+        level_setup(level_name);
 
         glog().info("level {} was loaded", level_name);
         return true;
     }
 
+    /* Apply the current level to the simulation and restart the level-scoped state */
+    void level_setup(const std::string& level_name) {
+        cur_level->setup_to(sim);
+        apply_cur_level_bullet_gravity();
+        crates.clear();
+        crate_timer.restart();
+        sig_level_changed.emit_deferred(level_name);
+    }
+
     /* Bullet gravity is defined by the current level: on if the level section
      * contains a bullet_gravity key, off otherwise */
     void apply_cur_level_bullet_gravity() {
-        if (!cur_level) {
-            gravity_for_bullets = false;
-            return;
-        }
-        gravity_for_bullets = cur_level->bullet_gravity().has_value();
+        gravity_for_bullets = cur_level && cur_level->bullet_gravity().has_value();
     }
 
     bool level_cache(const std::string& level_name) {
@@ -218,7 +207,7 @@ public:
             if (was_insert)
                 glog().info("level {} was cached", level_name);
             else
-                glog().info("level {} already cached");
+                glog().info("level {} already cached", level_name);
             return true;
         }
         catch (const std::exception& e) {
@@ -314,13 +303,8 @@ public:
                 auto found_lvl = levels.find(section_name);
                 if (found_lvl != levels.end()) {
                     found_lvl->second->cfg_reload();
-                    if (cur_level == found_lvl->second) {
-                        cur_level->setup_to(sim);
-                        apply_cur_level_bullet_gravity();
-                        crates.clear();
-                        crate_timer.restart();
-                        sig_level_changed.emit_deferred(section_name);
-                    }
+                    if (cur_level == found_lvl->second)
+                        level_setup(section_name);
                 }
             }
         }
@@ -350,9 +334,7 @@ public:
                 for (auto p : group_tree_view(e.get())) {
                     sf::RectangleShape s;
                     s.setPosition(p->bb().getPosition());
-                    s.setSize(p->bb().getSize());
-                    if (s.getSize().y < 2.f)
-                        s.setSize({s.getSize().x, 2.f});
+                    s.setSize({p->bb().width, std::max(p->bb().height, 2.f)});
                     s.setFillColor(sf::Color(0, 255, 0));
                     wnd.draw(s);
                 }
@@ -384,11 +366,6 @@ public:
             pconf_ui->update(ui);
     }
 
-    struct bullet_data_t {
-        vec2f position;
-        vec2f velocity;
-    };
-
     /**
      * Bullets spawned during the last game_update() frame,
      * collected for the server to broadcast to clients
@@ -404,18 +381,19 @@ public:
 
     std::vector<bullet_event_t> cur_frame_bullets;
 
+    /* Records every bullet spawned by a player into cur_frame_bullets */
     struct bullet_spawn_callback {
-        void operator()(const vec2f& position, const vec2f& velocity, float imass) {
-            *mass = imass;
-            bullets->push_back(bullet_data_t{position, velocity});
+        void operator()(const vec2f& position, const vec2f& velocity, float mass) {
+            events->push_back(bullet_event_t{pl->name(), position, velocity, mass, pl->tracer_color(), gravity});
         }
 
         constexpr operator bool() const {
             return true;
         }
 
-        std::vector<bullet_data_t>* bullets;
-        float* mass;
+        std::vector<bullet_event_t>* events;
+        const player*                pl;
+        bool                         gravity;
     };
 
     void game_update() {
@@ -432,19 +410,15 @@ public:
             cur_frame_bullets.clear();
 
             for (auto& [_, pl] : players) {
-                if (controlled_players.contains(pl->name()) || ai_operators.contains(pl->name()) || pl->net_controlled()) {
-                    std::vector<bullet_data_t> bullets;
-                    float                      mass = 0.f;
-                    pl->game_update(
-                        sim, blt_mgr, cam_pos, gravity_for_bullets, pl->spawn_bullets_enabled(), bullet_spawn_callback{&bullets, &mass});
-
-                    for (auto& bd : bullets)
-                        cur_frame_bullets.push_back(bullet_event_t{pl->name(), bd.position, bd.velocity, mass, pl->tracer_color(),
-                                                                  gravity_for_bullets});
-                }
-                else {
+                if (controlled_players.contains(pl->name()) || ai_operators.contains(pl->name()) || pl->net_controlled())
+                    pl->game_update(sim,
+                                    blt_mgr,
+                                    cam_pos,
+                                    gravity_for_bullets,
+                                    pl->spawn_bullets_enabled(),
+                                    bullet_spawn_callback{&cur_frame_bullets, pl.get(), gravity_for_bullets});
+                else
                     pl->game_update(sim, blt_mgr, cam_pos, gravity_for_bullets, false, {});
-                }
 
                 if (pl->collision_box()->get_position().y > 2100.f)
                     player_on_dead(pl.get());
@@ -508,11 +482,7 @@ public:
 
         /* Pick up: the first player overlapping a crate takes it */
         for (auto& [_, pl] : players) {
-            auto pbb = [](player* p) {
-                auto pos = p->get_position();
-                auto sz  = p->get_size();
-                return sf::FloatRect(pos.x, pos.y - sz.y, sz.x, sz.y);
-            }(pl.get());
+            auto pbb = pl->bb();
 
             for (auto it = crates.begin(); it != crates.end();) {
                 /* Net-synced crates are picked up on the server */
@@ -623,6 +593,8 @@ public:
 
         ai_mgr().provide_players(players, [gy = sim.gravity().y](const std::shared_ptr<player>& pl) {
             auto& gun = pl->get_gun();
+            auto* wpn = gun.get_weapon();
+            auto  dir = vec2f(pl->get_on_left() ? -1.f : 1.f, 0.f);
 
             return ai_player_t{pl->get_position(),
                                pl->collision_box()->get_direction(),
@@ -637,19 +609,18 @@ public:
                                pl->get_jump_speed(),
                                pl->calc_max_jump_y_dist(gy),
                                pl->get_max_speed(),
-                               gun ? gun.get_weapon()->get_dispersion() : 0.01f,
+                               wpn ? wpn->get_dispersion() : 0.01f,
                                pl->get_group(),
                                gun ? gun.get_bullet_vel() : 1500.f,
-                               gun ? gun.wpn()->hit_power() : 0.f,
-                               gun ? gun.get_weapon()->get_fire_rate() : 100.f,
-                               gun ? gun.get_weapon()->mag_size() : 1,
+                               wpn ? wpn->hit_power() : 0.f,
+                               wpn ? wpn->get_fire_rate() : 100.f,
+                               wpn ? wpn->mag_size() : 1,
                                gun ? gun.ammo_elapsed() : 1,
                                pl->get_on_left(),
                                pl->collision_box()->is_lock_y(),
                                pl->long_shot_enabled(),
                                pl->is_walking(),
-                               gun ? gun.wpn()->long_shot_dir(vec2f(pl->get_on_left() ? -1.f : 1.f, 0.f))
-                                   : vec2f(pl->get_on_left() ? -1.f : 1.f, 0.f)};
+                               wpn ? wpn->long_shot_dir(dir) : dir};
         });
 
         ai_mgr().provide_physic_sim(sim.gravity(), sim.last_speed(), sim.last_rps(), gravity_for_bullets,
