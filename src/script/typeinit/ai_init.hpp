@@ -65,11 +65,13 @@ inline void lua_ai_init(luacpp::luactx& ctx) {
         return res;
     });
 
+    ctx.annotate({.explicit_type = "number"});
     ctx.annotate({.explicit_type = "boolean"});
     ctx.annotate({.explicit_type = "vec2f"});
     ctx.annotate({.explicit_type = "integer"});
     ctx.annotate({.explicit_type = "number"});
     ctx.set_member_table(luacpp::member_table<ai_physic_sim_t>{
+        lua_getez(bullet_gravity),
         lua_getez(enable_gravity_for_bullets),
         lua_getez(gravity),
         lua_getez(last_rps),

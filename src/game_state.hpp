@@ -155,6 +155,7 @@ public:
             } else {
                 cur_level.reset();
                 crates.clear();
+                apply_cur_level_bullet_gravity();
                 glog().info("current level has been reseted");
             }
             return true;
@@ -169,6 +170,7 @@ public:
         if (found_lvl != levels.end()) {
             cur_level = found_lvl->second;
             cur_level->setup_to(sim);
+            apply_cur_level_bullet_gravity();
             crates.clear();
             sig_level_changed.emit_deferred(level_name);
 
@@ -180,11 +182,22 @@ public:
 
         cur_level = levels.at(level_name);
         cur_level->setup_to(sim);
+        apply_cur_level_bullet_gravity();
         crates.clear();
         sig_level_changed.emit_deferred(level_name);
 
         glog().info("level {} was loaded", level_name);
         return true;
+    }
+
+    /* Bullet gravity is defined by the current level: on if the level section
+     * contains a bullet_gravity key, off otherwise */
+    void apply_cur_level_bullet_gravity() {
+        if (!cur_level) {
+            gravity_for_bullets = false;
+            return;
+        }
+        gravity_for_bullets = cur_level->bullet_gravity().has_value();
     }
 
     bool level_cache(const std::string& level_name) {
@@ -290,6 +303,7 @@ public:
                     found_lvl->second->cfg_reload();
                     if (cur_level == found_lvl->second) {
                         cur_level->setup_to(sim);
+                        apply_cur_level_bullet_gravity();
                         crates.clear();
                         sig_level_changed.emit_deferred(section_name);
                     }
@@ -617,7 +631,8 @@ public:
                                    : vec2f(pl->get_on_left() ? -1.f : 1.f, 0.f)};
         });
 
-        ai_mgr().provide_physic_sim(sim.gravity(), sim.last_speed(), sim.last_rps(), gravity_for_bullets);
+        ai_mgr().provide_physic_sim(sim.gravity(), sim.last_speed(), sim.last_rps(), gravity_for_bullets,
+                                     sim.bullet_gravity().y);
     }
 
     void ai_provide_level_info() {

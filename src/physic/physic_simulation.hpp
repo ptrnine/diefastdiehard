@@ -218,7 +218,9 @@ public:
         /* Update velocity */
         for (auto& prim : _pointonly)
             if (prim->is_gravity_enabled())
-                prim->velocity(prim->get_velocity() + _gravity * timestep);
+                prim->velocity(
+                    prim->get_velocity() +
+                    (prim->get_user_data() == user_data_type::bullet ? _bullet_gravity : _gravity) * timestep);
         for (auto& prim : _lineonly)
             if (prim->is_gravity_enabled())
                 prim->velocity(prim->get_velocity() + _gravity * timestep);
@@ -391,6 +393,16 @@ public:
         return _gravity;
     }
 
+    /* Gravity applied to bullets with gravity enabled (see level bullet_gravity) */
+    [[nodiscard]]
+    const vec2f& bullet_gravity() const {
+        return _bullet_gravity;
+    }
+
+    void bullet_gravity(const vec2f& value) {
+        _bullet_gravity = value;
+    }
+
     [[nodiscard]]
     decltype(auto) platforms() const {
         return _platforms;
@@ -461,6 +473,7 @@ private:
     u32                                     _steps        = 20;
     float                                   _collide_dist = 0.001f;
     vec2f                                   _gravity      = {0.f, 0.f};
+    vec2f                                   _bullet_gravity = {0.f, 0.f};
     float                                   _last_timestep        = 1.f / 60.f;
     float                                   _prev_timestep        = 1.f / 60.f;
     u32                                     _last_rps             = 60;

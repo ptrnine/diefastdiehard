@@ -44,6 +44,10 @@ public:
         _view_size   = sect.value<vec2f>("view_size");
         _level_size  = sect.value<vec2f>("level_size");
 
+        /* Optional bullet gravity y value; key absent means bullet gravity is off */
+        auto bg = sect.try_get<float>("bullet_gravity");
+        _bullet_gravity = bg ? std::optional<float>(bg.value()) : std::nullopt;
+
         auto txtr_path              = fs::current_path() / "data/textures/" / _name;
         auto end_platform_txtr_path = txtr_path / "end_platform.png";
         auto platform_txtr_path     = txtr_path / "platform.png";
@@ -117,6 +121,7 @@ public:
 
     void setup_to(physic_simulation& sim) {
         sim.gravity(_gravity);
+        sim.bullet_gravity(_bullet_gravity ? vec2f{0.f, *_bullet_gravity} : vec2f{0.f, 0.f});
         sim.remove_all_platforms();
         for (auto& pl : _platforms)
             sim.add_platform(pl.ph);
@@ -156,12 +161,18 @@ private:
     vec2f _view_size;
     vec2f _level_size;
     vec2f _gravity;
+    std::optional<float> _bullet_gravity;
 
     std::vector<platform_t> _platforms;
 
     std::string _name;
 
 public:
+    [[nodiscard]]
+    const std::optional<float>& bullet_gravity() const {
+        return _bullet_gravity;
+    }
+
     [[nodiscard]]
     const vec2f& level_size() const {
         return _level_size;

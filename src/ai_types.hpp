@@ -40,6 +40,8 @@ struct ai_physic_sim_t {
     float time_speed;
     u32   last_rps;
     bool  enable_gravity_for_bullets;
+    /* y gravity value used for bullets, 0 when bullet gravity is off */
+    float bullet_gravity = 0.f;
 };
 
 struct ai_level_t {

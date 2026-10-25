@@ -166,13 +166,18 @@ public:
         }
     }
 
-    void provide_physic_sim(const vec2f& gravity, float time_speed, u32 last_rps, bool enable_gravity_for_bullets) {
+    void provide_physic_sim(const vec2f&  gravity,
+                            float         time_speed,
+                            u32           last_rps,
+                            bool          enable_gravity_for_bullets,
+                            float         bullet_gravity = 0.f) {
         std::lock_guard lock{mtx};
 
         _data.physic_sim.gravity                    = gravity;
         _data.physic_sim.time_speed                 = time_speed;
         _data.physic_sim.last_rps                   = last_rps;
         _data.physic_sim.enable_gravity_for_bullets = enable_gravity_for_bullets;
+        _data.physic_sim.bullet_gravity             = bullet_gravity;
     }
 
     void provide_level(const vec2f& level_size) {
