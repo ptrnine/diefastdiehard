@@ -107,22 +107,15 @@ public:
         _current_update_time = now;
         _last_timestep = timestep;
 
-        constexpr auto update_move =
-            [](auto& primitives, auto& i, float timestep) {
-                auto& prim = *i;
-                if (prim->ready_delete_later()) {
-                    primitives.erase(i++);
-                }
-                else {
-                    prim->update_bb(timestep);
-                    ++i;
-                }
-            };
+        auto update_move = [timestep](const std::shared_ptr<physic_point>& prim) {
+            if (prim->ready_delete_later())
+                return true;
+            prim->update_bb(timestep);
+            return false;
+        };
 
-        for (auto i = _pointonly.begin(); i != _pointonly.end();)
-            update_move(_pointonly, i, timestep);
-        for (auto i = _lineonly.begin(); i != _lineonly.end();)
-            update_move(_lineonly, i, timestep);
+        std::erase_if(_pointonly, update_move);
+        std::erase_if(_lineonly, update_move);
 
         std::set<std::pair<physic_point*, physic_point*>> collisions;
 
@@ -170,9 +163,10 @@ public:
                     auto p_l = p.get_position().x;
                     auto p_r = p.get_position().x + p.length();
 
+                    bool overlap_x = r > p_l && l < p_r;
+
                     if (low1 <= p.get_position().y && low2 >= p.get_position().y) {
-                        if ((r > p_l && l < p_r) ||
-                            (p_r > l && p_l < r)) {
+                        if (overlap_x) {
                             auto vel = prim->get_velocity();
                             vel.y = 0.f;
                             prim->velocity(vel);
@@ -187,16 +181,11 @@ public:
                                 c(prim);
                         }
                     }
-                    else if (prim->_lock_y &&
+                    else if (overlap_x && prim->_lock_y &&
                              essentially_equal(prim->get_position().y,
                                                 (p.get_position().y - y_diff) + 0.001f,
                                                 0.0001f)) {
-                        if (!((r > p_l && l < p_r) || (p_r > l && p_l < r))) {
-                            stay_on = stay_on || false;
-                        }
-                        else {
-                            stay_on = true;
-                        }
+                        stay_on = true;
                     }
                 }
 
@@ -233,10 +222,10 @@ public:
     }
 
     bool analyze(float timestep, physic_point* p1, physic_point* p2) {
-        physic_point* pnt1 = (dynamic_cast<physic_line*>(p1) == nullptr) ? p1 : nullptr;
-        physic_point* pnt2 = (dynamic_cast<physic_line*>(p2) == nullptr) ? p2 : nullptr;
-        auto* ln1 = dynamic_cast<physic_line*>(p1);
-        auto* ln2 = dynamic_cast<physic_line*>(p2);
+        auto*         ln1  = dynamic_cast<physic_line*>(p1);
+        auto*         ln2  = dynamic_cast<physic_line*>(p2);
+        physic_point* pnt1 = ln1 ? nullptr : p1;
+        physic_point* pnt2 = ln2 ? nullptr : p2;
 
         if (pnt2 && !pnt1) {
             pnt1 = pnt2;
