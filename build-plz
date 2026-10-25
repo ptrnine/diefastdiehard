@@ -416,7 +416,7 @@ EOF
     done
     echo "]" >> ./compile_commands.json
 
-    eval $(. /etc/os-release; echo local os_name="$NAME";)
+    eval $(. /etc/os-release; echo local os_name="\"$NAME\"";)
     [ "$os_name" = 'ALT' ] && altlinux_fix_compodb
 }
 
@@ -776,8 +776,8 @@ $([ "$asan" == true ] && asan_flags)
         "$builddir" \
         "$CXX_COMPILER" \
         "$debug" \
-        "$hardening_flags $define_flags" \
-        "-lnuklear -lsfml-system -lsfml-window -lsfml-graphics -lsfml-network -lsfml-audio -lpthread -lGL -lGLEW -lluajit-5.1 -lCatch2Main -lCatch2" \
+        "$hardening_flags $static_flags $define_flags" \
+        "$extra_link_path $static_libs -lCatch2Main -lCatch2" \
         "$(include_list \
             "system:$(pwd)/$builddir/submodules/luacpp/3rd/include/luajit-2.1" \
             "system:$(pwd)/$builddir/3rd/include" \
