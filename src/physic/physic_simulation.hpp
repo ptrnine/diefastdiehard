@@ -107,6 +107,9 @@ public:
         _current_update_time = now;
         _last_timestep = timestep;
 
+        for (auto& [_, c] : _tick_begin_callbacks)
+            c(*this, timestep);
+
         auto update_move = [timestep](const std::shared_ptr<physic_point>& prim) {
             if (prim->ready_delete_later())
                 return true;
@@ -144,75 +147,23 @@ public:
             }
         }
 
-        constexpr auto update_platform = [](physic_point* prim, float timestep,
-                                            auto& platforms_callbacks, auto& platforms) {
-            if (prim->allow_platform()) {
-                auto bb1 = prim->pos_bb().rect();
-                auto pos_y = prim->get_position().y;
-                prim->move(timestep);
-                auto bb2 = prim->pos_bb().rect();
-
-                auto low1 = bb1.top + bb1.height;
-                auto y_diff = low1 - pos_y;
-                auto low2 = bb2.top + bb2.height;
-                auto l = bb2.left;
-                auto r = l + bb2.width;
-                bool stay_on = false;
-
-                for (auto& p : platforms) {
-                    auto p_l = p.get_position().x;
-                    auto p_r = p.get_position().x + p.length();
-
-                    bool overlap_x = r > p_l && l < p_r;
-
-                    if (low1 <= p.get_position().y && low2 >= p.get_position().y) {
-                        if (overlap_x) {
-                            auto vel = prim->get_velocity();
-                            vel.y = 0.f;
-                            prim->velocity(vel);
-
-                            auto pos = prim->get_position();
-                            pos.y = (p.get_position().y - y_diff) + 0.001f;
-                            prim->position(pos);
-                            prim->_lock_y = true;
-                            stay_on = true;
-
-                            for (auto& [_, c] : platforms_callbacks)
-                                c(prim);
-                        }
-                    }
-                    else if (overlap_x && prim->_lock_y &&
-                             essentially_equal(prim->get_position().y,
-                                                (p.get_position().y - y_diff) + 0.001f,
-                                                0.0001f)) {
-                        stay_on = true;
-                    }
-                }
-
-                if (!stay_on)
-                    prim->_lock_y = false;
-            } else {
-                prim->move(timestep);
-            }
-        };
-
         for (auto& prim : _pointonly)
-            update_platform(prim.get(), timestep, _platforms_callbacks, _platforms);
+            move_with_platforms(prim.get(), timestep);
         for (auto& prim : _lineonly)
-            update_platform(prim.get(), timestep, _platforms_callbacks, _platforms);
+            move_with_platforms(prim.get(), timestep);
 
         for (auto& [_, c] : _update_callbacks)
             c(*this, timestep);
 
         /* Update velocity */
         for (auto& prim : _pointonly)
-            if (prim->is_gravity_enabled())
-                prim->velocity(
-                    prim->get_velocity() +
-                    (prim->get_user_data() == user_data_type::bullet ? _bullet_gravity : _gravity) * timestep);
+            apply_gravity(prim.get(), timestep);
         for (auto& prim : _lineonly)
-            if (prim->is_gravity_enabled())
-                prim->velocity(prim->get_velocity() + _gravity * timestep);
+            apply_gravity(prim.get(), timestep);
+
+        ++_tick;
+        for (auto& [_, c] : _tick_end_callbacks)
+            c(*this, timestep);
 
         _prev_timestep = _last_timestep;
     }
@@ -366,6 +317,44 @@ public:
         return _platforms_callbacks.erase(name) > 0;
     }
 
+    /* Called at the beginning of every simulation tick, before any movement */
+    template <typename F>
+    void add_tick_begin_callback(const std::string& name, F&& callback) {
+        _tick_begin_callbacks[name] = std::function{callback};
+    }
+
+    bool remove_tick_begin_callback(const std::string& name) {
+        return _tick_begin_callbacks.erase(name) > 0;
+    }
+
+    /* Called at the end of every simulation tick (tick() is already incremented) */
+    template <typename F>
+    void add_tick_end_callback(const std::string& name, F&& callback) {
+        _tick_end_callbacks[name] = std::function{callback};
+    }
+
+    bool remove_tick_end_callback(const std::string& name) {
+        return _tick_end_callbacks.erase(name) > 0;
+    }
+
+    /**
+     * Step a single primitive in isolation: platform movement, on_update(timestep)
+     * in place of the update callbacks, then gravity. Same order as a regular tick,
+     * without collisions or other primitives (used to re-simulate a predicted player)
+     */
+    template <typename F>
+    void step_isolated(physic_point* prim, float timestep, F&& on_update) {
+        move_with_platforms(prim, timestep);
+        on_update(timestep);
+        apply_gravity(prim, timestep);
+    }
+
+    /* Number of simulated ticks */
+    [[nodiscard]]
+    u64 tick() const {
+        return _tick;
+    }
+
 
     [[nodiscard]]
     decltype(auto) line_primitives() const {
@@ -433,6 +422,64 @@ public:
     }
 
 private:
+    void move_with_platforms(physic_point* prim, float timestep) {
+        if (prim->allow_platform()) {
+            auto bb1 = prim->pos_bb().rect();
+            auto pos_y = prim->get_position().y;
+            prim->move(timestep);
+            auto bb2 = prim->pos_bb().rect();
+
+            auto low1 = bb1.top + bb1.height;
+            auto y_diff = low1 - pos_y;
+            auto low2 = bb2.top + bb2.height;
+            auto l = bb2.left;
+            auto r = l + bb2.width;
+            bool stay_on = false;
+
+            for (auto& p : _platforms) {
+                auto p_l = p.get_position().x;
+                auto p_r = p.get_position().x + p.length();
+
+                bool overlap_x = r > p_l && l < p_r;
+
+                if (low1 <= p.get_position().y && low2 >= p.get_position().y) {
+                    if (overlap_x) {
+                        auto vel = prim->get_velocity();
+                        vel.y = 0.f;
+                        prim->velocity(vel);
+
+                        auto pos = prim->get_position();
+                        pos.y = (p.get_position().y - y_diff) + 0.001f;
+                        prim->position(pos);
+                        prim->_lock_y = true;
+                        stay_on = true;
+
+                        for (auto& [_, c] : _platforms_callbacks)
+                            c(prim);
+                    }
+                }
+                else if (overlap_x && prim->_lock_y &&
+                         essentially_equal(prim->get_position().y,
+                                            (p.get_position().y - y_diff) + 0.001f,
+                                            0.0001f)) {
+                    stay_on = true;
+                }
+            }
+
+            if (!stay_on)
+                prim->_lock_y = false;
+        } else {
+            prim->move(timestep);
+        }
+    }
+
+    void apply_gravity(physic_point* prim, float timestep) const {
+        if (!prim->is_gravity_enabled())
+            return;
+        auto& g = !prim->line_only() && prim->get_user_data() == user_data_type::bullet ? _bullet_gravity : _gravity;
+        prim->velocity(prim->get_velocity() + g * timestep);
+    }
+
     template <CollideCallbackArg T1, CollideCallbackArg T2>
     void add_collide_callback_internal(const std::string&                            name,
                                        std::function<void(T1, T2, collision_result)> callback) {
@@ -480,6 +527,9 @@ private:
     std::map<std::string, collide_callback_generic_t> _collide_callbacks;
     std::map<std::string, std::function<void(const physic_simulation&, float)>> _update_callbacks;
     std::map<std::string, std::function<void(physic_point*)>> _platforms_callbacks;
+    std::map<std::string, std::function<void(const physic_simulation&, float)>> _tick_begin_callbacks;
+    std::map<std::string, std::function<void(const physic_simulation&, float)>> _tick_end_callbacks;
+    u64 _tick = 0;
 };
 
 }
