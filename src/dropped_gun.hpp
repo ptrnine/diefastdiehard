@@ -16,7 +16,7 @@ namespace dfdh {
  *
  * It has a physical bounding box (weapon config "dropped_bb") that can
  * collide with players only (never with players from the owner's group),
- * is affected by the same gravity as players and can rest on platforms.
+ * is affected by the same gravity as players and passes through platforms.
  * On collision it transfers its momentum to the player (impulse = mass *
  * velocity), bounces off losing double of its velocity, and is deleted
  * once it flies far enough out of the level's bounding box.
@@ -65,7 +65,6 @@ public:
         _box->position(position);
         _box->velocity(velocity);
         _box->enable_gravity();
-        _box->allow_platform(true);
         _box->user_data(user_data_type::dropped_gun);
 
         sim.add_primitive(_box);
