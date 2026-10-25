@@ -42,7 +42,7 @@ client A                          server                         client B
 | 1   | C → S      | HELLO: player name, pistol section, face_id, body_id, body color, tracer color |
 | 2   | S → C      | WELCOME: player name |
 | 3   | C → S      | INPUT: `u16 seq`, `u16 bits` (see below) |
-| 4   | S → C      | STATE: `u16 tick`, per player: name, pistol, face_id, body_id, body color, tracer color, pos.xy, vel.xy, jumps_left, on_left, shooting; then the bullets spawned this frame by any server player (owner, pos.xy, vel.xy, hit_mass, tracer color, gravity); then the crates (id, pos.xy, vel.xy, landed) — crates are server-authoritative, the client renders them as ghosts driven by the broadcast (pickup happens on the server, the weapon arrives via the player's pistol in the state snapshot) |
+| 4   | S → C      | STATE: `u16 tick`, per player: name, pistol, face_id, body_id, body color, tracer color, pos.xy, vel.xy, jumps_left, on_left, shooting; then the bullets spawned this frame by any server player (owner, pos.xy, vel.xy, hit_mass, tracer color, gravity); then the crates (id, pos.xy, vel.xy, landed) — crates are server-authoritative, the client renders them as ghosts driven by the broadcast (pickup happens on the server, the weapon arrives via the player's pistol in the state snapshot); then the dropped guns (id, section, pos.xy, vel.xy, angle, on_left, long_shot); then, appended at the end so old clients still parse the message: the spawn bullet ids (parallel to the bullet list) and the full set of bullet ids currently alive on the server |
 | 5   | C → S      | LEAVE: player name |
 | 6   | S → C      | ERROR: message string (join failed, etc.) |
 
@@ -239,6 +239,17 @@ Implemented and verified (steps 1–6):
   `bullet_mgr` and disables local bullet spawning
   (`player::set_spawn_bullets(false)`) for every server-known player, so
   no side ever double-spawns a bullet.
+* **Client bullet removal**: the server assigns every spawned bullet a
+  unique id (stored on the bullet itself) and appends to the `state`
+  broadcast both the ids of the bullets spawned this frame (parallel to
+  the bullet list) and the set of all bullet ids currently alive. The
+  client tags the bullets it spawns from the broadcast with their ids and,
+  on every state, drops any of its tracked bullets that the server no
+  longer lists as alive. This removes the artifact where a bullet that hit
+  a player on the server kept flying on a client whose local simulation
+  diverged slightly and didn't register the hit. Old servers (no id
+  section) are still handled by the existing layout fallback — bullets
+  just keep the old fire-and-forget behavior.
 * **Remote pistol animation**: `state_player` carries a `shooting` flag
   (trigger held). The client calls `shot()`/`relax()` on remote players so
   muzzle flash, recoil and sounds play locally; the actual bullets still

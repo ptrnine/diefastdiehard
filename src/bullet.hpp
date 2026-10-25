@@ -1,6 +1,7 @@
 #pragma once
 
 #include <SFML/Graphics/RenderWindow.hpp>
+#include <algorithm>
 #include <filesystem>
 #include <list>
 #include <SFML/Graphics/Sprite.hpp>
@@ -122,10 +123,26 @@ public:
         return _color;
     }
 
+    /*
+     * Unique network id assigned by the server to the bullets it spawns;
+     * the client stores it on the bullet it created from the broadcast so
+     * it can drop the bullet when the server no longer lists it as alive.
+     * 0 = not network-synced
+     */
+    void net_id(u32 id) {
+        _net_id = id;
+    }
+
+    [[nodiscard]]
+    u32 net_id() const {
+        return _net_id;
+    }
+
 private:
     std::shared_ptr<physic_point> _ph;
     sf::Color _color;
     int _group;
+    u32 _net_id = 0;
 };
 
 class bullet_mgr {
@@ -179,42 +196,71 @@ public:
         */
     }
 
-    void draw(sf::RenderWindow& wnd, float interpolation_factor, float timestep) {
-        for (auto i = _bullets.begin(); i != _bullets.end();) {
-            if (i->physic()->ready_delete_later()) {
-                _bullets.erase(i++);
+    /* Remove bullets flagged with delete_later (the draw loop does this every frame) */
+    void remove_dead() {
+        for (auto it = _bullets.begin(); it != _bullets.end();) {
+            if (it->physic()->ready_delete_later())
+                it = _bullets.erase(it);
+            else
+                ++it;
+        }
+    }
+
+    /**
+     * Remove network-synced bullets (net_id != 0) whose id is not in
+     * keep_ids. The client uses this to drop bullets the server already
+     * removed (e.g. they hit a player whose local position diverged)
+     */
+    void remove_not_in(const std::vector<u32>& keep_ids) {
+        for (auto it = _bullets.begin(); it != _bullets.end();) {
+            if (it->net_id() != 0 &&
+                std::find(keep_ids.begin(), keep_ids.end(), it->net_id()) == keep_ids.end()) {
+                it->physic()->delete_later();
+                it = _bullets.erase(it);
                 continue;
             }
 
-            if (i->physic()->get_distance() > 5000.f)
-                i->physic()->delete_later();
+            ++it;
+        }
+    }
 
-            auto pos = i->physic()->get_position();
-            auto next_pos = pos + i->physic()->get_velocity() * timestep;
+    void draw(sf::RenderWindow& wnd, float interpolation_factor, float timestep) {
+        remove_dead();
+
+        for (auto& b : _bullets) {
+            auto& ph = b.physic();
+            if (ph->get_distance() > 5000.f)
+                ph->delete_later();
+
+            auto pos = ph->get_position();
+            auto next_pos = pos + ph->get_velocity() * timestep;
             pos = lerp(pos, next_pos, interpolation_factor);
 
-            auto dir = i->physic()->get_direction();
+            auto dir = ph->get_direction();
             auto angle = std::atan2(dir.y, dir.x);
 
-            auto x_sz = std::min(i->physic()->get_distance(), bullet_sprite_cache::bullet_x_max);
+            auto x_sz = std::min(ph->get_distance(), bullet_sprite_cache::bullet_x_max);
             auto xf   = lerp(0.f,
                            x_sz / bullet_sprite_cache::bullet_x_max,
-                           std::clamp(i->physic()->scalar_velocity() / 2100.f, 0.f, 1.f)) *
+                           std::clamp(ph->scalar_velocity() / 2100.f, 0.f, 1.f)) *
                       bullet_sprite().scale_f().x;
-            auto yf = std::pow(i->physic()->get_mass(), 0.4f) * bullet_sprite().scale_f().y;
+            auto yf = std::pow(ph->get_mass(), 0.4f) * bullet_sprite().scale_f().y;
 
-            auto& blt_sprite = bullet_sprite().sprite(i->color());
+            auto& blt_sprite = bullet_sprite().sprite(b.color());
             blt_sprite.setScale(xf, yf);
             blt_sprite.setPosition(pos);
             blt_sprite.setRotation(angle * 180.f / M_PIf32);
             wnd.draw(blt_sprite);
-
-            ++i;
         }
     }
 
     [[nodiscard]]
     const std::list<bullet>& bullets() const {
+        return _bullets;
+    }
+
+    [[nodiscard]]
+    std::list<bullet>& bullets() {
         return _bullets;
     }
 

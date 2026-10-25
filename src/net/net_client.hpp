@@ -140,7 +140,8 @@ private:
 
     void handle_state(game_state& gs, const net_msg& msg) {
         state st;
-        if (!try_read_msg(msg.payload, st)) {
+        bool bullet_ids = try_read_msg(msg.payload, st);
+        if (!bullet_ids) {
             /* Older server without gun sync: guns are appended last, so a
              * full read fails and the crates layout is tried instead */
             state_v1 v1;
@@ -205,13 +206,26 @@ private:
         }
 
         /* Spawn the server-side bullets in the local simulation */
-        for (auto& b : st.bullets)
-            gs.blt_mgr.shot(gs.sim,
-                            {b.pos_x, b.pos_y},
-                            b.hit_mass,
-                            {b.vel_x, b.vel_y},
-                            unpack_color(b.tracer_color),
-                            b.gravity);
+        for (size_t i = 0; i < st.bullets.size(); ++i) {
+            auto& b   = st.bullets[i];
+            auto& blt = gs.blt_mgr.shot(gs.sim,
+                                        {b.pos_x, b.pos_y},
+                                        b.hit_mass,
+                                        {b.vel_x, b.vel_y},
+                                        unpack_color(b.tracer_color),
+                                        b.gravity);
+
+            if (bullet_ids && i < st.spawn_bullet_ids.size())
+                blt.net_id(st.spawn_bullet_ids[i]);
+        }
+
+        /*
+         * Drop local bullets the server no longer lists as alive: they hit
+         * something on the server but may have missed locally because the
+         * local simulation diverged slightly
+         */
+        if (bullet_ids)
+            gs.blt_mgr.remove_not_in(st.alive_bullet_ids);
 
         /* Sync server crates: create ghost crates for new ids, drive their
          * position/velocity, remove crates picked up (or gone) on the server */

@@ -109,6 +109,44 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(r.bullets[0].tracer_color == 0xFF00FF00);
     }
 
+    SECTION("state with bullet ids") {
+        state st;
+        st.tick = 5;
+        st.bullets.push_back(bullet_info{.owner = "p1", .pos_x = 1.f, .pos_y = 2.f,
+                                         .vel_x = 100.f, .vel_y = 0.f, .hit_mass = 1.f,
+                                         .tracer_color = 0x11223344});
+        st.spawn_bullet_ids.push_back(1);
+        st.alive_bullet_ids.push_back(1);
+        st.alive_bullet_ids.push_back(2);
+
+        auto data = encode_msg(msg_type::state, st);
+        auto msg  = decode_msg({data.data(), data.size()});
+        auto r    = read_msg<state>(msg.payload);
+        CHECK(r.tick == 5);
+        REQUIRE(r.bullets.size() == 1);
+        REQUIRE(r.spawn_bullet_ids.size() == 1);
+        CHECK(r.spawn_bullet_ids[0] == 1);
+        REQUIRE(r.alive_bullet_ids.size() == 2);
+        CHECK(r.alive_bullet_ids[1] == 2);
+
+        /* old client (v1 layout) reads a new payload: trailing ids are ignored */
+        state_v1 old_read;
+        CHECK(try_read_msg(msg.payload, old_read));
+        CHECK(old_read.tick == 5);
+        CHECK(old_read.bullets.size() == 1);
+
+        /* new client against an old server: full read fails, v1 fallback works */
+        state_v1 v1;
+        v1.tick = 6;
+        auto v1_data = encode_msg(msg_type::state, v1);
+        auto v1_msg  = decode_msg({v1_data.data(), v1_data.size()});
+        state full;
+        CHECK_FALSE(try_read_msg(v1_msg.payload, full));
+        state_v1 v1_back;
+        CHECK(try_read_msg(v1_msg.payload, v1_back));
+        CHECK(v1_back.tick == 6);
+    }
+
     SECTION("leave") {
         auto data = encode_msg(msg_type::leave, leave{"p1"});
         auto msg  = decode_msg({data.data(), data.size()});
@@ -686,6 +724,49 @@ TEST_CASE("net_client: join and state application") {
         REQUIRE(gs_cli.players.contains("hostp"));
         CHECK(!gs_cli.players.at("hostp")->spawn_bullets_enabled());
         CHECK(!gs_cli.blt_mgr.bullets().empty());
+    }
+
+    SECTION("client drops bullets the server already removed") {
+        srv.update(gs_srv); /* welcome */
+        cli.update(gs_cli);
+
+        /* Hold the trigger so the server spawns an authoritative bullet */
+        cli.send_input(net::player_input_state{.shot = true});
+        srv.update(gs_srv);
+
+        gs_srv.game_run(true);
+
+        for (int i = 0; i < 300 && gs_srv.cur_frame_bullets.empty(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            gs_srv.game_update();
+        }
+        REQUIRE(!gs_srv.cur_frame_bullets.empty());
+
+        srv.update(gs_srv); /* broadcast the bullet with its id */
+        cli.update(gs_cli);
+
+        /* The client spawned the bullet and tagged it with the server id */
+        REQUIRE(gs_cli.blt_mgr.bullets().size() == 1);
+        CHECK(gs_cli.blt_mgr.bullets().front().net_id() != 0);
+
+        /*
+         * The bullet hit something on the server and was removed there, but
+         * missed locally (the client sim is not stepped, so it can't die
+         * locally either): the client must drop it on the next state
+         */
+        gs_srv.blt_mgr.bullets().front().physic()->delete_later();
+        gs_srv.blt_mgr.remove_dead();
+        CHECK(gs_srv.blt_mgr.bullets().empty());
+
+        /*
+         * Step a frame like the game does (game_update clears
+         * cur_frame_bullets, then the net update broadcasts)
+         */
+        gs_srv.game_update();
+        srv.update(gs_srv);
+        cli.update(gs_cli);
+
+        CHECK(gs_cli.blt_mgr.bullets().empty());
     }
 }
 

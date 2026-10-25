@@ -238,13 +238,22 @@ struct state {
     std::vector<bullet_info>  bullets;
     std::vector<crate_info>   crates;
     std::vector<gun_info>     guns;
+    /*
+     * Bullet ids, appended at the end so old clients still parse the state
+     * (they just skip the trailing data). spawn_bullet_ids is parallel to
+     * bullets, alive_bullet_ids lists every bullet currently alive on the
+     * server: clients drop their local bullets that are no longer listed
+     * (e.g. hit a player whose local position diverged)
+     */
+    std::vector<u32> spawn_bullet_ids;
+    std::vector<u32> alive_bullet_ids;
 
     void serialize(auto& s) const {
-        s.write(tick, players, bullets, crates, guns);
+        s.write(tick, players, bullets, crates, guns, spawn_bullet_ids, alive_bullet_ids);
     }
 
     void deserialize(auto& d) {
-        d.read(tick, players, bullets, crates, guns);
+        d.read(tick, players, bullets, crates, guns, spawn_bullet_ids, alive_bullet_ids);
     }
 };
 
