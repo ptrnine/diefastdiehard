@@ -201,8 +201,6 @@ private:
             auto edge = player_input_state::from_bits(bits);
             in.jump         |= edge.jump;
             in.jump_down    |= edge.jump_down;
-            in.shot_release |= edge.shot_release;
-            in.long_shot    ^= edge.long_shot;
             in.shot         |= edge.shot;
             in.drop         |= edge.drop;
         }

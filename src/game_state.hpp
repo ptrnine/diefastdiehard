@@ -416,12 +416,13 @@ public:
                                     blt_mgr,
                                     cam_pos,
                                     gravity_for_bullets,
-                                    pl->spawn_bullets_enabled(),
+                                    !pl->server_driven(),
                                     bullet_spawn_callback{&cur_frame_bullets, pl.get(), gravity_for_bullets});
                 else
                     pl->game_update(sim, blt_mgr, cam_pos, gravity_for_bullets, false, {});
 
-                if (pl->collision_box()->get_position().y > 2100.f)
+                /* Server-driven players die and respawn on the server */
+                if (!pl->server_driven() && pl->collision_box()->get_position().y > 2100.f)
                     player_on_dead(pl.get());
             }
 

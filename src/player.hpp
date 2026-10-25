@@ -160,10 +160,11 @@ public:
     }
 
     /**
-     * Apply a per-frame input state (network or AI driven).
-     * Held state + one-frame edges.
+     * Apply the movement part of a per-tick input state: held movement and
+     * long shot, jump edges. Free of side effects outside of the player's
+     * physic state, so it is safe to re-apply while re-simulating
      */
-    void apply_input(const net::player_input_state& in) {
+    void apply_movement_input(const net::player_input_state& in) {
         if (in.left && !in.right)
             move_left();
         else if (in.right && !in.left)
@@ -175,16 +176,113 @@ public:
             jump();
         if (in.jump_down)
             jump_down();
+        enable_long_shot(in.long_shot);
+    }
+
+    /**
+     * Apply a per-tick input state (network driven): movement, the trigger
+     * as a held state and the drop edge
+     */
+    void apply_input(const net::player_input_state& in) {
+        apply_movement_input(in);
+
         if (in.shot)
             shot();
-        if (in.shot_release)
+        else
             relax();
-        if (in.long_shot)
-            enable_long_shot();
         if (in.drop)
             drop_gun();
 
         increment_evt_counter();
+    }
+
+    /**
+     * The part of the player state that the physics tick evolves; a
+     * snapshot of it is enough to restore and re-simulate the player
+     */
+    struct physic_state {
+        vec2f pos;
+        vec2f vel;
+        bool  lock_y        = false;
+        u32   jumps_left    = 0;
+        float accel_left_f  = 1.f;
+        float accel_right_f = 1.f;
+    };
+
+    [[nodiscard]]
+    physic_state get_physic_state() const {
+        return {get_position(), get_velocity(), _collision_box->is_lock_y(), jumps_left, _accel_left_f, _accel_right_f};
+    }
+
+    void restore_physic_state(const physic_state& st) {
+        position(st.pos);
+        velocity(st.vel);
+        if (st.lock_y)
+            _collision_box->lock_y();
+        else
+            _collision_box->unlock_y();
+        jumps_left     = st.jumps_left;
+        _accel_left_f  = st.accel_left_f;
+        _accel_right_f = st.accel_right_f;
+    }
+
+    /**
+     * Replay mode (re-simulation of already simulated ticks): no position
+     * trace samples, no landing sounds
+     */
+    void replaying(bool value) {
+        _replaying = value;
+    }
+
+    /**
+     * Impulse applied outside of the physics tick (weapon recoil), accumulated
+     * so the client-side prediction can re-apply it while re-simulating
+     */
+    void apply_logged_impulse(const vec2f& impulse) {
+        _collision_box->apply_impulse(impulse);
+        _pending_impulse += impulse;
+    }
+
+    void apply_impulse(const vec2f& impulse) {
+        _collision_box->apply_impulse(impulse);
+    }
+
+    vec2f take_pending_impulse() {
+        return std::exchange(_pending_impulse, vec2f{0.f, 0.f});
+    }
+
+    /**
+     * Visual-only displacement after a prediction correction: the drawn
+     * player moves smoothly to the corrected position. Large corrections
+     * (e.g. respawn) snap
+     */
+    void add_render_offset(const vec2f& offset) {
+        _render_offset = magnitude(_render_offset + offset) > 150.f ? vec2f{0.f, 0.f} : _render_offset + offset;
+    }
+
+    [[nodiscard]]
+    const vec2f& render_offset() const {
+        return _render_offset;
+    }
+
+    /**
+     * Lag compensation of a remote (network) player's shots, seconds:
+     * lag    - time between the shot on the client and its processing on the server;
+     *          bullets are spawned forwarded by vel * lag
+     * rewind - how far in the past the client saw the other players at the shot
+     */
+    struct lag_compensation_t {
+        float lag    = 0.f;
+        float rewind = 0.f;
+    };
+
+    void lag_compensation(const lag_compensation_t& value) {
+        _lag_comp = value;
+    }
+
+    [[nodiscard]]
+    const lag_compensation_t& lag_compensation() const {
+        return _lag_comp;
     }
 
     void stop() {
@@ -248,7 +346,7 @@ public:
          * arrives with the state broadcast, and the pistol section sync
          * removes the gun from the hands
          */
-        if (!spawn_bullets_enabled())
+        if (server_driven())
             return nullptr;
 
         auto  pos = arm_position(get_position());
@@ -355,7 +453,7 @@ public:
                                              std::forward<F>(bullet_spawn_callback),
                                              _group,
                                              player_group_getter))
-                _collision_box->apply_impulse(-dir * *recoil);
+                apply_logged_impulse(-dir * *recoil);
         }
     }
 
@@ -418,9 +516,11 @@ public:
         physic_weapon_bobbing_update(sim);
         leg_animation_update(timestep, _collision_box->get_position(), vel);
 
-        if (_position_trace.size() > 300)
-            _position_trace.pop_front();
-        _position_trace.emplace_back(sim.current_update_time(), get_position());
+        if (!_replaying) {
+            if (_position_trace.size() > 300)
+                _position_trace.pop_front();
+            _position_trace.emplace_back(sim.current_update_time(), get_position());
+        }
     }
 
     void jump() {
@@ -500,6 +600,12 @@ public:
         auto next_pos = pos + _collision_box->get_velocity() * timestep;
 
         pos = lerp(pos, next_pos, interpolation_factor);
+
+        /* Decay the correction offset (half-life ~50ms) */
+        _render_offset *= std::exp2(-_render_offset_clock.restart().asSeconds() / 0.05f);
+        if (magnitude(_render_offset) < 0.01f)
+            _render_offset = {0.f, 0.f};
+        pos += _render_offset;
 
         auto adj = sprite_size_adjust_factors();
         auto dif = vec2f((_size.x * adj.x - _size.x) * 0.5f, _size.y * adj.y);
@@ -612,16 +718,17 @@ public:
     }
 
     /**
-     * Whether this player's weapon spawns bullets locally
-     * (disabled for the client-side local player: bullets arrive from the server)
+     * Client-side mirror of a server player: the server is authoritative, so
+     * the weapon spawns no bullets locally (they arrive from the server),
+     * bullet hits produce no impulse and there is no local death or gun drop
      */
-    void set_spawn_bullets(bool value) {
-        _spawn_bullets = value;
+    void set_server_driven(bool value) {
+        _server_driven = value;
     }
 
     [[nodiscard]]
-    bool spawn_bullets_enabled() const {
-        return _spawn_bullets;
+    bool server_driven() const {
+        return _server_driven;
     }
 
     /**
@@ -856,7 +963,8 @@ private:
 
     enum player_dir_t { dir_none = 0, dir_left, dir_right } _dir;
     bool _on_left            = false;
-    bool _spawn_bullets      = true;
+    bool _server_driven      = false;
+    bool _replaying          = false;
     bool _net_controlled     = false;
     bool _jump_pressed       = false;
     bool _jump_down_pressed  = false;
@@ -873,8 +981,13 @@ private:
     bool                 _step_sound_active = false;
     std::optional<float> _fall_velocity;
     sf::Clock _step_sound_timer;
+    sf::Clock _render_offset_clock;
 
     drop_gun_fn_t _drop_gun_cb;
+
+    vec2f              _pending_impulse = {0.f, 0.f};
+    vec2f              _render_offset   = {0.f, 0.f};
+    lag_compensation_t _lag_comp;
 
 public:
     u64 last_state_packet_id = 0;
@@ -1043,7 +1156,8 @@ public:
 
     void on_ground(float fall_velocity = 0.f) {
         enable_double_jump();
-        _fall_velocity = fall_velocity;
+        if (!_replaying)
+            _fall_velocity = fall_velocity;
     }
 
     void mass(float value) {
@@ -1073,6 +1187,23 @@ public:
         return _evt_counter;
     }
 
+    /**
+     * Bullet (or hit-scan) hit: knockback with the bullet impulse, plus hit
+     * feedback. Server-driven players get the feedback only, their knockback
+     * arrives with the server state
+     */
+    void on_bullet_hit(const vec2f& impulse, const vec2f& hit_position) {
+        if (!_server_driven) {
+            if (_collision_box->is_lock_y() && impulse.y < -180.f)
+                _collision_box->unlock_y();
+            _collision_box->apply_impulse(impulse);
+            reset_accel_f(impulse.x < 0.f);
+        }
+
+        set_on_hit_event();
+        play_hit_sound(hit_position, magnitude(impulse) > 2200.f);
+    }
+
     void set_on_hit_event() {
         _on_hit_event = true;
     }
@@ -1090,18 +1221,9 @@ inline void player_hit_callback(physic_point*            bullet_pnt,
     if (bullet_pnt->get_user_data() == user_data_type::bullet &&
         player_grp->get_user_data() == user_data_type::player && !bullet_pnt->ready_delete_later()) {
 
-        auto impulse = bullet_pnt->impulse();
-        if (player_grp->is_lock_y())
-            if (impulse.y < -180.f) 
-                player_grp->unlock_y();
-
-        player_grp->apply_impulse(impulse);
         bullet_pnt->delete_later();
-        auto pl = std::any_cast<player*>(player_grp->get_user_any());
-
-        pl->reset_accel_f(bullet_pnt->get_direction().x < 0.f);
-        pl->set_on_hit_event();
-        pl->play_hit_sound(bullet_pnt->get_position(), magnitude(bullet_pnt->impulse()) > 2200.f);
+        std::any_cast<player*>(player_grp->get_user_any())
+            ->on_bullet_hit(bullet_pnt->impulse(), bullet_pnt->get_position());
     }
 }
 } // namespace dfdh

@@ -42,7 +42,7 @@ struct net_player_controller : public player_controller {
             else if (c == drop)
                 _edge_drop = true;
             else if (c == adjust_up)
-                _edge_long_shot = true;
+                _held_long_shot = true;
         }
         else if (evt.type == sf::Event::KeyReleased) {
             auto c = evt.key.code;
@@ -54,15 +54,15 @@ struct net_player_controller : public player_controller {
                 _held_left = false;
             else if (c == right)
                 _held_right = false;
-            else if (c == shot) {
+            else if (c == shot)
                 _held_shot = false;
-                _edge_shot_release = true;
-            }
+            else if (c == adjust_up)
+                _held_long_shot = false;
         }
     }
 
     /**
-     * Get the per-frame input state; edges are consumed
+     * Get the per-tick input state; edges are consumed
      */
     [[nodiscard]]
     net::player_input_state take_input_state() {
@@ -72,16 +72,13 @@ struct net_player_controller : public player_controller {
             .jump         = _edge_jump,
             .jump_down    = _edge_jump_down,
             .shot         = _held_shot,
-            .shot_release = _edge_shot_release,
-            .long_shot    = _edge_long_shot,
+            .long_shot    = _held_long_shot,
             .drop         = _edge_drop,
         };
 
-        _edge_jump          = false;
-        _edge_jump_down     = false;
-        _edge_shot_release  = false;
-        _edge_long_shot     = false;
-        _edge_drop          = false;
+        _edge_jump      = false;
+        _edge_jump_down = false;
+        _edge_drop      = false;
 
         return in;
     }
@@ -92,12 +89,11 @@ private:
     bool _held_jump        = false;
     bool _held_jump_down   = false;
     bool _held_shot        = false;
+    bool _held_long_shot   = false;
 
-    bool _edge_jump          = false;
-    bool _edge_jump_down     = false;
-    bool _edge_shot_release  = false;
-    bool _edge_long_shot     = false;
-    bool _edge_drop          = false;
+    bool _edge_jump      = false;
+    bool _edge_jump_down = false;
+    bool _edge_drop      = false;
 };
 
 } // namespace dfdh

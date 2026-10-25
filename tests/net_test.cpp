@@ -218,7 +218,6 @@ TEST_CASE("protocol: input bits mapping") {
     CHECK(back.jump == true);
     CHECK(back.jump_down == false);
     CHECK(back.shot == true);
-    CHECK(back.shot_release == false);
     CHECK(back.long_shot == true);
 
     /* Round-trip through the wire */
@@ -231,7 +230,6 @@ TEST_CASE("protocol: input bits mapping") {
     CHECK(back.jump == in.jump);
     CHECK(back.jump_down == in.jump_down);
     CHECK(back.shot == in.shot);
-    CHECK(back.shot_release == in.shot_release);
     CHECK(back.long_shot == in.long_shot);
 }
 
@@ -390,21 +388,22 @@ TEST_CASE("net_player_controller: key events to input state") {
         ctrl.track_event(keypress(sf::Keyboard::Comma));
         auto in = ctrl.take_input_state();
         CHECK(in.shot == true);
-        CHECK(in.shot_release == false);
+        in = ctrl.take_input_state();
+        CHECK(in.shot == true); /* held, not consumed */
 
         ctrl.track_event(keyrelease(sf::Keyboard::Comma));
         in = ctrl.take_input_state();
         CHECK(in.shot == false);
-        CHECK(in.shot_release == true);
-
-        in = ctrl.take_input_state();
-        CHECK(in.shot_release == false);
     }
 
-    SECTION("long shot is an edge") {
+    SECTION("long shot is held") {
         ctrl.track_event(keypress(sf::Keyboard::M));
         auto in = ctrl.take_input_state();
         CHECK(in.long_shot == true);
+        in = ctrl.take_input_state();
+        CHECK(in.long_shot == true);
+
+        ctrl.track_event(keyrelease(sf::Keyboard::M));
         in = ctrl.take_input_state();
         CHECK(in.long_shot == false);
     }
@@ -453,15 +452,17 @@ TEST_CASE("player: apply_input") {
         CHECK(pl->get_velocity().y < -500.f);
     }
 
-    SECTION("long shot toggle") {
+    SECTION("long shot held") {
         pl->apply_input(net::player_input_state{.long_shot = true});
         CHECK(pl->long_shot_enabled());
+        pl->apply_input(net::player_input_state{});
+        CHECK_FALSE(pl->long_shot_enabled());
     }
 
     SECTION("shot") {
         pl->apply_input(net::player_input_state{.shot = true});
         CHECK(pl->get_gun().pull_trigger(std::nullopt) == false); /* trigger is already held */
-        pl->apply_input(net::player_input_state{.shot_release = true});
+        pl->apply_input(net::player_input_state{});
         CHECK(pl->get_gun().pull_trigger(std::nullopt) == true);  /* trigger is free again */
     }
 
@@ -473,6 +474,62 @@ TEST_CASE("player: apply_input") {
         CHECK(pl->pistol_section().empty());
         CHECK(gs.dropped_guns.size() == before + 1);
     }
+}
+
+TEST_CASE("player: physic state snapshot and isolated re-simulation") {
+    game_state gs;
+    auto pl = gs.player_create("resim_test");
+    REQUIRE(pl != nullptr);
+    gs.sim.gravity({0.f, 1500.f});
+
+    pl->position({100.f, -300.f});
+    pl->velocity({0.f, 0.f});
+    auto start = pl->get_physic_state();
+
+    std::vector<net::player_input_state> inputs;
+    for (int i = 0; i < 40; ++i)
+        inputs.push_back({.right = i < 30, .jump = i == 5});
+
+    /* Regular simulation */
+    auto t = std::chrono::steady_clock::now();
+    for (auto& in : inputs) {
+        pl->apply_movement_input(in);
+        t += std::chrono::milliseconds(16);
+        gs.sim.update_immediate(1.f / 60.f, t);
+    }
+    auto simulated = pl->get_physic_state();
+
+    /* Restore and re-simulate the player alone */
+    pl->restore_physic_state(start);
+    pl->replaying(true);
+    for (auto& in : inputs) {
+        pl->apply_movement_input(in);
+        gs.sim.step_isolated(pl->collision_box(), 1.f / 60.f, [&](float dt) { pl->physic_update(gs.sim, dt); });
+    }
+    pl->replaying(false);
+    auto resimulated = pl->get_physic_state();
+
+    CHECK(resimulated.pos.x == Catch::Approx(simulated.pos.x));
+    CHECK(resimulated.pos.y == Catch::Approx(simulated.pos.y));
+    CHECK(resimulated.vel.x == Catch::Approx(simulated.vel.x));
+    CHECK(resimulated.vel.y == Catch::Approx(simulated.vel.y));
+    CHECK(resimulated.jumps_left == simulated.jumps_left);
+}
+
+TEST_CASE("player: server-driven bullet hit gives feedback without knockback") {
+    game_state gs;
+    auto pl = gs.player_create("hit_test");
+    REQUIRE(pl != nullptr);
+    pl->velocity({0.f, 0.f});
+
+    pl->set_server_driven(true);
+    pl->on_bullet_hit({1000.f, 0.f}, pl->get_position());
+    CHECK(pl->get_velocity().x == 0.f);
+    CHECK(pl->pop_on_hit_event());
+
+    pl->set_server_driven(false);
+    pl->on_bullet_hit({1000.f, 0.f}, pl->get_position());
+    CHECK(pl->get_velocity().x > 0.f);
 }
 
 TEST_CASE("player: position_trace_lookup") {
@@ -750,7 +807,7 @@ TEST_CASE("net_client: join and state application") {
          * spawned its broadcast bullet in the local simulation
          */
         REQUIRE(gs_cli.players.contains("hostp"));
-        CHECK(!gs_cli.players.at("hostp")->spawn_bullets_enabled());
+        CHECK(gs_cli.players.at("hostp")->server_driven());
         CHECK(!gs_cli.blt_mgr.bullets().empty());
     }
 

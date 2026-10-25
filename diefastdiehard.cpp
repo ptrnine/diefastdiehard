@@ -329,7 +329,7 @@ private:
              * Local bullet spawning is disabled for the client-side local player:
              * the server is authoritative and broadcasts the actual bullets
              */
-            pl->set_spawn_bullets(false);
+            pl->set_server_driven(true);
 
             net_ctrl = std::make_shared<net_player_controller>(1000);
             net_ctrl->player_name = pname;

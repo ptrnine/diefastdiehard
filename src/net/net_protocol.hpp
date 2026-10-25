@@ -39,12 +39,12 @@ inline constexpr u16 in_bit_right        = 1 << 1;
 inline constexpr u16 in_bit_jump         = 1 << 2;
 inline constexpr u16 in_bit_jump_down    = 1 << 3;
 inline constexpr u16 in_bit_shot         = 1 << 4;
-inline constexpr u16 in_bit_shot_release = 1 << 5;
 inline constexpr u16 in_bit_long_shot    = 1 << 6;
 inline constexpr u16 in_bit_drop         = 1 << 7;
+inline constexpr u16 in_edge_bits        = in_bit_jump | in_bit_jump_down | in_bit_drop;
 
 /**
- * Per-frame player input state (held state + one-frame edges)
+ * Per-tick player input state (held state + one-tick edges)
  */
 struct player_input_state {
     bool left         = false; // held
@@ -52,8 +52,7 @@ struct player_input_state {
     bool jump         = false; // edge
     bool jump_down    = false; // edge
     bool shot         = false; // held
-    bool shot_release = false; // edge
-    bool long_shot    = false; // edge (toggle)
+    bool long_shot    = false; // held
     bool drop         = false; // edge
 
     [[nodiscard]]
@@ -64,7 +63,6 @@ struct player_input_state {
         if (jump)         bits |= in_bit_jump;
         if (jump_down)    bits |= in_bit_jump_down;
         if (shot)         bits |= in_bit_shot;
-        if (shot_release) bits |= in_bit_shot_release;
         if (long_shot)    bits |= in_bit_long_shot;
         if (drop)         bits |= in_bit_drop;
         return bits;
@@ -77,18 +75,17 @@ struct player_input_state {
             .jump         = (bits & in_bit_jump) != 0,
             .jump_down    = (bits & in_bit_jump_down) != 0,
             .shot         = (bits & in_bit_shot) != 0,
-            .shot_release = (bits & in_bit_shot_release) != 0,
             .long_shot    = (bits & in_bit_long_shot) != 0,
             .drop         = (bits & in_bit_drop) != 0,
         };
     }
 
     void serialize(auto& s) const {
-        s.write(left, right, jump, jump_down, shot, shot_release, long_shot, drop);
+        s.write(left, right, jump, jump_down, shot, long_shot, drop);
     }
 
     void deserialize(auto& d) {
-        d.read(left, right, jump, jump_down, shot, shot_release, long_shot, drop);
+        d.read(left, right, jump, jump_down, shot, long_shot, drop);
     }
 };
 

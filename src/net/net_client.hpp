@@ -183,7 +183,7 @@ private:
              * from the server broadcast, so never spawn them locally (this
              * also covers locally simulated bots that exist on both sides)
              */
-            pl->set_spawn_bullets(false);
+            pl->set_server_driven(true);
 
             /*
              * Server state overwrites the position for ALL players, including the
