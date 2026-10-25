@@ -292,6 +292,36 @@ private:
         _history.drop_up_to(ack_seq);
     }
 
+    /**
+     * Spawn a server bullet in the local simulation. It reaches the client one
+     * way trip after the server spawned it (already forwarded by the shooter's
+     * lag), so it is forwarded again by the client's own lag: start + vel *
+     * (shooter lag + own lag). The segment from the muzzle to there is
+     * hit-scanned against the local view of the players (hit feedback only:
+     * hits are decided by the server). Bullets already dead on the server
+     * (consumed by the server hit-scan) are not spawned
+     */
+    void spawn_server_bullet(game_state& gs, const bullet_info& b, bool alive) {
+        auto found_owner = gs.players.find(player_name_t(b.owner));
+        auto lag         = std::min(_rtt_s * 0.5f, game_state::max_lag_compensation);
+        auto start       = vec2f{b.start_x, b.start_y};
+        auto vel         = vec2f{b.vel_x, b.vel_y};
+        auto [pos, fwd_vel] = gs.ballistic_forward({b.pos_x, b.pos_y}, vel, b.gravity, lag);
+
+        if (found_owner != gs.players.end()) {
+            if (auto hit = gs.hitscan(start, pos, 0.f, *found_owner->second)) {
+                hit->target->on_bullet_hit(vel * b.hit_mass, hit->position);
+                return;
+            }
+        }
+
+        if (!alive)
+            return;
+
+        auto& blt = gs.blt_mgr.shot(gs.sim, pos, b.hit_mass, fwd_vel, unpack_color(b.tracer_color), b.gravity);
+        blt.net_id(b.id);
+    }
+
     /* Every frame: show remote players at the interpolated server time */
     void apply_remote_snapshots(game_state& gs) {
         if (!_clock.valid())
@@ -414,18 +444,8 @@ private:
                                       remote_player_snapshot{to_physic_state(sp), sp.on_left != 0, sp.shooting != 0});
         }
 
-        /* Spawn the server-side bullets in the local simulation */
-        for (size_t i = 0; i < st.bullets.size(); ++i) {
-            auto& b   = st.bullets[i];
-            auto& blt = gs.blt_mgr.shot(gs.sim,
-                                        {b.pos_x, b.pos_y},
-                                        b.hit_mass,
-                                        {b.vel_x, b.vel_y},
-                                        unpack_color(b.tracer_color),
-                                        b.gravity);
-
-            blt.net_id(b.id);
-        }
+        for (auto& b : st.bullets)
+            spawn_server_bullet(gs, b, std::ranges::find(st.alive_bullet_ids, b.id) != st.alive_bullet_ids.end());
 
         if (!newest)
             return;

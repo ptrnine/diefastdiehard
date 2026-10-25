@@ -373,7 +373,9 @@ public:
      */
     struct bullet_event_t {
         player_name_t owner;
-        vec2f         position;
+        u32           id;           // bullet net_id (no live bullet if the hit-scan consumed it)
+        vec2f         start;        // muzzle position
+        vec2f         position;     // spawn position (lag-forwarded)
         vec2f         velocity;
         float         hit_mass;
         sf::Color     tracer_color;
@@ -382,20 +384,105 @@ public:
 
     std::vector<bullet_event_t> cur_frame_bullets;
 
-    /* Records every bullet spawned by a player into cur_frame_bullets */
+    /* Spawns the bullets of a player's weapon through spawn_bullet() */
     struct bullet_spawn_callback {
         void operator()(const vec2f& position, const vec2f& velocity, float mass) {
-            events->push_back(bullet_event_t{pl->name(), position, velocity, mass, pl->tracer_color(), gravity});
+            if (!pl->server_driven())
+                gs->spawn_bullet(*pl, position, velocity, mass, gravity);
         }
 
         constexpr operator bool() const {
             return true;
         }
 
-        std::vector<bullet_event_t>* events;
-        const player*                pl;
-        bool                         gravity;
+        game_state* gs;
+        player*     pl;
+        bool        gravity;
     };
+
+    /* Lag compensation is capped: a client can't shoot further in the past than this */
+    static constexpr float max_lag_compensation = 0.5f;
+
+    struct hitscan_hit_t {
+        player* target;
+        vec2f   position;
+    };
+
+    /**
+     * Nearest player hit by the segment a -> b, testing every player at the
+     * position it had rewind_s seconds ago (position trace). The owner and,
+     * like for bullets, the players of the owner's group are skipped
+     */
+    std::optional<hitscan_hit_t> hitscan(const vec2f& a, const vec2f& b, float rewind_s, const player& owner) {
+        std::optional<hitscan_hit_t> res;
+        float                        best_t = std::numeric_limits<float>::max();
+        auto                         d      = b - a;
+
+        for (auto& [_, pl] : players) {
+            if (pl.get() == &owner)
+                continue;
+            if (owner.get_group() != -1 && pl->get_group() != -1 && pl->get_group() == owner.get_group())
+                continue;
+
+            auto bb = pl->bb();
+            if (rewind_s > 0.f)
+                if (auto past = pl->position_trace_lookup(sim.current_update_time(), rewind_s)) {
+                    bb.left = past->x;
+                    bb.top  = past->y - bb.height;
+                }
+
+            /* Segment vs AABB (slabs) */
+            float t0 = 0.f, t1 = 1.f;
+            auto  slab = [&](float origin, float dir, float min, float max) {
+                if (std::abs(dir) < 1e-6f)
+                    return origin >= min && origin <= max;
+                auto ta = (min - origin) / dir;
+                auto tb = (max - origin) / dir;
+                t0      = std::max(t0, std::min(ta, tb));
+                t1      = std::min(t1, std::max(ta, tb));
+                return t0 <= t1;
+            };
+            if (slab(a.x, d.x, bb.left, bb.left + bb.width) && slab(a.y, d.y, bb.top, bb.top + bb.height) &&
+                t0 < best_t) {
+                best_t = t0;
+                res    = hitscan_hit_t{pl.get(), a + d * t0};
+            }
+        }
+        return res;
+    }
+
+    /**
+     * Spawn a bullet of the owner's weapon. A lag-compensated (network) owner
+     * shot lag seconds ago on its screen: the bullet spawns forwarded by the
+     * distance it would have flown since, and the skipped segment is covered
+     * by a hit-scan against the players as the owner saw them (rewound)
+     */
+    void spawn_bullet(player& owner, const vec2f& start, const vec2f& velocity, float mass, bool gravity) {
+        auto lag    = std::min(owner.lag_compensation().lag, max_lag_compensation);
+        auto rewind = std::min(owner.lag_compensation().rewind, max_lag_compensation);
+        auto id     = ++_next_bullet_id;
+
+        auto [pos, vel] = ballistic_forward(start, velocity, gravity, lag);
+
+        if (lag > 0.f) {
+            if (auto hit = hitscan(start, pos, rewind, owner)) {
+                hit->target->on_bullet_hit(velocity * mass, hit->position);
+                cur_frame_bullets.push_back({owner.name(), id, start, start, velocity, mass, owner.tracer_color(), gravity});
+                return;
+            }
+        }
+
+        auto& blt = blt_mgr.shot(sim, pos, mass, vel, owner.tracer_color(), gravity, owner.get_group(), player::player_group_getter);
+        blt.net_id(id);
+        cur_frame_bullets.push_back({owner.name(), id, start, pos, vel, mass, owner.tracer_color(), gravity});
+    }
+
+    /* Bullet position and velocity after flying for t seconds */
+    [[nodiscard]]
+    std::pair<vec2f, vec2f> ballistic_forward(const vec2f& pos, const vec2f& vel, bool gravity, float t) const {
+        auto g = gravity ? sim.bullet_gravity() : vec2f{0.f, 0.f};
+        return {pos + vel * t + g * (0.5f * t * t), vel + g * t};
+    }
 
     void game_update() {
         /* Try reload watched sections */
@@ -416,8 +503,8 @@ public:
                                     blt_mgr,
                                     cam_pos,
                                     gravity_for_bullets,
-                                    !pl->server_driven(),
-                                    bullet_spawn_callback{&cur_frame_bullets, pl.get(), gravity_for_bullets});
+                                    false, /* bullets are spawned by the callback */
+                                    bullet_spawn_callback{this, pl.get(), gravity_for_bullets});
                 else
                     pl->game_update(sim, blt_mgr, cam_pos, gravity_for_bullets, false, {});
 
@@ -669,6 +756,7 @@ public:
     std::vector<std::unique_ptr<crate>> crates;
     sf::Clock crate_timer;
     u32   _next_crate_id    = 1;
+    u32   _next_bullet_id   = 0;
 
     vec2f cam_pos = {0.f, 0.f};
 

@@ -1200,6 +1200,117 @@ TEST_CASE("net: server-only knockback is reconciled on the client") {
     CHECK(f.local().get_position().y == Catch::Approx(f.server_side().get_position().y).margin(1.f));
 }
 
+TEST_CASE("game_state: lag-compensated bullets") {
+    game_state gs;
+    auto shooter = gs.player_create("shooter");
+    auto target  = gs.player_create("target");
+    REQUIRE(shooter);
+    REQUIRE(target);
+    shooter->group(1);
+    target->group(2);
+
+    shooter->position({0.f, 100.f});
+    shooter->velocity({0.f, 0.f});
+
+    /* The target moves down along x = 500 at 600 px/s; 30 ticks of position trace */
+    auto t = std::chrono::steady_clock::now();
+    for (int i = 0; i < 30; ++i) {
+        target->position({500.f, float(i) * 10.f});
+        target->velocity({0.f, 0.f});
+        t += std::chrono::microseconds(16667);
+        gs.sim.update_immediate(1.f / 60.f, t);
+    }
+    /* Now at y ~= 290, 0.25 s ago at y ~= 140 (box spans y - 90 .. y) */
+    auto now_y = target->get_position().y;
+    REQUIRE(now_y > 280.f);
+
+    auto start = vec2f{0.f, 120.f};
+    auto end   = vec2f{1000.f, 120.f};
+
+    SECTION("hit-scan tests the players where the shooter saw them") {
+        CHECK_FALSE(gs.hitscan(start, end, 0.f, *shooter));
+
+        auto hit = gs.hitscan(start, end, 0.25f, *shooter);
+        REQUIRE(hit);
+        CHECK(hit->target == target);
+        CHECK(hit->position.x == Catch::Approx(500.f).margin(0.01f));
+    }
+
+    SECTION("the owner and its group are never hit") {
+        target->group(1);
+        CHECK_FALSE(gs.hitscan(start, end, 0.25f, *shooter));
+        CHECK_FALSE(gs.hitscan({-100.f, 50.f}, {100.f, 50.f}, 0.f, *shooter));
+    }
+
+    SECTION("a lag-compensated bullet spawns forwarded by vel * lag") {
+        shooter->lag_compensation({0.2f, 0.f});
+        gs.spawn_bullet(*shooter, {0.f, -500.f}, {1500.f, 0.f}, 1.f, false);
+
+        REQUIRE(gs.blt_mgr.bullets().size() == 1);
+        auto& blt = gs.blt_mgr.bullets().front();
+        CHECK(blt.physic()->get_position().x == Catch::Approx(300.f));
+        CHECK(blt.net_id() != 0);
+        REQUIRE(gs.cur_frame_bullets.size() == 1);
+        CHECK(gs.cur_frame_bullets[0].start.x == Catch::Approx(0.f));
+        CHECK(gs.cur_frame_bullets[0].position.x == Catch::Approx(300.f));
+        CHECK(gs.cur_frame_bullets[0].id == blt.net_id());
+    }
+
+    SECTION("the skipped segment is a hit-scan against the rewound players") {
+        shooter->lag_compensation({0.5f, 0.25f});
+        target->velocity({0.f, 0.f});
+        gs.spawn_bullet(*shooter, start, {1500.f, 0.f}, 1.f, false);
+
+        /* Hit 0.25 s in the past: no bullet, the target got the impulse */
+        CHECK(gs.blt_mgr.bullets().empty());
+        CHECK(target->get_velocity().x > 0.f);
+        CHECK(target->pop_on_hit_event());
+        REQUIRE(gs.cur_frame_bullets.size() == 1);
+    }
+
+    SECTION("no lag: a plain bullet at the muzzle") {
+        gs.spawn_bullet(*shooter, start, {1500.f, 0.f}, 1.f, false);
+        REQUIRE(gs.blt_mgr.bullets().size() == 1);
+        CHECK(gs.blt_mgr.bullets().front().physic()->get_position().x == Catch::Approx(0.f));
+    }
+}
+
+TEST_CASE("net: clients see server bullets in present time") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{80, 170};
+    f.run_for(3000ms);
+
+    /* A server-side player (like the host's) fires */
+    auto host = f.gs_srv.player_create("hostp");
+    REQUIRE(host != nullptr);
+    host->setup_pistol("wpn_glk17");
+    auto ctrl = std::make_shared<player_controller>(5);
+    ctrl->player_name = "hostp";
+    REQUIRE(f.gs_srv.controller_attach(5, ctrl));
+    f.gs_srv.rebuild_controlled_players();
+    f.run_for(500ms);
+
+    REQUIRE(host->shot());
+    f.run_for(400ms, [&] {
+        if (f.gs_cli.blt_mgr.bullets().size() == 1)
+            host->relax();
+    });
+
+    REQUIRE(f.gs_cli.blt_mgr.bullets().size() >= 1);
+    auto id = f.gs_cli.blt_mgr.bullets().front().net_id();
+    auto srv_blt = std::ranges::find_if(f.gs_srv.blt_mgr.bullets(), [&](const bullet& b) { return b.net_id() == id; });
+    REQUIRE(srv_blt != f.gs_srv.blt_mgr.bullets().end());
+
+    /*
+     * Forwarded by the client's one-way lag estimate: the client bullet is
+     * where the server bullet is now (within the latency jitter of ~45 ms)
+     */
+    auto cli_x = f.gs_cli.blt_mgr.bullets().front().physic()->get_position().x;
+    auto srv_x = srv_blt->physic()->get_position().x;
+    auto speed = srv_blt->physic()->scalar_velocity();
+    CHECK(std::abs(cli_x - srv_x) < speed * 0.07f);
+}
+
 TEST_CASE("udp_channel simulates ~250ms ping") {
     using namespace net;
 

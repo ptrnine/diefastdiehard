@@ -143,11 +143,11 @@ public:
              * spawning for every server-known player, so there are no
              * duplicates.
              */
-            for (auto& be : gs.cur_frame_bullets) {
+            for (auto& be : gs.cur_frame_bullets)
                 st.bullets.push_back(bullet_info{std::string(be.owner),
-                                                 0,
-                                                 be.position.x,
-                                                 be.position.y,
+                                                 be.id,
+                                                 be.start.x,
+                                                 be.start.y,
                                                  be.position.x,
                                                  be.position.y,
                                                  be.velocity.x,
@@ -155,35 +155,15 @@ public:
                                                  be.hit_mass,
                                                  pack_color(be.tracer_color),
                                                  be.gravity});
-            }
 
             /*
-             * Bullet ids: give every freshly spawned bullet a unique id and
-             * broadcast the set of all live bullet ids. Clients use them to
-             * drop local bullets that no longer exist on the server (e.g.
-             * hit a player whose position diverged locally)
+             * The set of all live bullet ids: clients drop their local bullets
+             * that no longer exist on the server (e.g. hit a player whose
+             * position diverged locally)
              */
-            std::vector<u32> spawn_ids;
-            std::vector<u32> alive_ids;
-            for (auto& b : gs.blt_mgr.bullets()) {
-                bool fresh = b.net_id() == 0;
-                if (fresh)
-                    b.net_id(++_next_bullet_id);
-
-                if (fresh)
-                    spawn_ids.push_back(b.net_id());
-                alive_ids.push_back(b.net_id());
-            }
-
-            /*
-             * The unassigned bullets are exactly the ones collected in
-             * cur_frame_bullets, in the same (spawn) order; if they ever
-             * diverge, drop the ids for this frame rather than zip wrongly
-             */
-            if (spawn_ids.size() == st.bullets.size())
-                for (size_t i = 0; i < spawn_ids.size(); ++i)
-                    st.bullets[i].id = spawn_ids[i];
-            st.alive_bullet_ids = std::move(alive_ids);
+            for (auto& b : gs.blt_mgr.bullets())
+                if (b.net_id() != 0)
+                    st.alive_bullet_ids.push_back(b.net_id());
 
             for (auto& c : gs.crates) {
                 auto pos = c->get_position();
@@ -467,7 +447,6 @@ public:
 private:
     udp_channel                  _sock;
     u16                          _port;
-    u32                          _next_bullet_id = 0;
     game_state*                  _gs             = nullptr;
     clock::time_point            _start_time     = clock::now();
     std::map<std::string, client_t> _clients;
