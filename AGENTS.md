@@ -59,10 +59,14 @@ easybuild-debug/submodules/luacpp/3rd/lib:easybuild-debug/submodules/luacpp/3rd/
   `game_state::gravity_for_bullets` references (toggle from Lua:
   `GS.gravity_for_bullets`).
 - `src/net/` — multiplayer: authoritative UDP server. Protocol in
-  `net_protocol.hpp`; server broadcasts full state every 50 ms; clients
-  stream input at 20 Hz and spawn broadcast bullets. Details in
-  `multiplayer.md`. Remote players use `net_player_controller.hpp`
-  (controller id 1000) and `player::net_controlled()`.
+  `net_protocol.hpp` (bump `protocol_version` on wire changes); the server
+  sends a per-client state every frame; clients send per-tick input
+  windows, predict the local player with rollback and interpolate remote
+  players (`net_sync.hpp`); server-side lag compensation in
+  `game_state::spawn_bullet`. Details in `multiplayer.md` (Netcode). Server
+  players of clients are `player::net_controlled()`, client mirrors of
+  server players are `player::server_driven()`. Simulated latency:
+  `udp_channel::set_simulated_latency` / `--define=DFDH_DEBUG_PING`.
 - `src/script/` — LuaJIT via luacpp; user types in `src/script/typeinit/`.
   Scripts in `data/scripts/*.lua`; `assist.lua`/`assist_ai.lua` are
   **generated at runtime** — never edit or commit them.

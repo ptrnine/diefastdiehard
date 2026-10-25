@@ -26,8 +26,8 @@ appearance in the state snapshots so the client can render remote players.
 client A                          server                         client B
   |  HELLO(name, skin, gun)  --->  (creates player "A",          |
   |<-- WELCOME(name) ----------------  binds net-controller,    |
-  |  INPUT(bits)  every tick ------>  applies input to pl "A")  |
-  |  STATE(all players, 60Hz) <-----  broadcasts snapshots  ---> |
+  |  INPUT(32-tick window) ------->  applies 1 input tick/tick) |
+  |  STATE(per client, per frame) <-  broadcasts snapshots  ---> |
 ```
 
 * Synchronous, non-blocking UDP in the main loop (`sf::UdpSocket::recvFrom`
@@ -35,28 +35,99 @@ client A                          server                         client B
 * UDP datagrams carry a 4-byte header `u16 type, u16 payload_size` followed
   by a payload serialized with the existing `ss::serializer` (little-endian).
 
-### Protocol messages
+### Protocol messages (protocol version 2)
 
 | id  | dir        | payload |
 |-----|------------|---------|
-| 1   | C → S      | HELLO: player name, pistol section, face_id, body_id, body color, tracer color |
+| 1   | C → S      | HELLO: `u16 version`, player name, pistol section, face_id, body_id, body color, tracer color. A version other than `net::protocol_version` is answered with ERROR |
 | 2   | S → C      | WELCOME: player name |
-| 3   | C → S      | INPUT: `u16 seq`, `u16 bits` (see below) |
-| 4   | S → C      | STATE: `u16 tick`, per player: name, pistol, face_id, body_id, body color, tracer color, pos.xy, vel.xy, jumps_left, on_left, shooting; then the bullets spawned this frame by any server player (owner, pos.xy, vel.xy, hit_mass, tracer color, gravity); then the crates (id, pos.xy, vel.xy, landed) — crates are server-authoritative, the client renders them as ghosts driven by the broadcast (pickup happens on the server, the weapon arrives via the player's pistol in the state snapshot); then the dropped guns (id, section, pos.xy, vel.xy, angle, on_left, long_shot); then, appended at the end so old clients still parse the message: the spawn bullet ids (parallel to the bullet list) and the full set of bullet ids currently alive on the server |
+| 3   | C → S      | INPUT: `u32 last_seq`, `u32 client_time_ms`, `u16 rtt_ms`, `u16 interp_ms`, `vector<u16> bits` — the input bits of the last up to 32 ticks, `bits[i]` belongs to tick `last_seq - size + 1 + i` |
+| 4   | S → C      | STATE (encoded per client): `u32 tick`, `u32 server_time_ms` (time of the simulated tick), `u32 ack_seq` (last input tick applied to the client's player), `u32 echo_client_time_ms` + `u16 echo_hold_ms` (RTT echo of the newest input); per player: name, pistol, face_id, body_id, body color, tracer color, physic state (pos.xy, vel.xy, jumps_left, lock_y, accel factors), on_left, shooting; the bullets spawned this frame (owner, id, muzzle start.xy, spawn pos.xy, vel.xy, hit_mass, tracer color, gravity); the crates (id, pos.xy, vel.xy, landed); the dropped guns (id, section, pos.xy, vel.xy, angle, on_left, long_shot); the ids of all bullets alive on the server |
 | 5   | C → S      | LEAVE: player name |
-| 6   | S → C      | ERROR: message string (join failed, etc.) |
+| 6   | S → C      | ERROR: message string (join failed, version mismatch, etc.) |
 
-Input bits:
+Input bits (per tick: held states are the full current state, edges are
+set on the tick of the key press only):
 
 | bit | meaning |
 |-----|---------|
 | 0 | move LEFT (held) |
 | 1 | move RIGHT (held) |
-| 2 | JUMP (pressed edge) |
-| 3 | JUMP-DOWN (pressed edge) |
+| 2 | JUMP (edge) |
+| 3 | JUMP-DOWN (edge) |
 | 4 | SHOT (held) |
-| 5 | SHOT released (edge) |
-| 6 | LONG-SHOT toggle (edge) |
+| 6 | LONG-SHOT (held) |
+| 7 | DROP gun (edge) |
+
+## Netcode
+
+Both sides run the fixed 60 Hz simulation; `physic_simulation` exposes
+tick begin/end callbacks that the network layer hooks into.
+
+### Ordered per-tick input
+
+* The client samples its input once per **simulation tick**
+  (`net_client::input_source`, i.e. `net_player_controller::take_input_state`),
+  applies it to the local player and sends, every frame, a window of the
+  last 32 ticks. A lost or reordered datagram costs nothing: every newer
+  datagram repeats the recent history.
+* The server queues input ticks by seq, ignores ticks it already applied
+  (so a late or duplicated datagram can never bring back an old input —
+  no more stuck shooting) and applies exactly one input tick per server
+  tick. A 3-tick jitter buffer refills after the queue runs dry (a dry
+  tick repeats the last held state without edges); above 8 queued ticks
+  the oldest are merged keeping their edges; after 0.5 s without input
+  the player gets a neutral input.
+
+### Client-side prediction and rollback
+
+* Every predicted tick is kept in an `input_history` (input, recoil
+  impulse, predicted physic state) until the server acknowledges it.
+* A STATE carries the server physic state of the local player after its
+  input tick `ack_seq`. If it differs from the prediction of that tick
+  (> 1 px, > 10 px/s, ground/jump state), the client restores the server
+  state and re-simulates the unacknowledged ticks for the local player
+  only (`physic_simulation::step_isolated`, `player::replaying`). The
+  visual jump is smoothed by a decaying render offset; corrections above
+  150 px (respawn) snap.
+* The local player is `server_driven`: no local bullets, no local hit
+  knockback (it arrives through reconciliation), no local death.
+
+### Remote players
+
+* `server_clock` estimates the server time from the least delayed state
+  in a 2 s window and derives the interpolation delay from the latency
+  jitter (33..300 ms). Remote players are shown at
+  `server_now - interp_delay`, interpolated between snapshots
+  (`snapshot_buffer`), with a monotonic, slewed render clock.
+* States arrive out of order: only the newest one updates configs,
+  crates, dropped guns and the alive bullet set.
+
+### Lag compensation
+
+* Clients report their RTT (measured from the echoed client time) and
+  interpolation delay with every input. The server sets per network
+  player `lag = rtt / 2 + queued input ticks` and
+  `rewind = lag + interp_delay` (both capped at 0.5 s).
+* All weapon bullets go through `game_state::spawn_bullet()`. A network
+  player's bullet spawns forwarded to `start + vel * lag` (ballistic with
+  bullet gravity); the skipped segment is a hit-scan
+  (`game_state::hitscan`) against the other players **rewound** to where
+  the shooter saw them (`player::position_trace_lookup`). A hit applies
+  the bullet hit (`player::on_bullet_hit`) and consumes the bullet.
+* The broadcast carries the muzzle position. A client forwards a
+  received bullet once more by its own one-way lag, so it appears at
+  `start + vel * (shooter lag + own lag)`, in present time, and hit-scans
+  the skipped segment against its own view for hit feedback (hits are
+  decided by the server). Bullets the server already consumed are not
+  spawned.
+
+### Testing with latency
+
+`udp_channel::set_simulated_latency(min_ms, max_ms)` delays (and so
+reorders) every datagram; `DFDH_DEBUG_PING` (`./build-plz --debug
+--define=DFDH_DEBUG_PING`) enables 80..170 ms per hop by default.
+`tests/net_test.cpp` runs real-time loopback games with simulated latency.
 
 ## File layout
 
@@ -227,9 +298,7 @@ Implemented and verified (steps 1–6):
   controller, so the host keyboard does not drive them.
 * **Client position desync**: `net_client::handle_state` used to skip the
   local player, so the locally simulated (predicted) player drifted from
-  the server. The server state now overwrites position/velocity/facing for
-  *all* players including the local one. Local simulation is prediction
-  only.
+  the server. Superseded by prediction with rollback (see Netcode).
 * **Bullet broadcasting**: the server now collects bullets spawned during
   the frame (`game_state::cur_frame_bullets`) and appends them to the
   periodic `state` message (`bullet_info`: owner, pos, vel, mass, tracer
@@ -237,7 +306,7 @@ Implemented and verified (steps 1–6):
   the gravity the server gave it). **All** server-side bullets are broadcast — network players,
   the host's local player and bots. The client spawns them in its own
   `bullet_mgr` and disables local bullet spawning
-  (`player::set_spawn_bullets(false)`) for every server-known player, so
+  (`player::set_server_driven(true)`) for every server-known player, so
   no side ever double-spawns a bullet.
 * **Client bullet removal**: the server assigns every spawned bullet a
   unique id (stored on the bullet itself) and appends to the `state`
@@ -247,9 +316,7 @@ Implemented and verified (steps 1–6):
   on every state, drops any of its tracked bullets that the server no
   longer lists as alive. This removes the artifact where a bullet that hit
   a player on the server kept flying on a client whose local simulation
-  diverged slightly and didn't register the hit. Old servers (no id
-  section) are still handled by the existing layout fallback — bullets
-  just keep the old fire-and-forget behavior.
+  diverged slightly and didn't register the hit.
 * **Remote pistol animation**: `state_player` carries a `shooting` flag
   (trigger held). The client calls `shot()`/`relax()` on remote players so
   muzzle flash, recoil and sounds play locally; the actual bullets still
@@ -267,7 +334,11 @@ Implemented and verified (steps 1–6):
   they exist on both sides with the same name and the levels match;
   local bot AI runs between server-state snaps but is overwritten every
   frame. Levels/platforms must match by name.
-* No interpolation — client snaps to the latest server state.
+* Own bullets are not predicted: they appear one round trip after the
+  shot (in present time, forwarded by the lag); recoil, muzzle flash and
+  animations are instant.
+* Players are in group 0 by default and bullets skip same-group players;
+  assign groups (console `group`) for players to hit each other.
 * One player per client address; rename on rejoin deletes the old player.
 * Remote pistol ammo/reload animation is driven locally on the client and
   can drift from the server's (same weapon, slightly different timing);
