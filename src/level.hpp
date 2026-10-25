@@ -46,7 +46,7 @@ public:
 
         /* Optional bullet gravity y value; key absent means bullet gravity is off */
         auto bg = sect.try_get<float>("bullet_gravity");
-        _bullet_gravity = bg ? std::optional<float>(bg.value()) : std::nullopt;
+        _bullet_gravity = bg ? std::optional<float>(bg->value()) : std::nullopt;
 
         auto txtr_path              = fs::current_path() / "data/textures/" / _name;
         auto end_platform_txtr_path = txtr_path / "end_platform.png";
