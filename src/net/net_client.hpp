@@ -67,7 +67,7 @@ public:
 
         glog().info("net client: connecting to {}:{} as {}", server_ip, server_port, name);
 #if defined(DFDH_DEBUG_PING)
-        glog().info("net client: DFDH_DEBUG_PING is enabled, simulating ~250ms ping (~125ms one-way)");
+        glog().info("net client: DFDH_DEBUG_PING is enabled, delaying every sent and received datagram by 80..170ms (~500ms ping between two such ends)");
 #endif
 
         hello h;
@@ -162,6 +162,8 @@ public:
             gs.sim.add_tick_end_callback("net_client", [this](const physic_simulation&, float) { record_prediction(*_gs); });
         }
 
+        register_predicted_bullets(gs);
+
         for (auto& datagram : _sock.recv(std::chrono::milliseconds(2))) {
             net_msg msg;
             try {
@@ -180,8 +182,21 @@ public:
             }
         }
 
+        expire_predicted_bullets(gs);
         apply_remote_snapshots(gs);
         send_input_window();
+    }
+
+    /** Largest distance between a predicted own bullet and its confirmed trajectory so far, px */
+    [[nodiscard]]
+    float max_bullet_correction() const {
+        return _max_bullet_correction;
+    }
+
+    /** Own bullets predicted locally and not confirmed by the server yet */
+    [[nodiscard]]
+    size_t pending_predicted_bullets() const {
+        return _predicted.size();
     }
 
     /* For tests: the channel (e.g. to simulate latency) */
@@ -229,12 +244,14 @@ private:
             return;
 
         auto in = _input_source();
+        ++_input_seq;
+        pl->set_predict_bullets(true);
+        pl->last_input_seq(_input_seq);
         pl->apply_input(in);
 
         _sent_inputs.push_back(in.to_bits());
         if (_sent_inputs.size() > input::max_window)
             _sent_inputs.pop_front();
-        ++_input_seq;
 
         /* The impulses applied since the previous tick (recoil) belong to this tick */
         _history.push({_input_seq, in, pl->take_pending_impulse(), timestep});
@@ -308,6 +325,9 @@ private:
         auto vel         = vec2f{b.vel_x, b.vel_y};
         auto [pos, fwd_vel] = gs.ballistic_forward({b.pos_x, b.pos_y}, vel, b.gravity, lag);
 
+        if (_joined && player_name_t(b.owner) == _name && confirm_predicted_bullet(gs, b, alive))
+            return;
+
         if (found_owner != gs.players.end()) {
             if (auto hit = gs.hitscan(start, pos, 0.f, *found_owner->second)) {
                 hit->target->on_bullet_hit(vel * b.hit_mass, hit->position);
@@ -320,6 +340,71 @@ private:
 
         auto& blt = gs.blt_mgr.shot(gs.sim, pos, b.hit_mass, fwd_vel, unpack_color(b.tracer_color), b.gravity);
         blt.net_id(b.id);
+    }
+
+    struct predicted_bullet_t {
+        game_state::shot_key_t      key;
+        std::weak_ptr<physic_point> physic;
+        double                      time_s;
+    };
+
+    /* Track the own bullets the local weapon spawned this frame (game_state::spawn_bullet) */
+    void register_predicted_bullets(game_state& gs) {
+        for (auto& be : gs.cur_frame_bullets)
+            if (be.predicted && be.owner == _name)
+                _predicted.push_back({be.key, be.physic, time_s()});
+    }
+
+    /**
+     * The authoritative counterpart of a predicted own bullet arrived (same
+     * shot key): the prediction takes its id and its trajectory (start and
+     * velocity; the elapsed time since the shot is known exactly here, better
+     * than the server's lag estimate), or disappears if the bullet is already
+     * dead on the server. Returns false if nothing was predicted for the key
+     */
+    bool confirm_predicted_bullet(game_state& gs, const bullet_info& b, bool alive) {
+        auto key   = game_state::shot_key_t{b.pull_seq, b.shot_index, b.pellet};
+        auto found = std::ranges::find_if(_predicted, [&](const predicted_bullet_t& p) { return p.key == key; });
+        if (found == _predicted.end())
+            return false;
+
+        if (auto ph = found->physic.lock(); ph && !ph->ready_delete_later()) {
+            if (alive) {
+                /* Simulated flight time of the prediction (its travelled distance over its speed) */
+                auto elapsed    = ph->get_distance() / std::max(ph->scalar_velocity(), 1.f);
+                auto [pos, vel] = gs.ballistic_forward({b.start_x, b.start_y}, {b.vel_x, b.vel_y}, b.gravity, elapsed);
+                auto correction        = magnitude(pos - ph->get_position());
+                _max_bullet_correction = std::max(_max_bullet_correction, correction);
+                if (correction > 1.f)
+                    glog().detail("net client: predicted bullet corrected by {} px", correction);
+                ph->position(pos);
+                ph->velocity(vel);
+                for (auto& blt : gs.blt_mgr.bullets())
+                    if (blt.physic() == ph)
+                        blt.net_id(b.id);
+            }
+            else
+                ph->delete_later(); /* it hit something on the server */
+        }
+
+        _predicted.erase(found);
+        return true;
+    }
+
+    /* Predictions the server never confirmed (the server did not fire that shot) */
+    void expire_predicted_bullets(game_state& gs) {
+        auto timeout = std::max(0.5, double(_rtt_s) * 2.0 + 0.25);
+        auto now     = time_s();
+        bool removed = false;
+        while (!_predicted.empty() && now - _predicted.front().time_s > timeout) {
+            if (auto ph = _predicted.front().physic.lock()) {
+                ph->delete_later();
+                removed = true;
+            }
+            _predicted.pop_front();
+        }
+        if (removed)
+            gs.blt_mgr.remove_dead();
     }
 
     /* Every frame: show remote players at the interpolated server time */
@@ -410,7 +495,7 @@ private:
         _clock.on_state(time_s(), double(st.server_time_ms) / 1000.0);
 
         /* States may arrive out of order: only the newest one updates the world state */
-        bool newest = st.tick >= _last_state_tick;
+        bool newest = st.tick > _last_state_tick;
         if (newest)
             _last_state_tick = st.tick;
 
@@ -561,6 +646,8 @@ private:
     float        _max_correction  = 0.f;
     server_clock _clock;
     std::map<player_name_t, snapshot_buffer<remote_player_snapshot>> _remote;
+    std::deque<predicted_bullet_t>                                   _predicted;
+    float                                                            _max_bullet_correction = 0.f;
 };
 
 } // namespace dfdh::net

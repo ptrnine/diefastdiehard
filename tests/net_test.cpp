@@ -1094,7 +1094,7 @@ struct net_game_fixture {
     }
 };
 
-TEST_CASE("net: client-side prediction under ~250ms ping") {
+TEST_CASE("net: client-side prediction under ~500ms ping") {
     using namespace std::chrono_literals;
     net_game_fixture f{80, 170};
 
@@ -1311,7 +1311,102 @@ TEST_CASE("net: clients see server bullets in present time") {
     CHECK(std::abs(cli_x - srv_x) < speed * 0.07f);
 }
 
-TEST_CASE("udp_channel simulates ~250ms ping") {
+TEST_CASE("net: own bullets are predicted and confirmed by the server") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{80, 170};
+    f.run_for(3000ms);
+    REQUIRE(f.local().pistol_section() == "wpn_glk17");
+
+    /* The shot shows up locally right away, long before the server could answer */
+    f.input = {.shot = true};
+    bool predicted_early = false;
+    f.run_for(60ms, [&] {
+        predicted_early = predicted_early || !f.gs_cli.blt_mgr.bullets().empty();
+    });
+    CHECK(predicted_early);
+
+    f.run_for(600ms);
+    f.input = {};
+    f.run_for(1500ms);
+
+    /* Every prediction was confirmed (or expired): no pending ones */
+    CHECK(f.cli->pending_predicted_bullets() == 0);
+
+    /* Same shot key, same seeded dispersion: the prediction flew the authoritative trajectory */
+    CHECK(f.cli->max_bullet_correction() < 2.f);
+
+    /* Exactly the server's bullets exist on the client: no duplicates, no orphan predictions */
+    std::vector<u32> srv_ids, cli_ids;
+    for (auto& b : f.gs_srv.blt_mgr.bullets())
+        srv_ids.push_back(b.net_id());
+    for (auto& b : f.gs_cli.blt_mgr.bullets())
+        if (!b.physic()->ready_delete_later())
+            cli_ids.push_back(b.net_id());
+    std::ranges::sort(srv_ids);
+    std::ranges::sort(cli_ids);
+    REQUIRE(srv_ids.size() > 1);
+    CHECK(cli_ids == srv_ids);
+}
+
+TEST_CASE("weapon: seeded shots are deterministic") {
+    game_state gs;
+    auto a = gs.player_create("a");
+    auto b = gs.player_create("b");
+    REQUIRE(a);
+    REQUIRE(b);
+    a->setup_pistol("wpn_1887"); /* buckshot: several pellets per shot */
+    b->setup_pistol("wpn_1887");
+    gs.game_run(true);
+
+    auto fire = [&](player& pl) {
+        pl.last_input_seq(42);
+        pl.lag_compensation({});
+        REQUIRE(pl.shot());
+        auto ctrl = std::make_shared<player_controller>(7);
+        ctrl->player_name = pl.name();
+        gs.controller_attach(7, ctrl);
+        gs.rebuild_controlled_players();
+        for (int i = 0; i < 200 && gs.cur_frame_bullets.empty(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            gs.game_update();
+        }
+        pl.relax();
+        gs.controller_delete(7);
+        gs.rebuild_controlled_players();
+        REQUIRE(!gs.cur_frame_bullets.empty());
+        return gs.cur_frame_bullets;
+    };
+
+    auto shots_a = fire(*a);
+    auto shots_b = fire(*b);
+    REQUIRE(shots_a.size() == shots_b.size());
+    REQUIRE(shots_a.size() > 1);
+    for (size_t i = 0; i < shots_a.size(); ++i) {
+        CHECK(shots_a[i].key == shots_b[i].key);
+        CHECK(shots_a[i].key.pellet == i);
+        CHECK(normalize(shots_a[i].velocity).x == Catch::Approx(normalize(shots_b[i].velocity).x));
+        CHECK(normalize(shots_a[i].velocity).y == Catch::Approx(normalize(shots_b[i].velocity).y));
+    }
+}
+
+TEST_CASE("net: unconfirmed bullet predictions expire") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{80, 170};
+    f.run_for(3000ms);
+
+    /* A predicted bullet the server never fired */
+    f.gs_cli.spawn_bullet(f.local(), f.local().get_position(), {0.f, -1500.f}, 1.f, false);
+    f.cli->update(f.gs_cli);
+    REQUIRE(f.cli->pending_predicted_bullets() == 1);
+    REQUIRE(f.gs_cli.blt_mgr.bullets().size() == 1);
+    CHECK(f.gs_cli.blt_mgr.bullets().front().net_id() == 0);
+
+    f.run_for(2000ms); /* timeout: max(0.5 s, 2 * rtt + 0.25 s) */
+    CHECK(f.cli->pending_predicted_bullets() == 0);
+    CHECK(f.gs_cli.blt_mgr.bullets().empty());
+}
+
+TEST_CASE("udp_channel simulates latency") {
     using namespace net;
 
     udp_channel srv;

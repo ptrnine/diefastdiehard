@@ -371,15 +371,29 @@ public:
      * Bullets spawned during the last game_update() frame,
      * collected for the server to broadcast to clients
      */
+    /* Identifies a bullet of a network player's shot on both the client and the server */
+    struct shot_key_t {
+        u32 pull_seq   = 0; // input tick of the trigger pull
+        u32 shot_index = 0; // shot number since the pull
+        u32 pellet     = 0; // pellet number in the shot
+
+        bool operator==(const shot_key_t&) const = default;
+    };
+
     struct bullet_event_t {
         player_name_t owner;
-        u32           id;           // bullet net_id (no live bullet if the hit-scan consumed it)
+        u32           id;           // bullet net_id (no live bullet if the hit-scan consumed it), 0 if predicted
+        shot_key_t    key;          // deterministic shot key (network players)
         vec2f         start;        // muzzle position
         vec2f         position;     // spawn position (lag-forwarded)
         vec2f         velocity;
         float         hit_mass;
         sf::Color     tracer_color;
         bool          gravity; // gravity flag the bullet was spawned with
+
+        /* Predicted bullet (client side, own bullets): not authoritative, no net id yet */
+        bool                        predicted = false;
+        std::weak_ptr<physic_point> physic;
     };
 
     std::vector<bullet_event_t> cur_frame_bullets;
@@ -387,7 +401,7 @@ public:
     /* Spawns the bullets of a player's weapon through spawn_bullet() */
     struct bullet_spawn_callback {
         void operator()(const vec2f& position, const vec2f& velocity, float mass) {
-            if (!pl->server_driven())
+            if (!pl->server_driven() || pl->predicts_bullets())
                 gs->spawn_bullet(*pl, position, velocity, mass, gravity);
         }
 
@@ -401,7 +415,7 @@ public:
     };
 
     /* Lag compensation is capped: a client can't shoot further in the past than this */
-    static constexpr float max_lag_compensation = 0.5f;
+    static constexpr float max_lag_compensation = 1.f;
 
     struct hitscan_hit_t {
         player* target;
@@ -455,26 +469,49 @@ public:
      * Spawn a bullet of the owner's weapon. A lag-compensated (network) owner
      * shot lag seconds ago on its screen: the bullet spawns forwarded by the
      * distance it would have flown since, and the skipped segment is covered
-     * by a hit-scan against the players as the owner saw them (rewound)
+     * by a hit-scan against the players as the owner saw them (rewound).
+     * A server-driven owner's bullet is a prediction (client side): it gets
+     * no net id until the authoritative bullet is matched to it
      */
     void spawn_bullet(player& owner, const vec2f& start, const vec2f& velocity, float mass, bool gravity) {
         auto lag    = std::min(owner.lag_compensation().lag, max_lag_compensation);
         auto rewind = std::min(owner.lag_compensation().rewind, max_lag_compensation);
-        auto id     = ++_next_bullet_id;
+        auto key    = next_shot_key(owner);
+
+        if (owner.server_driven()) {
+            auto& blt = blt_mgr.shot(sim, start, mass, velocity, owner.tracer_color(), gravity, owner.get_group(),
+                                     player::player_group_getter);
+            cur_frame_bullets.push_back(
+                {owner.name(), 0, key, start, start, velocity, mass, owner.tracer_color(), gravity, true, blt.physic()});
+            return;
+        }
+
+        auto id = ++_next_bullet_id;
 
         auto [pos, vel] = ballistic_forward(start, velocity, gravity, lag);
 
         if (lag > 0.f) {
             if (auto hit = hitscan(start, pos, rewind, owner)) {
                 hit->target->on_bullet_hit(velocity * mass, hit->position);
-                cur_frame_bullets.push_back({owner.name(), id, start, start, velocity, mass, owner.tracer_color(), gravity});
+                cur_frame_bullets.push_back({owner.name(), id, key, start, start, velocity, mass, owner.tracer_color(), gravity, false, {}});
                 return;
             }
         }
 
         auto& blt = blt_mgr.shot(sim, pos, mass, vel, owner.tracer_color(), gravity, owner.get_group(), player::player_group_getter);
         blt.net_id(id);
-        cur_frame_bullets.push_back({owner.name(), id, start, pos, vel, mass, owner.tracer_color(), gravity});
+        cur_frame_bullets.push_back({owner.name(), id, key, start, pos, vel, mass, owner.tracer_color(), gravity, false, {}});
+    }
+
+    /* Key of the owner's bullet being spawned: pellets of one shot are numbered in spawn order */
+    [[nodiscard]]
+    shot_key_t next_shot_key(const player& owner) const {
+        auto& gun = owner.get_gun();
+        auto  key = shot_key_t{gun.seed_base().value_or(0), gun.shot_index(), 0};
+        for (auto& be : cur_frame_bullets)
+            if (be.owner == owner.name() && be.key.pull_seq == key.pull_seq && be.key.shot_index == key.shot_index)
+                ++key.pellet;
+        return key;
     }
 
     /* Bullet position and velocity after flying for t seconds */
@@ -498,7 +535,8 @@ public:
             cur_frame_bullets.clear();
 
             for (auto& [_, pl] : players) {
-                if (controlled_players.contains(pl->name()) || ai_operators.contains(pl->name()) || pl->net_controlled())
+                if (controlled_players.contains(pl->name()) || ai_operators.contains(pl->name()) || pl->net_controlled() ||
+                    pl->predicts_bullets())
                     pl->game_update(sim,
                                     blt_mgr,
                                     cam_pos,

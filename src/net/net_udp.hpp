@@ -140,8 +140,9 @@ public:
      * Simulated network latency: every datagram sent and received through
      * this channel is delayed by a random duration in [min_ms, max_ms], so
      * datagrams also get reordered. 0, 0 disables it. With DFDH_DEBUG_PING
-     * it defaults to 80..170 ms per hop (~250 ms round-trip ping between
-     * a client and a server)
+     * it defaults to 80..170 ms; both the sender and the receiver delay a
+     * datagram, so between a client and a server built with it a one-way
+     * trip takes 160..340 ms (~500 ms round-trip ping)
      */
     void set_simulated_latency(double min_ms, double max_ms) {
         _delay_min_ms = min_ms;

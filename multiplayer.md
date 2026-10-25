@@ -35,14 +35,14 @@ client A                          server                         client B
 * UDP datagrams carry a 4-byte header `u16 type, u16 payload_size` followed
   by a payload serialized with the existing `ss::serializer` (little-endian).
 
-### Protocol messages (protocol version 2)
+### Protocol messages (protocol version 3)
 
 | id  | dir        | payload |
 |-----|------------|---------|
 | 1   | C → S      | HELLO: `u16 version`, player name, pistol section, face_id, body_id, body color, tracer color. A version other than `net::protocol_version` is answered with ERROR |
 | 2   | S → C      | WELCOME: player name |
 | 3   | C → S      | INPUT: `u32 last_seq`, `u32 client_time_ms`, `u16 rtt_ms`, `u16 interp_ms`, `vector<u16> bits` — the input bits of the last up to 32 ticks, `bits[i]` belongs to tick `last_seq - size + 1 + i` |
-| 4   | S → C      | STATE (encoded per client): `u32 tick`, `u32 server_time_ms` (time of the simulated tick), `u32 ack_seq` (last input tick applied to the client's player), `u32 echo_client_time_ms` + `u16 echo_hold_ms` (RTT echo of the newest input); per player: name, pistol, face_id, body_id, body color, tracer color, physic state (pos.xy, vel.xy, jumps_left, lock_y, accel factors), on_left, shooting; the bullets spawned this frame (owner, id, muzzle start.xy, spawn pos.xy, vel.xy, hit_mass, tracer color, gravity); the crates (id, pos.xy, vel.xy, landed); the dropped guns (id, section, pos.xy, vel.xy, angle, on_left, long_shot); the ids of all bullets alive on the server |
+| 4   | S → C      | STATE (encoded per client): `u32 tick` (broadcast sequence number), `u32 server_time_ms` (time of the simulated tick), `u32 ack_seq` (last input tick applied to the client's player), `u32 echo_client_time_ms` + `u16 echo_hold_ms` (RTT echo of the newest input); per player: name, pistol, face_id, body_id, body color, tracer color, physic state (pos.xy, vel.xy, jumps_left, lock_y, accel factors), on_left, shooting; the bullets spawned this frame (owner, id, shot key: pull_seq/shot_index/pellet, muzzle start.xy, spawn pos.xy, vel.xy, hit_mass, tracer color, gravity); the crates (id, pos.xy, vel.xy, landed); the dropped guns (id, section, pos.xy, vel.xy, angle, on_left, long_shot); the ids of all bullets alive on the server |
 | 5   | C → S      | LEAVE: player name |
 | 6   | S → C      | ERROR: message string (join failed, version mismatch, etc.) |
 
@@ -108,7 +108,7 @@ tick begin/end callbacks that the network layer hooks into.
 * Clients report their RTT (measured from the echoed client time) and
   interpolation delay with every input. The server sets per network
   player `lag = rtt / 2 + queued input ticks` and
-  `rewind = lag + interp_delay` (both capped at 0.5 s).
+  `rewind = lag + interp_delay` (both capped at 1 s).
 * All weapon bullets go through `game_state::spawn_bullet()`. A network
   player's bullet spawns forwarded to `start + vel * lag` (ballistic with
   bullet gravity); the skipped segment is a hit-scan
@@ -122,11 +122,30 @@ tick begin/end callbacks that the network layer hooks into.
   decided by the server). Bullets the server already consumed are not
   spawned.
 
+### Own bullet prediction
+
+* The client's local player (`player::predicts_bullets`) spawns its own
+  bullets immediately, without a net id.
+* Every network shot has a deterministic key: the input tick of the
+  trigger pull, the shot index since the pull and the pellet number
+  (`game_state::shot_key_t`). On a pull, the weapon is seeded with the
+  pull tick (`weapon_instance::seed_shots`) and the dispersion of each
+  shot comes from (pull tick, shot index), so the client and the server
+  fire exactly the same directions.
+* The broadcast carries the key. The client confirms the predicted
+  bullet with the same key: it takes the server id and the authoritative
+  start/velocity, forwarded by its own simulated flight time (no lag
+  estimate needed), or is removed if the server bullet is already dead.
+  A server bullet without a prediction is spawned normally; a prediction
+  the server never confirms expires after `max(0.5 s, 2 * rtt + 0.25 s)`.
+
 ### Testing with latency
 
 `udp_channel::set_simulated_latency(min_ms, max_ms)` delays (and so
-reorders) every datagram; `DFDH_DEBUG_PING` (`./build-plz --debug
---define=DFDH_DEBUG_PING`) enables 80..170 ms per hop by default.
+reorders) every datagram it sends and receives; `DFDH_DEBUG_PING`
+(`./build-plz --debug --define=DFDH_DEBUG_PING`) enables 80..170 ms by
+default. Both ends delay, so a client and a server built with it see a
+one-way trip of 160..340 ms (~500 ms ping).
 `tests/net_test.cpp` runs real-time loopback games with simulated latency.
 
 ## File layout
@@ -334,9 +353,6 @@ Implemented and verified (steps 1–6):
   they exist on both sides with the same name and the levels match;
   local bot AI runs between server-state snaps but is overwritten every
   frame. Levels/platforms must match by name.
-* Own bullets are not predicted: they appear one round trip after the
-  shot (in present time, forwarded by the lag); recoil, muzzle flash and
-  animations are instant.
 * Players are in group 0 by default and bullets skip same-group players;
   assign groups (console `group`) for players to hit each other.
 * One player per client address; rename on rejoin deletes the old player.

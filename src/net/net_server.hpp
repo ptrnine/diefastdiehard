@@ -86,7 +86,7 @@ public:
         else {
             glog().info("net server: listening on udp port {}", port);
 #if defined(DFDH_DEBUG_PING)
-            glog().info("net server: DFDH_DEBUG_PING is enabled, simulating ~250ms ping (~125ms one-way)");
+            glog().info("net server: DFDH_DEBUG_PING is enabled, delaying every sent and received datagram by 80..170ms (~500ms ping between two such ends)");
 #endif
         }
     }
@@ -129,7 +129,7 @@ public:
         /* Broadcast the state once per frame */
         if (!_clients.empty()) {
             net::state st;
-            st.tick           = u32(gs.sim.tick());
+            st.tick           = ++_broadcast_seq;
             /* Time of the simulated state (the last tick), not of the broadcast */
             st.server_time_ms = u32(std::chrono::duration_cast<std::chrono::milliseconds>(
                                         gs.sim.current_update_time() - _start_time)
@@ -146,6 +146,9 @@ public:
             for (auto& be : gs.cur_frame_bullets)
                 st.bullets.push_back(bullet_info{std::string(be.owner),
                                                  be.id,
+                                                 be.key.pull_seq,
+                                                 u16(be.key.shot_index),
+                                                 u8(be.key.pellet),
                                                  be.start.x,
                                                  be.start.y,
                                                  be.position.x,
@@ -275,6 +278,7 @@ private:
                 bits = client.held_bits;
             }
 
+            found->second->last_input_seq(client.ack_seq);
             found->second->apply_input(player_input_state::from_bits(bits));
 
             auto lag = client.rtt_s * 0.5f + float(q.size()) / 60.f;
@@ -448,6 +452,7 @@ private:
     udp_channel                  _sock;
     u16                          _port;
     game_state*                  _gs             = nullptr;
+    u32                          _broadcast_seq  = 0;
     clock::time_point            _start_time     = clock::now();
     std::map<std::string, client_t> _clients;
 };

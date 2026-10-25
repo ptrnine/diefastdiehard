@@ -606,6 +606,28 @@ public:
         return std::exchange(_on_shot, false);
     }
 
+    /**
+     * Deterministic shots (network play): from now on the dispersion of shot
+     * number n is generated from (base, n), so the client prediction and the
+     * server fire the very same directions. Called on every trigger pull with
+     * the input tick of the pull
+     */
+    void seed_shots(u32 base) {
+        _seed_base  = base;
+        _shot_index = 0;
+    }
+
+    [[nodiscard]]
+    const std::optional<u32>& seed_base() const {
+        return _seed_base;
+    }
+
+    /* Index of the shot being fired (inside the bullet spawn callback) or of the next one */
+    [[nodiscard]]
+    u32 shot_index() const {
+        return _shot_index;
+    }
+
     std::array<vec2f, 2> draw(const vec2f&      position,
                               bool              left_dir,
                               bool              enable_long_shot,
@@ -848,7 +870,15 @@ private:
         direction  = normalize(rotate_vec(direction, shot_angle));
         auto angl  = _wpn->_buckshot == 1 ? _wpn->_dispersion : _wpn->_dispersion * 0.5f;
 
-        auto rand_dir = [rand_pool](const vec2f& dir, float angle) {
+        std::optional<std::mt19937> seeded;
+        if (_seed_base)
+            seeded.emplace(*_seed_base * 2654435761u ^ (_shot_index + 1) * 2246822519u);
+
+        auto rand_dir = [rand_pool, &seeded](const vec2f& dir, float angle) {
+            if (seeded)
+                return randomize_dir(dir, angle, [&seeded](float min, float max) {
+                    return min + (max - min) * float(double((*seeded)()) / double(std::mt19937::max()));
+                });
             if (!rand_pool)
                 return randomize_dir(dir, angle);
             return randomize_dir(dir, angle, [rand_pool](float min, float max) { return rand_pool->gen(min, max); });
@@ -881,6 +911,7 @@ private:
             for (u32 i = 0; i < _wpn->_buckshot; ++i)
                 spawn(rand_dir(dir, _wpn->_dispersion));
 
+        ++_shot_index;
         play_animation("shot");
 
         if (_wpn->_shot_flash) {
@@ -928,6 +959,9 @@ private:
     bool  _on_shot   = false;
     bool  _on_reload = false;
     timer _shot_timer;
+
+    std::optional<u32> _seed_base;
+    u32                _shot_index = 0;
 
     struct played_sound_info {
         size_t sound_index;

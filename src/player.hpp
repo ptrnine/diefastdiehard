@@ -303,9 +303,14 @@ public:
     }
 
     bool shot() {
-        if (_pistol)
-            return _pistol.pull_trigger(_tracer_color);
-        return false;
+        if (!_pistol)
+            return false;
+
+        auto pulled = _pistol.pull_trigger(_tracer_color);
+        /* Network-driven: deterministic dispersion keyed by the input tick of the pull */
+        if (pulled && _last_input_seq != 0)
+            _pistol.seed_shots(_last_input_seq);
+        return pulled;
     }
 
     /**
@@ -732,6 +737,34 @@ public:
     }
 
     /**
+     * Server-driven player whose own bullets are predicted: its weapon spawns
+     * them locally right away (the client's local player); the server's
+     * authoritative bullets are then matched to them
+     */
+    void set_predict_bullets(bool value) {
+        _predict_bullets = value;
+    }
+
+    [[nodiscard]]
+    bool predicts_bullets() const {
+        return _predict_bullets;
+    }
+
+    /**
+     * Seq of the network input tick being applied to this player (set before
+     * the input is applied); trigger pulls are keyed by it, so predicted and
+     * authoritative bullets can be matched
+     */
+    void last_input_seq(u32 value) {
+        _last_input_seq = value;
+    }
+
+    [[nodiscard]]
+    u32 last_input_seq() const {
+        return _last_input_seq;
+    }
+
+    /**
      * Marked for players driven by the network server (no local controller needed
      * so the host keyboard does not drive them); they get full simulation,
      * including local bullet spawning
@@ -964,6 +997,8 @@ private:
     enum player_dir_t { dir_none = 0, dir_left, dir_right } _dir;
     bool _on_left            = false;
     bool _server_driven      = false;
+    bool _predict_bullets    = false;
+    u32  _last_input_seq     = 0;
     bool _replaying          = false;
     bool _net_controlled     = false;
     bool _jump_pressed       = false;

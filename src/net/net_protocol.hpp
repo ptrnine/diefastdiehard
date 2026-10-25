@@ -24,7 +24,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 2;
+inline constexpr u16 protocol_version = 3;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -199,7 +199,11 @@ struct state_player {
  */
 struct bullet_info {
     std::string owner; // player name
-    u32         id      = 0;
+    u32         id       = 0;
+    /* Shot key (matches the owner's predicted bullets): trigger pull input tick, shot index since the pull, pellet */
+    u32         pull_seq   = 0;
+    u16         shot_index = 0;
+    u8          pellet     = 0;
     float       start_x = 0.f;
     float       start_y = 0.f;
     float       pos_x  = 0.f;
@@ -211,11 +215,11 @@ struct bullet_info {
     bool        gravity = false; // gravity flag the bullet was spawned with
 
     void serialize(auto& s) const {
-        s.write(owner, id, start_x, start_y, pos_x, pos_y, vel_x, vel_y, hit_mass, tracer_color, gravity);
+        s.write(owner, id, pull_seq, shot_index, pellet, start_x, start_y, pos_x, pos_y, vel_x, vel_y, hit_mass, tracer_color, gravity);
     }
 
     void deserialize(auto& d) {
-        d.read(owner, id, start_x, start_y, pos_x, pos_y, vel_x, vel_y, hit_mass, tracer_color, gravity);
+        d.read(owner, id, pull_seq, shot_index, pellet, start_x, start_y, pos_x, pos_y, vel_x, vel_y, hit_mass, tracer_color, gravity);
     }
 };
 
@@ -263,7 +267,7 @@ struct gun_info {
 };
 
 struct state {
-    u32 tick           = 0;
+    u32 tick           = 0; // broadcast sequence number (several broadcasts can share a simulation tick)
     u32 server_time_ms = 0; // server clock at the simulation tick of this state
 
     /* Per receiving client */
