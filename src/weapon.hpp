@@ -2,6 +2,7 @@
 
 #include <SFML/Graphics/RenderWindow.hpp>
 #include <SFML/Graphics/Sprite.hpp>
+#include <utility>
 
 #include "base/rand_pool.hpp"
 #include "base/cfg.hpp"
@@ -420,8 +421,7 @@ public:
         auto found = _wpns.find(section);
         if (found != _wpns.end())
             return found->second;
-        else
-            return _wpns.emplace(section, weapon(section)).first->second;
+        return _wpns.emplace(section, weapon(section)).first->second;
     }
 
     void reload() {
@@ -436,25 +436,20 @@ public:
         if (found != _wpns.end()) {
             found->second.cfg_set();
             found->second.reload_layers();
+            return;
         }
-        else {
-            /* TODO: do something with this */
-            if (wpn_section.ends_with("_reload"))
-                wpn_section.resize(wpn_section.size() - 7);
-            else if (wpn_section.ends_with("_shot"))
-                wpn_section.resize(wpn_section.size() - 5);
-            else if (wpn_section.ends_with("_load_start"))
-                wpn_section.resize(wpn_section.size() - 11);
-            else if (wpn_section.ends_with("_load_end"))
-                wpn_section.resize(wpn_section.size() - 9);
-            else if (wpn_section.ends_with("_shell"))
-                wpn_section.resize(wpn_section.size() - 6);
 
-            found = _wpns.find(wpn_section);
-            if (found != _wpns.end()) {
-                found->second.reload_layers();
+        /* Animation section changed: reload the layers (and animations) of its weapon */
+        for (std::string_view anim_suffix : {"_reload", "_shot", "_load_start", "_load_end", "_shell"}) {
+            if (wpn_section.ends_with(anim_suffix)) {
+                wpn_section.resize(wpn_section.size() - anim_suffix.size());
+                break;
             }
         }
+
+        found = _wpns.find(wpn_section);
+        if (found != _wpns.end())
+            found->second.reload_layers();
         /* TODO: log if section not found? */
     }
 
@@ -567,34 +562,19 @@ public:
 
         if (_on_shot && _ammo_elapsed &&
             _shot_timer.elapsed(sim.last_speed()) > 60.f / _wpn->_fire_rate) {
-            if constexpr (std::is_same_v<F, int>)
-                shot(position,
-                     cam_position,
-                     direction,
-                     enable_long_shot,
-                     bm,
-                     sim,
-                     _last_tracer_color,
-                     gravity_for_bullets,
-                     spawn_bullet,
-                     std::forward<F2>(bullet_spawn_callback),
-                     -1,
-                     -1,
-                     rand_pool);
-            else
-                shot(position,
-                     cam_position,
-                     direction,
-                     enable_long_shot,
-                     bm,
-                     sim,
-                     _last_tracer_color,
-                     gravity_for_bullets,
-                     spawn_bullet,
-                     std::forward<F2>(bullet_spawn_callback),
-                     group,
-                     std::move(player_group_getter),
-                     rand_pool);
+            shot(position,
+                 cam_position,
+                 direction,
+                 enable_long_shot,
+                 bm,
+                 sim,
+                 _last_tracer_color,
+                 gravity_for_bullets,
+                 spawn_bullet,
+                 std::forward<F2>(bullet_spawn_callback),
+                 std::is_same_v<F, int> ? -1 : group,
+                 std::move(player_group_getter),
+                 rand_pool);
             _on_reload = false;
             _shot_timer.restart();
             return _wpn->_recoil;
@@ -618,20 +598,12 @@ public:
         if (tracer_color)
             _last_tracer_color = *tracer_color;
 
-        if (_on_shot)
-            return false;
-        else
-            return _on_shot = true;
+        return !std::exchange(_on_shot, true);
     }
 
     /* Returns false if trigger has been already relaxed */
     bool relax_trigger() {
-        if (!_on_shot)
-            return false;
-        else {
-            _on_shot = false;
-            return true;
-        }
+        return std::exchange(_on_shot, false);
     }
 
     std::array<vec2f, 2> draw(const vec2f&      position,
@@ -782,12 +754,13 @@ public:
 
         float factor = inverse_lerp(beg->_time, end->_time, cur_frame_time);
         std::vector<weapon_anim_frame::key_t> keys;
+        keys.reserve(beg->_layers.size());
         for (u32 i = 0; i < beg->_layers.size(); ++i) {
-            weapon_anim_frame::key_t key;
-            key.position = interpl(beg->_layers[i].position, end->_layers[i].position, factor, end->_intrpl);
-            key.scale    = interpl(beg->_layers[i].scale, end->_layers[i].scale, factor, end->_intrpl);
-            key.angle    = interpl(beg->_layers[i].angle, end->_layers[i].angle, factor, end->_intrpl);
-            keys.push_back(key);
+            auto& b = beg->_layers[i];
+            auto& e = end->_layers[i];
+            keys.push_back({interpl(b.position, e.position, factor, end->_intrpl),
+                            interpl(b.scale, e.scale, factor, end->_intrpl),
+                            interpl(b.angle, e.angle, factor, end->_intrpl)});
         }
 
         auto& layers = _wpn->_layers;
@@ -875,13 +848,14 @@ private:
         direction  = normalize(rotate_vec(direction, shot_angle));
         auto angl  = _wpn->_buckshot == 1 ? _wpn->_dispersion : _wpn->_dispersion * 0.5f;
 
-        auto dir = !rand_pool ? randomize_dir(direction, angl)
-                              : randomize_dir(direction, angl, [rand_pool](float min, float max) {
-                                    return rand_pool->gen(min, max);
-                                });
+        auto rand_dir = [rand_pool](const vec2f& dir, float angle) {
+            if (!rand_pool)
+                return randomize_dir(dir, angle);
+            return randomize_dir(dir, angle, [rand_pool](float min, float max) { return rand_pool->gen(min, max); });
+        };
 
         auto bullet_vel = weapon::tier_to_bullet_vel(_wpn->_bullet_vel_tier);
-        if (_wpn->_buckshot == 1) {
+        auto spawn      = [&](const vec2f& dir) {
             if (bullet_spawn_callback)
                 bullet_spawn_callback(pos, dir * bullet_vel, _wpn->_hit_mass);
 
@@ -896,36 +870,16 @@ private:
                             tracer_color,
                             gravity_for_bullets,
                             group,
-                            std::move(player_group_getter));
+                            player_group_getter);
             }
-        }
-        else {
-            for (u32 i = 0; i < _wpn->_buckshot; ++i) {
-                auto newdir =
-                    !rand_pool
-                        ? randomize_dir(dir, _wpn->_dispersion)
-                        : randomize_dir(dir, _wpn->_dispersion, [rand_pool](float min, float max) {
-                              return rand_pool->gen(min, max);
-                          });
+        };
 
-                if (bullet_spawn_callback)
-                    bullet_spawn_callback(pos, newdir * bullet_vel, _wpn->_hit_mass);
-
-                if (spawn_bullet) {
-                    if constexpr (std::is_same_v<F, int>)
-                        bm.shot(sim, pos, _wpn->_hit_mass, newdir * bullet_vel, tracer_color, gravity_for_bullets);
-                    else
-                        bm.shot(sim,
-                                pos,
-                                _wpn->_hit_mass,
-                                newdir * bullet_vel,
-                                tracer_color,
-                                gravity_for_bullets,
-                                group,
-                                std::move(player_group_getter));
-                }
-            }
-        }
+        auto dir = rand_dir(direction, angl);
+        if (_wpn->_buckshot == 1)
+            spawn(dir);
+        else
+            for (u32 i = 0; i < _wpn->_buckshot; ++i)
+                spawn(rand_dir(dir, _wpn->_dispersion));
 
         play_animation("shot");
 

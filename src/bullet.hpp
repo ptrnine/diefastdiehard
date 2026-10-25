@@ -34,19 +34,16 @@ public:
     bullet_sprite_cache& operator=(const bullet_sprite_cache&) = delete;
 
     sf::Sprite& sprite(const sf::Color& color) {
-        auto found = _sprites.find(color);
-        if (found != _sprites.end())
-            return found->second;
-        else {
-            sf::Sprite sprite;
+        auto [it, inserted] = _sprites.try_emplace(color);
+        if (inserted) {
+            auto& sprite = it->second;
             sprite.setTexture(_txtr);
             sprite.setColor(color);
             auto sz = _txtr.getSize();
             sprite.setOrigin(float(sz.x), float(sz.y) / 2.f);
             sprite.setScale(_xf, _yf);
-
-            return _sprites.emplace(color, std::move(sprite)).first->second;
         }
+        return it->second;
     }
 
     [[nodiscard]]
@@ -153,7 +150,7 @@ public:
     }
 
     template <typename F>
-    auto& shot(physic_simulation& sim,
+    bullet& shot(physic_simulation& sim,
                const vec2f&       position,
                float              mass,
                const vec2f&       velocity,
@@ -161,11 +158,9 @@ public:
                bool               enabled_gravity,
                int                group,
                F                  player_group_getter) {
-        auto& res = _bullets.emplace_back(sim, position, mass, velocity, color, enabled_gravity, group);
-        auto& blt = _bullets.back();
-        blt.physic()->user_data(user_data_type::bullet);
+        auto& res = shot(sim, position, mass, velocity, color, enabled_gravity, group);
         if (group != -1)
-            blt.physic()->set_collide_allower([=](const physic_point* p) {
+            res.physic()->set_collide_allower([=](const physic_point* p) {
                 if (p->get_user_data() == user_data_type::player) {
                     int grp = player_group_getter(p);
                     return grp == -1 || grp != group;
@@ -175,35 +170,21 @@ public:
         return res;
     }
 
-    auto& shot(physic_simulation& sim,
+    bullet& shot(physic_simulation& sim,
                const vec2f&       position,
                float              mass,
                const vec2f&       velocity,
                sf::Color          color,
-               bool               enabled_gravity) {
-        auto& res = _bullets.emplace_back(sim, position, mass, velocity, color, enabled_gravity, -1);
-        auto& blt = _bullets.back();
-        blt.physic()->user_data(user_data_type::bullet);
-
+               bool               enabled_gravity,
+               int                group = -1) {
+        auto& res = _bullets.emplace_back(sim, position, mass, velocity, color, enabled_gravity, group);
+        res.physic()->user_data(user_data_type::bullet);
         return res;
-        /*
-        if (group != -1)
-            blt.physic()->set_collide_allower([](const physic_point* p) {
-                if (p->get_user_data() == user_data_type::player) {
-                    auto plr = std::any_cast<player*>(player_grp->get_user_any());
-                }
-            });
-        */
     }
 
     /* Remove bullets flagged with delete_later (the draw loop does this every frame) */
     void remove_dead() {
-        for (auto it = _bullets.begin(); it != _bullets.end();) {
-            if (it->physic()->ready_delete_later())
-                it = _bullets.erase(it);
-            else
-                ++it;
-        }
+        _bullets.remove_if([](const bullet& b) { return b.physic()->ready_delete_later(); });
     }
 
     /**
@@ -212,20 +193,19 @@ public:
      * removed (e.g. they hit a player whose local position diverged)
      */
     void remove_not_in(const std::vector<u32>& keep_ids) {
-        for (auto it = _bullets.begin(); it != _bullets.end();) {
-            if (it->net_id() != 0 &&
-                std::find(keep_ids.begin(), keep_ids.end(), it->net_id()) == keep_ids.end()) {
-                it->physic()->delete_later();
-                it = _bullets.erase(it);
-                continue;
-            }
-
-            ++it;
-        }
+        _bullets.remove_if([&](const bullet& b) {
+            if (b.net_id() == 0 || std::ranges::find(keep_ids, b.net_id()) != keep_ids.end())
+                return false;
+            b.physic()->delete_later();
+            return true;
+        });
     }
 
     void draw(sf::RenderWindow& wnd, float interpolation_factor, float timestep) {
         remove_dead();
+
+        auto& sprites = bullet_sprite();
+        auto  scale_f = sprites.scale_f();
 
         for (auto& b : _bullets) {
             auto& ph = b.physic();
@@ -243,10 +223,10 @@ public:
             auto xf   = lerp(0.f,
                            x_sz / bullet_sprite_cache::bullet_x_max,
                            std::clamp(ph->scalar_velocity() / 2100.f, 0.f, 1.f)) *
-                      bullet_sprite().scale_f().x;
-            auto yf = std::pow(ph->get_mass(), 0.4f) * bullet_sprite().scale_f().y;
+                      scale_f.x;
+            auto yf = std::pow(ph->get_mass(), 0.4f) * scale_f.y;
 
-            auto& blt_sprite = bullet_sprite().sprite(b.color());
+            auto& blt_sprite = sprites.sprite(b.color());
             blt_sprite.setScale(xf, yf);
             blt_sprite.setPosition(pos);
             blt_sprite.setRotation(angle * 180.f / M_PIf32);
