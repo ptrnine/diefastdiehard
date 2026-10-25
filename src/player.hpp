@@ -10,7 +10,6 @@
 #include <SFML/Window/Event.hpp>
 #include <SFML/Graphics/CircleShape.hpp>
 
-//#include "rand_pool.hpp"
 #include "base/types.hpp"
 #include "base/cfg.hpp"
 #include "base/avg_counter.hpp"
@@ -252,10 +251,7 @@ public:
         if (!spawn_bullets_enabled())
             return nullptr;
 
-        auto pos       = collision_box()->get_position();
-        auto arm_pos_f = _pistol.arm_position_factors(_on_left, _bobbing);
-        pos += vec2f(_size.x * arm_pos_f.x, _size.y * arm_pos_f.y);
-
+        auto  pos = arm_position(get_position());
         auto* wpn = _pistol.get_weapon();
         auto lf   = _on_left ? -1.f : 1.f;
 
@@ -273,10 +269,8 @@ public:
                                                   * the mirror of the right-facing rotation */
                                                  .angle_velocity = wpn->drop_angle_velocity()});
 
-        if (gun) {
-            _pistol = {};
-            _pistol_section.clear();
-        }
+        if (gun)
+            clear_pistol();
 
         return gun;
     }
@@ -349,12 +343,8 @@ public:
 
         /* Update weapon */
         if (_pistol) {
-            auto dir       = _on_left ? vec2f{-1.f, 0.f} : vec2f{1.f, 0.f};
-            auto pos       = collision_box()->get_position();
-            auto arm_pos_f = _pistol.arm_position_factors(_on_left, _bobbing);
-            pos += vec2f(_size.x * arm_pos_f.x, _size.y * arm_pos_f.y);
-
-            if (auto recoil = _pistol.update(pos,
+            auto dir = facing_dir();
+            if (auto recoil = _pistol.update(arm_position(get_position()),
                                              cam_position,
                                              dir,
                                              gravity_for_bullets && _long_shot_enabled,
@@ -370,13 +360,8 @@ public:
     }
 
     void physic_update(const physic_simulation& sim, float timestep) {
-        static constexpr auto accel_f_restore = [](float& accel, float timestep) {
-            accel += timestep * 2.f;
-            if (accel > 1.f)
-                accel = 1.f;
-        };
-        accel_f_restore(_accel_left_f, timestep);
-        accel_f_restore(_accel_right_f, timestep);
+        _accel_left_f  = std::min(_accel_left_f + timestep * 2.f, 1.f);
+        _accel_right_f = std::min(_accel_right_f + timestep * 2.f, 1.f);
 
         auto  vel          = _collision_box->get_velocity();
         auto  moving_left  = !is_float_zero(_cur_x_accel_l);
@@ -515,36 +500,22 @@ public:
         auto next_pos = pos + _collision_box->get_velocity() * timestep;
 
         pos = lerp(pos, next_pos, interpolation_factor);
-        //glog().info("now: {} new: {} intr: {}", _collision_box->get_position(), next_pos, pos);
 
         auto adj = sprite_size_adjust_factors();
         auto dif = vec2f((_size.x * adj.x - _size.x) * 0.5f, _size.y * adj.y);
 
-        if (_dir == dir_left && !_on_left) {
-            _body.setScale(-_body.getScale().x, _body.getScale().y);
-            _face.setScale(-_face.getScale().x, _face.getScale().y);
-            _hat.setScale(-_hat.getScale().x, _hat.getScale().y);
-            _dir = dir_none;
-            _on_left = true;
-        }
-        if (_dir == dir_right) {
-            _body.setScale(std::fabs(_body.getScale().x), _body.getScale().y);
-            _face.setScale(std::fabs(_face.getScale().x), _face.getScale().y);
-            _hat.setScale(std::fabs(_hat.getScale().x), _hat.getScale().y);
-            _dir = dir_none;
-            _on_left = false;
-        }
+        if (_dir == dir_left && !_on_left)
+            on_left(true);
+        if (_dir == dir_right)
+            on_left(false, true);
 
         if (_on_left)
             dif.x = -dif.x - _size.x;
 
-        _body.setPosition(pos - dif);
-        _face.setPosition(pos - dif);
-        _hat.setPosition(pos - dif);
-
-        wnd.draw(_body);
-        wnd.draw(_face);
-        wnd.draw(_hat);
+        for (auto* sprite : {&_body, &_face, &_hat}) {
+            sprite->setPosition(pos - dif);
+            wnd.draw(*sprite);
+        }
 
         static constexpr auto draw_leg_lerp =
             [](auto&& wnd, float timestep, float factor, auto&& leg, const vec2f& vel) {
@@ -558,23 +529,20 @@ public:
         draw_leg_lerp(wnd, timestep, interpolation_factor, _right_leg, _collision_box->get_velocity());
 
         if (_pistol) {
-            auto arm_pos_f = _pistol.arm_position_factors(_on_left, _bobbing);
-            auto [lh, rh]  = _pistol.draw(pos + vec2f(_size.x * arm_pos_f.x, _size.y * arm_pos_f.y),
-                                         _on_left,
-                                         gravity_for_bullets && _long_shot_enabled,
-                                         wnd,
-                                         _collision_box->get_velocity());
+            auto [lh, rh] = _pistol.draw(arm_position(pos),
+                                        _on_left,
+                                        gravity_for_bullets && _long_shot_enabled,
+                                        wnd,
+                                        _collision_box->get_velocity());
             _left_hand.setPosition(lh);
             _right_hand.setPosition(rh);
-            wnd.draw(_left_hand);
-            wnd.draw(_right_hand);
         }
         else {
             _left_hand.setPosition(pos.x, pos.y - _size.y / 2.5f);
             _right_hand.setPosition(pos.x + _size.x, pos.y - _size.y / 2.5f);
-            wnd.draw(_left_hand);
-            wnd.draw(_right_hand);
         }
+        wnd.draw(_left_hand);
+        wnd.draw(_right_hand);
     }
 
     void set_body(const std::string& path, const sf::Color& color = {255, 255, 255}) {
@@ -857,8 +825,6 @@ private:
 
     std::deque<std::pair<std::chrono::steady_clock::time_point, vec2f>> _position_trace;
 
-//    rand_float_pool _rand_pool;
-
     sf::Color _tracer_color = {255, 255, 0};
 
     float _leg_timer = 0.f;
@@ -919,13 +885,8 @@ public:
 
     [[nodiscard]]
     vec2f barrel_pos() const {
-        if (_pistol) {
-            auto pos       = collision_box()->get_position();
-            auto arm_pos_f = _pistol.arm_position_factors(_on_left, _bobbing);
-            pos += vec2f(_size.x * arm_pos_f.x, _size.y * arm_pos_f.y);
-            return pos + _pistol.shot_displacement(_on_left ? vec2f{-1.f, 0.f}
-                                                            : vec2f{1.f, 0.f});
-        }
+        if (_pistol)
+            return arm_position(get_position()) + _pistol.shot_displacement(facing_dir());
         else
             return _collision_box->get_position();
     }
@@ -948,18 +909,18 @@ public:
         return _group;
     }
 
-    void on_left(bool value) {
-        if (value == _on_left)
+    void on_left(bool value, bool force = false) {
+        if (value == _on_left && !force)
             return;
 
         _on_left = value;
         _dir     = dir_none;
 
         /* Flip the body sprites to match the new facing direction */
-        auto flip = [&](auto& spr) { spr.setScale(value ? -std::fabs(spr.getScale().x) : std::fabs(spr.getScale().x), spr.getScale().y); };
-        flip(_body);
-        flip(_face);
-        flip(_hat);
+        for (auto* sprite : {&_body, &_face, &_hat}) {
+            auto scale_x = std::fabs(sprite->getScale().x);
+            sprite->setScale(value ? -scale_x : scale_x, sprite->getScale().y);
+        }
     }
 
     [[nodiscard]]
@@ -1002,6 +963,25 @@ public:
     [[nodiscard]]
     const vec2f& get_size() const {
         return _size;
+    }
+
+    /** Player AABB (bottom-left origin, SFML y-down) */
+    [[nodiscard]]
+    sf::FloatRect bb() const {
+        auto& pos = get_position();
+        return {pos.x, pos.y - _size.y, _size.x, _size.y};
+    }
+
+    [[nodiscard]]
+    vec2f facing_dir() const {
+        return {_on_left ? -1.f : 1.f, 0.f};
+    }
+
+    /** Weapon arm joint for the player located at pos */
+    [[nodiscard]]
+    vec2f arm_position(const vec2f& pos) const {
+        auto f = _pistol.arm_position_factors(_on_left, _bobbing);
+        return pos + vec2f(_size.x * f.x, _size.y * f.y);
     }
 
     [[nodiscard]]
@@ -1078,21 +1058,6 @@ public:
     bool long_shot_enabled() const {
         return _long_shot_enabled;
     }
-
-    /*
-    [[nodiscard]]
-    const rand_float_pool& rand_pool() const {
-        return _rand_pool;
-    }
-
-    rand_float_pool& rand_pool() {
-        return _rand_pool;
-    }
-
-    void rand_pool(rand_float_pool pool) {
-        _rand_pool = std::move(pool);
-    }
-    */
 
     void increment_evt_counter() {
         ++_evt_counter;

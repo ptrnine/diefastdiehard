@@ -38,11 +38,11 @@ public:
         _long_shot(long_shot),
         _group(group),
         _section(section),
-        _angle(long_shot ? weapon_mgr().load(section).long_shot_angle() : 0.f),
         _angle_velocity(angle_velocity) {
         auto& wpn = weapon_mgr().load(section);
         _wpn      = &wpn;
         _size     = wpn.dropped_bb();
+        _angle    = long_shot ? wpn.long_shot_angle() : 0.f;
 
         auto w = _size.x * 0.5f;
         auto h = _size.y * 0.5f;
@@ -106,9 +106,7 @@ public:
             if (_group != -1 && p->get_group() == _group)
                 continue;
 
-            auto ppos = p->get_position();
-            auto psz  = p->get_size();
-            auto pbb  = sf::FloatRect(ppos.x, ppos.y - psz.y, psz.x, psz.y);
+            auto pbb = p->bb();
 
             float ox1 = gbb.left + gbb.width  - pbb.left;
             float ox2 = pbb.left + pbb.width  - gbb.left;
@@ -272,17 +270,10 @@ public:
                        int                group,
                        const vec2f&       velocity,
                        float              angle_velocity) {
-        auto g   = std::make_unique<dropped_gun>(_sim,
-                                                 section,
-                                                 position,
-                                                 on_left,
-                                                 long_shot,
-                                                 group,
-                                                 velocity,
-                                                 angle_velocity);
-        auto* ptr = g.get();
-        _guns.push_back(std::move(g));
-        return ptr;
+        return _guns
+            .emplace_back(std::make_unique<dropped_gun>(
+                _sim, section, position, on_left, long_shot, group, velocity, angle_velocity))
+            .get();
     }
 
     /**
@@ -294,14 +285,10 @@ public:
                            const vec2f&       position,
                            bool               on_left,
                            bool               long_shot) {
-        const vec2f zero_vel = {0.f, 0.f};
-        auto g   = std::make_unique<dropped_gun>(_sim, section, position, on_left, long_shot,
-                                                 -1, zero_vel, 0.f);
-        g->id(id);
-        g->net_sync(true);
-        auto* ptr = g.get();
-        _guns.push_back(std::move(g));
-        return ptr;
+        auto* gun = spawn(section, position, on_left, long_shot, -1, {0.f, 0.f}, 0.f);
+        gun->id(id);
+        gun->net_sync(true);
+        return gun;
     }
 
     void set_level_size(const vec2f& value) {
@@ -315,14 +302,10 @@ public:
         for (auto& g : _guns)
             g->collide_with(_players);
 
-        for (auto it = _guns.begin(); it != _guns.end();) {
-            /* Ghost guns are removed by the client when the server drops them */
-            if ((*it)->box()->ready_delete_later() ||
-               (!(*it)->net_synced() && (*it)->out_of_bounds(_level_size)))
-                it = _guns.erase(it);
-            else
-                ++it;
-        }
+        /* Ghost guns are removed by the client when the server drops them */
+        std::erase_if(_guns, [this](const auto& g) {
+            return g->box()->ready_delete_later() || (!g->net_synced() && g->out_of_bounds(_level_size));
+        });
     }
 
     void draw(sf::RenderWindow& wnd, float interpolation_factor, float timestep) const {
