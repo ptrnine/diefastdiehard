@@ -292,8 +292,9 @@ public:
     void reload_section(const std::string& section_name) {
         try {
             if (section_name.starts_with("wpn_")) {
-                for (auto& [_, section] : cfg::global().get_sections()) {
-                    if (section_name.starts_with(section_name) && section.has_key("class")) {
+                /* The changed section is a weapon or one of its animations (wpn_<name>_<anim>) */
+                for (auto& [name, section] : cfg::global().get_sections()) {
+                    if (section_name.starts_with(name) && section.has_key("class")) {
                         weapon_mgr().reload(section_name);
                         return;
                     }
