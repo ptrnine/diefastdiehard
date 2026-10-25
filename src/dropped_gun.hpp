@@ -120,7 +120,7 @@ public:
 
             /* The gun loses double of its velocity (perfect bounce) */
             auto vel = _box->get_velocity();
-            _box->velocity(-vel);
+            _box->velocity(-vel * 0.5f);
 
             /* Push the gun out along the axis of least penetration */
             if (std::min(ox1, ox2) < std::min(oy1, oy2))

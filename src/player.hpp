@@ -248,17 +248,19 @@ public:
         auto* wpn = _pistol.get_weapon();
         auto lf   = _on_left ? -1.f : 1.f;
 
-        auto* gun = _drop_gun_cb(drop_gun_spec_t{
-            _pistol_section,
-            pos,
-            _on_left,
-            _long_shot_enabled,
-            _group,
-            vec2f{wpn->drop_velocity() * lf, 0.f},
-            wpn->drop_angle_velocity() * lf});
+        auto drop_dir       = normalize(vec2f{lf, -0.5f});
+        auto start_velocity = get_velocity() + wpn->drop_velocity() * drop_dir;
+
+        auto* gun = _drop_gun_cb(drop_gun_spec_t{.section        = _pistol_section,
+                                                 .position       = pos,
+                                                 .on_left        = _on_left,
+                                                 .long_shot      = _long_shot_enabled,
+                                                 .group          = _group,
+                                                 .velocity       = start_velocity,
+                                                 .angle_velocity = wpn->drop_angle_velocity() * lf});
 
         if (gun) {
-            _pistol          = {};
+            _pistol = {};
             _pistol_section.clear();
         }
 
