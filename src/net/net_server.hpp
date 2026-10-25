@@ -49,8 +49,12 @@ public:
     net_server(u16 port): _port(port) {
         if (!_sock.bind(port))
             glog().error("net server: can't bind port {}", port);
-        else
+        else {
             glog().info("net server: listening on udp port {}", port);
+#if defined(DFDH_DEBUG_PING)
+            glog().info("net server: DFDH_DEBUG_PING is enabled, simulating ~250ms ping (~125ms one-way)");
+#endif
+        }
     }
 
     [[nodiscard]]

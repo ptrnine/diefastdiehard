@@ -38,6 +38,9 @@ public:
         }
 
         glog().info("net client: connecting to {}:{} as {}", server_ip, server_port, name);
+#if defined(DFDH_DEBUG_PING)
+        glog().info("net client: DFDH_DEBUG_PING is enabled, simulating ~250ms ping (~125ms one-way)");
+#endif
 
         hello h;
         h.name         = name;

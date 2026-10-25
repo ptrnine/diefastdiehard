@@ -614,3 +614,46 @@ TEST_CASE("net_client: join and state application") {
         CHECK(!gs_cli.blt_mgr.bullets().empty());
     }
 }
+
+#if defined(DFDH_DEBUG_PING)
+TEST_CASE("udp_channel simulates ~250ms ping (DFDH_DEBUG_PING)") {
+    using namespace net;
+
+    udp_channel srv;
+    REQUIRE(srv.bind(0));
+    auto port = srv.local_port();
+
+    udp_channel cli;
+    REQUIRE(cli.bind(0));
+
+    const std::vector<u8> data = {1, 2, 3, 4};
+    auto t0 = std::chrono::steady_clock::now();
+
+    REQUIRE(cli.send_to(sf::IpAddress("127.0.0.1"), port, data));
+
+    /*
+     * The datagram must not arrive instantly: each one-way hop is delayed
+     * by >= 80ms, so the earliest delivery is ~160ms after the send.
+     * Both channels are pumped every frame, like in the game
+     */
+    bool arrived = false;
+    while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(40)) {
+        cli.recv(std::chrono::milliseconds(5));
+        if (!srv.recv(std::chrono::milliseconds(5)).empty()) {
+            arrived = true;
+            break;
+        }
+    }
+    REQUIRE(!arrived);
+
+    /* ...and it must arrive within the worst case (170ms + 170ms) plus margin */
+    while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(600)) {
+        cli.recv(std::chrono::milliseconds(10));
+        if (!srv.recv(std::chrono::milliseconds(10)).empty()) {
+            arrived = true;
+            break;
+        }
+    }
+    REQUIRE(arrived);
+}
+#endif
