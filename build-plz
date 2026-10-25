@@ -437,6 +437,9 @@ Generic options:
              =FILE.cpp    - generate compile_commands.json for specific target/cpp_file
     --rebuild-subs        - trigger submodules rebuild
     --debug               - enable debug build
+    --define NAME         - define macro NAME for executable targets
+             =NAME=VALUE  - define macro NAME with value VALUE, e.g.
+                            --define BATCH_COUNT=4 defines BATCH_COUNT as 4
     --asab                - enable ASAN build
     --static              - build dfdh fully statically, including glibc
                             (default; --dynamic restores dynamic linking)
@@ -482,6 +485,7 @@ _build() {
     local compodb_source=
     local debug=false
     local asan=false
+    local define_flags=
     local static_link=true
     local android_abi=
     local android_platform=
@@ -509,6 +513,19 @@ _build() {
         --debug)
             debug=true
             builddir="$builddir-debug"
+            ;;
+        --define=*)
+            local dval="${1#*=}"
+            [[ -n "$dval" && $dval =~ ^[A-Za-z_][A-Za-z0-9_]*(=[^ ]*)?$ ]] || \
+                fail "Invalid --define value: '$dval' (expected NAME or NAME=VALUE)"
+            define_flags+=" -D$dval"
+            ;;
+        --define)
+            shift
+            [ -z "$1" ] && fail "--define requires a value"
+            [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]*(=[^ ]*)?$ ]] || \
+                fail "Invalid --define value: '$1' (expected NAME or NAME=VALUE)"
+            define_flags+=" -D$1"
             ;;
         --asan)
             asan=true
@@ -705,7 +722,7 @@ $([ "$asan" == true ] && asan_flags)
         "$builddir" \
         "$CXX_COMPILER" \
         "$debug" \
-        "$hardening_flags $static_flags" \
+        "$hardening_flags $static_flags $define_flags" \
         "$extra_link_path $static_libs" \
         "$(include_list \
             "$builddir/gch" \
@@ -720,7 +737,7 @@ $([ "$asan" == true ] && asan_flags)
         "$builddir" \
         "$CXX_COMPILER" \
         "$debug" \
-        "$hardening_flags" \
+        "$hardening_flags $define_flags" \
         "-lpthread -lCatch2Main -lCatch2" \
         "$(include_list \
             "system:$(pwd)/$builddir/3rd/include" \
@@ -746,7 +763,7 @@ $([ "$asan" == true ] && asan_flags)
         "$builddir" \
         "$CXX_COMPILER" \
         "$debug" \
-        "$hardening_flags" \
+        "$hardening_flags $define_flags" \
         "-lpthread -lCatch2Main -lCatch2" \
         "$(include_list \
             "system:$(pwd)/$builddir/3rd/include" \
@@ -759,7 +776,7 @@ $([ "$asan" == true ] && asan_flags)
         "$builddir" \
         "$CXX_COMPILER" \
         "$debug" \
-        "$hardening_flags" \
+        "$hardening_flags $define_flags" \
         "-lnuklear -lsfml-system -lsfml-window -lsfml-graphics -lsfml-network -lsfml-audio -lpthread -lGL -lGLEW -lluajit-5.1 -lCatch2Main -lCatch2" \
         "$(include_list \
             "system:$(pwd)/$builddir/submodules/luacpp/3rd/include/luajit-2.1" \
