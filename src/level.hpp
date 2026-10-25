@@ -48,6 +48,13 @@ public:
         auto bg = sect.try_get<float>("bullet_gravity");
         _bullet_gravity = bg ? std::optional<float>(bg->value()) : std::nullopt;
 
+        _player_spawn_points.clear();
+        u32 sp = 0;
+        while (auto sp_data = sect.try_get<vec2f>("player_spawn_point" + std::to_string(sp))) {
+            _player_spawn_points.push_back(sp_data->value());
+            ++sp;
+        }
+
         auto txtr_path              = fs::current_path() / "data/textures/" / _name;
         auto end_platform_txtr_path = txtr_path / "end_platform.png";
         auto platform_txtr_path     = txtr_path / "platform.png";
@@ -162,6 +169,7 @@ private:
     vec2f _level_size;
     vec2f _gravity;
     std::optional<float> _bullet_gravity;
+    std::vector<vec2f> _player_spawn_points;
 
     std::vector<platform_t> _platforms;
 
@@ -171,6 +179,24 @@ public:
     [[nodiscard]]
     const std::optional<float>& bullet_gravity() const {
         return _bullet_gravity;
+    }
+
+    [[nodiscard]]
+    const std::vector<vec2f>& player_spawn_points() const {
+        return _player_spawn_points;
+    }
+
+    /* A random spawn point if the level defines any, otherwise the map center
+     * 200 units above the top platform */
+    vec2f pick_player_spawn() const {
+        if (!_player_spawn_points.empty())
+            return _player_spawn_points[rand_num<u32>(0, _player_spawn_points.size() - 1)];
+
+        float top_y = _platforms.empty() ? 0.f : _platforms.front().ph.get_position().y;
+        for (auto& p : _platforms)
+            top_y = std::min(top_y, p.ph.get_position().y);
+
+        return {_level_size.x / 2.f, top_y - 200.f};
     }
 
     [[nodiscard]]

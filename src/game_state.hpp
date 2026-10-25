@@ -62,7 +62,9 @@ public:
 
         auto player = player::create(player_name, sim, player::default_size());
         player->set_from_config();
-        return players.emplace(player_name, player).first->second.get();
+        auto [it, _] = players.emplace(player_name, player);
+        player_spawn(it->second.get());
+        return it->second.get();
     }
 
     [[nodiscard]]
@@ -239,7 +241,8 @@ public:
         }
 
         if (player) {
-            player->position({cur_level->level_size().x / 2.f, 0.f});
+            auto pos = cur_level->pick_player_spawn();
+            player->position(pos);
             player->velocity({0.f, 0.f});
             player->enable_double_jump();
         } else {
