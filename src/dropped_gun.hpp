@@ -35,7 +35,9 @@ public:
                 const vec2f&       velocity,
                 float              angle_velocity):
         _on_left(on_left),
+        _long_shot(long_shot),
         _group(group),
+        _section(section),
         _angle(long_shot ? weapon_mgr().load(section).long_shot_angle() : 0.f),
         _angle_velocity(angle_velocity) {
         auto& wpn = weapon_mgr().load(section);
@@ -79,7 +81,9 @@ public:
 
     /** Advance the sprite rotation (does not affect the physical bb) */
     void update(float timestep) {
-        _angle = std::fmod(_angle + _angle_velocity * timestep, 360.f);
+        /* Ghost (net-synced) guns get their angle from the server */
+        if (!_net_synced)
+            _angle = std::fmod(_angle + _angle_velocity * timestep, 360.f);
         if (_hit_cooldown > 0)
             --_hit_cooldown;
     }
@@ -90,7 +94,8 @@ public:
      * and is pushed out of the player. Returns true on a hit
      */
     bool collide_with(const std::map<player_name_t, std::shared_ptr<player>>& players) {
-        if (_hit_cooldown > 0 || _box->ready_delete_later())
+        /* Ghost (net-synced) guns have no local physics or collisions */
+        if (_net_synced || _hit_cooldown > 0 || _box->ready_delete_later())
             return false;
 
         auto pos = _box->get_position();
@@ -164,14 +169,86 @@ public:
         return _group;
     }
 
+    /** Unique id for network sync (assigned by the manager) */
+    void id(u32 value) {
+        _id = value;
+    }
+
+    [[nodiscard]]
+    u32 id() const {
+        return _id;
+    }
+
+    [[nodiscard]]
+    const std::string& section() const {
+        return _section;
+    }
+
+    [[nodiscard]]
+    bool on_left() const {
+        return _on_left;
+    }
+
+    [[nodiscard]]
+    bool long_shot() const {
+        return _long_shot;
+    }
+
+    /** Sprite rotation in degrees, pre-mirror (as stored server-side) */
+    [[nodiscard]]
+    float angle() const {
+        return _angle;
+    }
+
+    /** Overwrite the sprite rotation (network sync) */
+    void sync_angle(float value) {
+        _angle = std::fmod(value, 360.f);
+    }
+
+    [[nodiscard]]
+    vec2f get_position() const {
+        return _box->get_position();
+    }
+
+    [[nodiscard]]
+    vec2f get_velocity() const {
+        return _box->get_velocity();
+    }
+
+    void position(const vec2f& value) {
+        _box->position(value);
+    }
+
+    void velocity(const vec2f& value) {
+        _box->velocity(value);
+    }
+
+    /**
+     * Network-synced (ghost) gun: no local gravity, no collisions, no sprite
+     * rotation. Position, velocity and angle are driven by the server state
+     */
+    void net_sync(bool value) {
+        _net_synced = value;
+        _box->enable_gravity(!value);
+    }
+
+    [[nodiscard]]
+    bool net_synced() const {
+        return _net_synced;
+    }
+
 private:
     std::shared_ptr<physic_group> _box;
     weapon*                       _wpn      = nullptr;
     vec2f                         _size;
     bool                          _on_left;
+    bool                          _long_shot;
     int                           _group;
+    std::string                   _section;
     float                         _angle;
     float                         _angle_velocity;
+    u32                           _id           = 0;
+    bool                          _net_synced   = false;
     u32                           _hit_cooldown = 0;
 };
 
@@ -208,6 +285,25 @@ public:
         return ptr;
     }
 
+    /**
+     * Create a network-synced ghost gun (client side only): no local
+     * physics, driven by the server state broadcast
+     */
+    dropped_gun* spawn_net(u32               id,
+                           const std::string& section,
+                           const vec2f&       position,
+                           bool               on_left,
+                           bool               long_shot) {
+        const vec2f zero_vel = {0.f, 0.f};
+        auto g   = std::make_unique<dropped_gun>(_sim, section, position, on_left, long_shot,
+                                                 -1, zero_vel, 0.f);
+        g->id(id);
+        g->net_sync(true);
+        auto* ptr = g.get();
+        _guns.push_back(std::move(g));
+        return ptr;
+    }
+
     void set_level_size(const vec2f& value) {
         _level_size = value;
     }
@@ -220,7 +316,9 @@ public:
             g->collide_with(_players);
 
         for (auto it = _guns.begin(); it != _guns.end();) {
-            if ((*it)->box()->ready_delete_later() || (*it)->out_of_bounds(_level_size))
+            /* Ghost guns are removed by the client when the server drops them */
+            if ((*it)->box()->ready_delete_later() ||
+               (!(*it)->net_synced() && (*it)->out_of_bounds(_level_size)))
                 it = _guns.erase(it);
             else
                 ++it;
@@ -235,6 +333,11 @@ public:
     [[nodiscard]]
     std::size_t size() const {
         return _guns.size();
+    }
+
+    [[nodiscard]]
+    auto& guns() {
+        return _guns;
     }
 
 private:

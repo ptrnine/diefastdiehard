@@ -141,14 +141,24 @@ private:
     void handle_state(game_state& gs, const net_msg& msg) {
         state st;
         if (!try_read_msg(msg.payload, st)) {
-            /* Older server without crate sync: crates are appended last, so
-             * a full read fails and the legacy layout is tried instead */
-            state_legacy legacy;
-            if (!try_read_msg(msg.payload, legacy))
-                return;
-            st.tick     = legacy.tick;
-            st.players = std::move(legacy.players);
-            st.bullets = std::move(legacy.bullets);
+            /* Older server without gun sync: guns are appended last, so a
+             * full read fails and the crates layout is tried instead */
+            state_v1 v1;
+            if (try_read_msg(msg.payload, v1)) {
+                st.tick     = v1.tick;
+                st.players  = std::move(v1.players);
+                st.bullets  = std::move(v1.bullets);
+                st.crates   = std::move(v1.crates);
+            }
+            else {
+                /* Even older server without crate sync */
+                state_legacy legacy;
+                if (!try_read_msg(msg.payload, legacy))
+                    return;
+                st.tick     = legacy.tick;
+                st.players  = std::move(legacy.players);
+                st.bullets  = std::move(legacy.bullets);
+            }
         }
 
         for (auto& sp : st.players) {
@@ -229,12 +239,46 @@ private:
             bool keep = std::find(received_ids.begin(), received_ids.end(), (*it)->id()) != received_ids.end();
             it = keep ? std::next(it) : gs.crates.erase(it);
         }
+
+        /* Sync server dropped guns: create ghost guns for new ids, drive
+         * their position/velocity/angle, remove guns gone on the server */
+        std::vector<u32> received_gun_ids;
+        for (auto& gi : st.guns) {
+            dropped_gun* local = nullptr;
+            for (auto& g : gs.dropped_guns.guns())
+                if (g->id() == gi.id && g->net_synced()) {
+                    local = g.get();
+                    break;
+                }
+
+            if (!local) {
+                local = gs.dropped_guns.spawn_net(gi.id, gi.section, {gi.pos_x, gi.pos_y},
+                                                  gi.on_left != 0, gi.long_shot != 0);
+                glog().info("net client: dropped gun {} synced at ({}, {})", gi.id, gi.pos_x, gi.pos_y);
+            }
+
+            local->position({gi.pos_x, gi.pos_y});
+            local->velocity({gi.vel_x, gi.vel_y});
+            local->sync_angle(gi.angle);
+            received_gun_ids.push_back(gi.id);
+        }
+
+        for (auto it = gs.dropped_guns.guns().begin(); it != gs.dropped_guns.guns().end();) {
+            auto& g = *it;
+            bool keep = !g->net_synced() ||
+                        std::find(received_gun_ids.begin(), received_gun_ids.end(), g->id()) != received_gun_ids.end();
+            it = keep ? std::next(it) : gs.dropped_guns.guns().erase(it);
+        }
     }
 
     static void apply_player_config(player& pl, const state_player& sp) {
         pl.set_body("player/body" + std::to_string(sp.body_id) + ".png", unpack_color(sp.body_color));
         pl.set_face("player/face" + std::to_string(sp.face_id) + ".png");
-        if (!sp.pistol.empty())
+        /* An empty pistol section means the server-side player has no gun
+         * (e.g. dropped it), so clear it locally as well */
+        if (sp.pistol.empty())
+            pl.clear_pistol();
+        else
             pl.setup_pistol(sp.pistol);
         pl.tracer_color(unpack_color(sp.tracer_color));
     }

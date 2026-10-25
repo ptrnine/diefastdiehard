@@ -41,6 +41,7 @@ inline constexpr u16 in_bit_jump_down    = 1 << 3;
 inline constexpr u16 in_bit_shot         = 1 << 4;
 inline constexpr u16 in_bit_shot_release = 1 << 5;
 inline constexpr u16 in_bit_long_shot    = 1 << 6;
+inline constexpr u16 in_bit_drop         = 1 << 7;
 
 /**
  * Per-frame player input state (held state + one-frame edges)
@@ -53,6 +54,7 @@ struct player_input_state {
     bool shot         = false; // held
     bool shot_release = false; // edge
     bool long_shot    = false; // edge (toggle)
+    bool drop         = false; // edge
 
     [[nodiscard]]
     u16 to_bits() const {
@@ -64,6 +66,7 @@ struct player_input_state {
         if (shot)         bits |= in_bit_shot;
         if (shot_release) bits |= in_bit_shot_release;
         if (long_shot)    bits |= in_bit_long_shot;
+        if (drop)         bits |= in_bit_drop;
         return bits;
     }
 
@@ -76,15 +79,16 @@ struct player_input_state {
             .shot         = (bits & in_bit_shot) != 0,
             .shot_release = (bits & in_bit_shot_release) != 0,
             .long_shot    = (bits & in_bit_long_shot) != 0,
+            .drop         = (bits & in_bit_drop) != 0,
         };
     }
 
     void serialize(auto& s) const {
-        s.write(left, right, jump, jump_down, shot, shot_release, long_shot);
+        s.write(left, right, jump, jump_down, shot, shot_release, long_shot, drop);
     }
 
     void deserialize(auto& d) {
-        d.read(left, right, jump, jump_down, shot, shot_release, long_shot);
+        d.read(left, right, jump, jump_down, shot, shot_release, long_shot, drop);
     }
 };
 
@@ -205,7 +209,50 @@ struct crate_info {
     }
 };
 
+/**
+ * A dropped gun in the server-authoritative simulation
+ */
+struct gun_info {
+    u32         id        = 0;
+    std::string section;    // weapon section for drawing
+    float       pos_x     = 0.f;
+    float       pos_y     = 0.f;
+    float       vel_x     = 0.f;
+    float       vel_y     = 0.f;
+    float       angle     = 0.f; // sprite rotation (degrees, pre-mirror)
+    u8          on_left   = 0;
+    u8          long_shot = 0;
+
+    void serialize(auto& s) const {
+        s.write(id, section, pos_x, pos_y, vel_x, vel_y, angle, on_left, long_shot);
+    }
+
+    void deserialize(auto& d) {
+        d.read(id, section, pos_x, pos_y, vel_x, vel_y, angle, on_left, long_shot);
+    }
+};
+
 struct state {
+    u16 tick = 0;
+    std::vector<state_player> players;
+    std::vector<bullet_info>  bullets;
+    std::vector<crate_info>   crates;
+    std::vector<gun_info>     guns;
+
+    void serialize(auto& s) const {
+        s.write(tick, players, bullets, crates, guns);
+    }
+
+    void deserialize(auto& d) {
+        d.read(tick, players, bullets, crates, guns);
+    }
+};
+
+/**
+ * Legacy state layout with crates but without dropped guns (older servers).
+ * The client falls back to this, then to state_legacy
+ */
+struct state_v1 {
     u16 tick = 0;
     std::vector<state_player> players;
     std::vector<bullet_info>  bullets;

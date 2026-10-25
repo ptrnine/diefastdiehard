@@ -39,6 +39,8 @@ struct net_player_controller : public player_controller {
                 _held_right = true;
             else if (c == shot)
                 _held_shot = true;
+            else if (c == drop)
+                _edge_drop = true;
             else if (c == adjust_up)
                 _edge_long_shot = true;
         }
@@ -72,12 +74,14 @@ struct net_player_controller : public player_controller {
             .shot         = _held_shot,
             .shot_release = _edge_shot_release,
             .long_shot    = _edge_long_shot,
+            .drop         = _edge_drop,
         };
 
         _edge_jump          = false;
         _edge_jump_down     = false;
         _edge_shot_release  = false;
         _edge_long_shot     = false;
+        _edge_drop          = false;
 
         return in;
     }
@@ -93,6 +97,7 @@ private:
     bool _edge_jump_down     = false;
     bool _edge_shot_release  = false;
     bool _edge_long_shot     = false;
+    bool _edge_drop          = false;
 };
 
 } // namespace dfdh

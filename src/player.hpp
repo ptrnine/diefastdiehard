@@ -182,6 +182,8 @@ public:
             relax();
         if (in.long_shot)
             enable_long_shot();
+        if (in.drop)
+            drop_gun();
 
         increment_evt_counter();
     }
@@ -239,6 +241,15 @@ public:
      */
     dropped_gun* drop_gun() {
         if (!_pistol || !_drop_gun_cb)
+            return nullptr;
+
+        /*
+         * Server-authoritative player (client side): don't spawn the gun
+         * locally. The drop request goes to the server; the dropped gun
+         * arrives with the state broadcast, and the pistol section sync
+         * removes the gun from the hands
+         */
+        if (!spawn_bullets_enabled())
             return nullptr;
 
         auto pos       = collision_box()->get_position();
@@ -594,6 +605,12 @@ public:
     [[nodiscard]]
     const std::string& pistol_section() const {
         return _pistol_section;
+    }
+
+    /** Remove the pistol from the hands (e.g. synced pistol loss) */
+    void clear_pistol() {
+        _pistol = {};
+        _pistol_section.clear();
     }
 
     [[nodiscard]]

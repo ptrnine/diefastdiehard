@@ -197,6 +197,56 @@ TEST_CASE("protocol: input bits mapping") {
     CHECK(back.long_shot == in.long_shot);
 }
 
+TEST_CASE("protocol: dropped gun state sync") {
+    using namespace net;
+
+    /* drop input bit round-trips */
+    player_input_state in{.drop = true};
+    auto bits = in.to_bits();
+    CHECK(bits == in_bit_drop);
+    auto back = player_input_state::from_bits(bits);
+    CHECK(back.drop == true);
+    CHECK(back.shot == false);
+    CHECK(back.left == false);
+
+    /* state with a gun round-trips over the wire */
+    state st;
+    st.tick = 42;
+    st.guns.push_back(gun_info{7, "wpn_test", 10.f, 20.f, 3.f, 4.f, 45.f, 1, 0});
+    auto data = encode_msg(msg_type::state, st);
+    auto msg  = decode_msg({data.data(), data.size()});
+    auto wire = read_msg<state>(msg.payload);
+    REQUIRE(wire.guns.size() == 1);
+    CHECK(wire.tick == 42);
+    CHECK(wire.guns[0].id == 7);
+    CHECK(wire.guns[0].section == "wpn_test");
+    CHECK(wire.guns[0].pos_x == 10.f);
+    CHECK(wire.guns[0].pos_y == 20.f);
+    CHECK(wire.guns[0].vel_x == 3.f);
+    CHECK(wire.guns[0].vel_y == 4.f);
+    CHECK(wire.guns[0].angle == 45.f);
+    CHECK(wire.guns[0].on_left == 1);
+    CHECK(wire.guns[0].long_shot == 0);
+
+    /* v1 payload (crates, no guns): full read fails, state_v1 fallback works */
+    state_v1 v1;
+    v1.tick = 7;
+    v1.crates.push_back(crate_info{1, 5.f, 6.f, 7.f, 8.f, 1});
+    auto v1_data = encode_msg(msg_type::state, v1);
+    auto v1_msg  = decode_msg({v1_data.data(), v1_data.size()});
+    state full;
+    CHECK_FALSE(try_read_msg(v1_msg.payload, full));
+    state_v1 v1_back;
+    CHECK(try_read_msg(v1_msg.payload, v1_back));
+    CHECK(v1_back.tick == 7);
+    CHECK(v1_back.crates.size() == 1);
+
+    /* an old client (v1 layout) reads a new payload: trailing guns are ignored */
+    state_v1 old_read;
+    CHECK(try_read_msg(msg.payload, old_read));
+    CHECK(old_read.tick == 42);
+}
+
 TEST_CASE("udp channel: loopback") {
     using namespace net;
 
@@ -320,6 +370,21 @@ TEST_CASE("net_player_controller: key events to input state") {
         in = ctrl.take_input_state();
         CHECK(in.long_shot == false);
     }
+
+    SECTION("drop is an edge") {
+        auto drop_key = sf::Keyboard::Key(ctrl.drop);
+
+        ctrl.track_event(keypress(drop_key));
+        auto in = ctrl.take_input_state();
+        CHECK(in.drop == true);
+        in = ctrl.take_input_state();
+        CHECK(in.drop == false);
+
+        ctrl.track_event(keyrelease(drop_key));
+        ctrl.track_event(keypress(drop_key));
+        in = ctrl.take_input_state();
+        CHECK(in.drop == true);
+    }
 }
 
 TEST_CASE("player: apply_input") {
@@ -360,6 +425,15 @@ TEST_CASE("player: apply_input") {
         CHECK(pl->get_gun().pull_trigger(std::nullopt) == false); /* trigger is already held */
         pl->apply_input(net::player_input_state{.shot_release = true});
         CHECK(pl->get_gun().pull_trigger(std::nullopt) == true);  /* trigger is free again */
+    }
+
+    SECTION("drop gun") {
+        REQUIRE(!pl->pistol_section().empty());
+        auto before = gs.dropped_guns.size();
+
+        pl->apply_input(net::player_input_state{.drop = true});
+        CHECK(pl->pistol_section().empty());
+        CHECK(gs.dropped_guns.size() == before + 1);
     }
 }
 

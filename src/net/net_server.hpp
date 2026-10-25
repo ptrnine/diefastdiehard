@@ -114,6 +114,21 @@ public:
                                                c->landed() ? 1 : 0});
             }
 
+            /* Broadcast dropped guns (server-authoritative physics) */
+            for (auto& g : gs.dropped_guns.guns()) {
+                auto pos = g->get_position();
+                auto vel = g->get_velocity();
+                st.guns.push_back(gun_info{g->id(),
+                                           g->section(),
+                                           pos.x,
+                                           pos.y,
+                                           vel.x,
+                                           vel.y,
+                                           g->angle(),
+                                           static_cast<u8>(g->on_left()),
+                                           static_cast<u8>(g->long_shot())});
+            }
+
             auto data = encode_msg(msg_type::state, st);
 
             for (auto& [key, client] : _clients) {
@@ -162,6 +177,7 @@ private:
             in.shot_release |= edge.shot_release;
             in.long_shot    ^= edge.long_shot;
             in.shot         |= edge.shot;
+            in.drop         |= edge.drop;
         }
 
         pl.apply_input(in);
