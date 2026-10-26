@@ -44,14 +44,6 @@ public:
         _view_size   = sect.value<vec2f>("view_size");
         _level_size  = sect.value<vec2f>("level_size");
 
-        /* Optional bullet gravity y value; key absent means bullet gravity is off */
-        auto bg = sect.try_get<float>("bullet_gravity");
-        _bullet_gravity = bg ? std::optional<float>(bg->value()) : std::nullopt;
-
-        /* Optional crate drop cooldown period (seconds); key absent or 0 means crates never drop */
-        auto cpd = sect.try_get<float>("crate_drop_period");
-        _crate_drop_period = (cpd && cpd->value() > 0.f) ? std::optional<float>(cpd->value()) : std::nullopt;
-
         _player_spawn_points.clear();
         u32 sp = 0;
         while (auto sp_data = sect.try_get<vec2f>("player_spawn_point" + std::to_string(sp))) {
@@ -132,7 +124,6 @@ public:
 
     void setup_to(physic_simulation& sim) {
         sim.gravity(_gravity);
-        sim.bullet_gravity(_bullet_gravity ? vec2f{0.f, *_bullet_gravity} : vec2f{0.f, 0.f});
         sim.remove_all_platforms();
         for (auto& pl : _platforms)
             sim.add_platform(pl.ph);
@@ -172,8 +163,6 @@ private:
     vec2f _view_size;
     vec2f _level_size;
     vec2f _gravity;
-    std::optional<float> _bullet_gravity;
-    std::optional<float> _crate_drop_period;
     std::vector<vec2f> _player_spawn_points;
 
     std::vector<platform_t> _platforms;
@@ -181,17 +170,6 @@ private:
     std::string _name;
 
 public:
-    [[nodiscard]]
-    const std::optional<float>& bullet_gravity() const {
-        return _bullet_gravity;
-    }
-
-    /* Crate drop cooldown period in seconds; nullopt means crates never drop */
-    [[nodiscard]]
-    const std::optional<float>& crate_drop_period() const {
-        return _crate_drop_period;
-    }
-
     [[nodiscard]]
     const std::vector<vec2f>& player_spawn_points() const {
         return _player_spawn_points;

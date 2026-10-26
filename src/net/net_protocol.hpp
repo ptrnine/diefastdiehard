@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 7;
+inline constexpr u16 protocol_version = 8;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -388,6 +388,24 @@ struct gun_info {
     }
 };
 
+/**
+ * The server's game mode (see dfdh::game_mode), sent only when a client may
+ * not know it (see net_server)
+ */
+struct game_mode_info {
+    std::string section;
+    float       bullet_gravity    = 0.f; // 0: off
+    float       crate_drop_period = 0.f; // 0: crates never drop
+
+    void serialize(auto& s) const {
+        s.write(section, bullet_gravity, crate_drop_period);
+    }
+
+    void deserialize(auto& d) {
+        d.read(section, bullet_gravity, crate_drop_period);
+    }
+};
+
 struct state {
     u32 tick           = 0; // broadcast sequence number
     u32 server_time_ms = 0; // server clock at the simulation tick of this state
@@ -397,6 +415,7 @@ struct state {
     u32 echo_client_time_ms = 0; // client_time_ms of the client's newest input
     u16 echo_hold_ms        = 0; // time since that input was received
     std::optional<weapon_sync> own_weapon; // the client's player's weapon (if it has a gun)
+    std::optional<game_mode_info> mode;    // only when the client may not know it (see net_server)
 
     std::vector<player_config> configs; // only those the client may not know (see net_server)
     std::vector<state_player>  players;
@@ -411,12 +430,12 @@ struct state {
     alive_set alive_bullets;
 
     void serialize(auto& s) const {
-        s.write(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon,
+        s.write(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, mode,
                 configs, players, shots, crates, guns, alive_bullets);
     }
 
     void deserialize(auto& d) {
-        d.read(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon,
+        d.read(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, mode,
                configs, players, shots, crates, guns, alive_bullets);
     }
 };

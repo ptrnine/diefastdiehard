@@ -68,6 +68,7 @@ version is answered with ERROR. The current version is 7.
 STATE contains:
 - **Header:** `tick` (broadcast sequence number), `server_time_ms` (time of the simulated tick), `ack_seq` (the last input tick applied to this client's player), and `echo_client_time_ms` + `echo_hold_ms` (RTT echo of the newest input).
 - **`own_weapon`:** the client's own player's weapon logic state (`weapon_sync`: ammo, logic animation id and time, time since the last shot, reloading/trigger flags, shot index and seed), if it holds a gun. Only the recipient's player is reconciled, so other players' weapons are not sent.
+- **`mode`, the game mode, only when the client may not know it:** section name, bullet gravity, crate drop period (see `src/game_mode.hpp`). It is sent with the same policy as the player configs (1 s after the join or a change, every 30th broadcast); the client applies the newest one with `game_state::game_mode_set` and sets `game_mode_networked`, so its console cannot change the game mode.
 - **`player_config`, only the ones the client may not know:**
   - fields: player id, name, pistol, face/body ids, body color, tracer, group;
   - players are referenced by their `u16` id everywhere else; ids are assigned by the server and never reused;
@@ -81,7 +82,7 @@ STATE contains:
 - **`shot_info`, per shot spawned since the last broadcast:** owner id, first bullet id, shot key (`pull_seq`, `shot_index`, first pellet), muzzle start, forward time (u16, 1/32768 s), hit_mass, gravity flag, and the muzzle velocity of each pellet. Pellet `i` has the id `first_id + i` and the pellet number `first_pellet + i`; pellets of one shot share everything but the velocity. The server keeps spawned bullets in a pending list until the next broadcast.
 - **Other world state:** crates (id, pos, vel, landed); dropped guns (id, section, pos, vel, angle, on_left, long_shot); `alive_set`: the ids of all bullets alive on the server, as a bitmap from the smallest one.
 
-Typical sizes: the example in `tests/net_test.cpp` (4 players, a 7 pellet shot, 30 live bullets, 2 crates, 1 dropped gun) is 352 bytes (1131 in version 6). In a loopback fight with two players and a shotgun, a state averages ~150 bytes and an input ~28 bytes (`udp_channel::bytes_sent`). Keep a STATE well below the ~1470 byte MTU.
+Typical sizes: the example in `tests/net_test.cpp` (4 players, a 7 pellet shot, 30 live bullets, 2 crates, 1 dropped gun) is 353 bytes (1131 in version 6). In a loopback fight with two players and a shotgun, a state averages ~150 bytes and an input ~28 bytes (`udp_channel::bytes_sent`). Keep a STATE well below the ~1470 byte MTU.
 
 Input bits are held states, except edges (`in_edge_bits`), which are set only on the tick of the press:
 

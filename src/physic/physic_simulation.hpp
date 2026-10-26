@@ -384,7 +384,7 @@ public:
         return _gravity;
     }
 
-    /* Gravity applied to bullets with gravity enabled (see level bullet_gravity) */
+    /* Gravity applied to bullets with gravity enabled (see game_mode::bullet_gravity) */
     [[nodiscard]]
     const vec2f& bullet_gravity() const {
         return _bullet_gravity;

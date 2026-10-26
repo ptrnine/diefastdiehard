@@ -63,6 +63,10 @@ instead of sleeping. Use it for any new gameplay/network timer.
   `diefast::bullet_gravity_enabled` (src/bullet.hpp) is what
   `game_state::gravity_for_bullets` references (toggle from Lua:
   `GS.gravity_for_bullets`).
+- `src/game_mode.hpp` — game mode: game rules (bullet gravity, crate drop
+  period) from the `gm_` sections of `data/game_mode.cfg`, not from the
+  level. `gm_default` is applied on start; console `game mode [name|list]`
+  (`game_state::game_mode_apply`). The server sends it to clients in STATE.
 - `src/net/` — multiplayer: authoritative UDP server. Protocol in
   `net_protocol.hpp` (bump `protocol_version` on wire changes); the server
   sends a per-client state every tick; clients send per-tick input

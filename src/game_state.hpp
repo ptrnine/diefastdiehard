@@ -14,6 +14,7 @@
 #include "level.hpp"
 #include "ai.hpp"
 #include "crate.hpp"
+#include "game_mode.hpp"
 #include "dropped_gun.hpp"
 
 namespace dfdh {
@@ -50,6 +51,9 @@ public:
                 if (pnt == p->collision_box())
                     p->on_ground(pnt->prev_scalar_velocity());
         });
+
+        if (!game_mode_apply(std::string(game_mode::default_section)))
+            game_mode_set(game_mode{.section = std::string(game_mode::default_section)});
     }
 
     void player_conf_reload(const player_name_t& player_name = {}) {
@@ -191,7 +195,6 @@ public:
                 cur_level.reset();
                 crates.clear();
                 crate_timer.restart();
-                apply_cur_level_bullet_gravity();
                 glog().info("current level has been reseted");
             }
             return true;
@@ -215,16 +218,32 @@ public:
     /* Apply the current level to the simulation and restart the level-scoped state */
     void level_setup(const std::string& level_name) {
         cur_level->setup_to(sim);
-        apply_cur_level_bullet_gravity();
         crates.clear();
         crate_timer.restart();
         sig_level_changed.emit_deferred(level_name);
     }
 
-    /* Bullet gravity is defined by the current level: on if the level section
-     * contains a bullet_gravity key, off otherwise */
-    void apply_cur_level_bullet_gravity() {
-        gravity_for_bullets = cur_level && cur_level->bullet_gravity().has_value();
+    /* Game mode */
+
+    /* Apply the game mode from its gm_ config section ("default" or "gm_default") */
+    bool game_mode_apply(const std::string& name) {
+        try {
+            game_mode_set(game_mode::load(name));
+            return true;
+        }
+        catch (const cfg_exception& e) {
+            glog().error("game mode {} failed: {}", name, e.what());
+            return false;
+        }
+    }
+
+    /* Apply the game mode rules (the network client applies the server's game mode this way) */
+    void game_mode_set(const game_mode& gm) {
+        cur_game_mode = gm;
+        sim.bullet_gravity({0.f, gm.bullet_gravity});
+        gravity_for_bullets = gm.bullet_gravity_enabled();
+        crate_timer.restart();
+        glog().info("game mode {} was applied", gm.section);
     }
 
     bool level_cache(const std::string& level_name) {
@@ -333,6 +352,9 @@ public:
                     if (cur_level == found_lvl->second)
                         level_setup(section_name);
                 }
+            }
+            else if (section_name == cur_game_mode.section) {
+                game_mode_apply(section_name);
             }
         }
         catch (const cfg_exception& e) {
@@ -764,12 +786,10 @@ public:
         if (crates_networked)
             return;
 
-        /* Drop period is defined by the level; no period means crates never drop */
-        if (auto period = cur_level->crate_drop_period()) {
-            if (crate_timer.elapsed() >= *period) {
-                crates_spawn();
-                crate_timer.restart();
-            }
+        /* Drop period is defined by the game mode; no period means crates never drop */
+        if (cur_game_mode.crates_enabled() && crate_timer.elapsed() >= cur_game_mode.crate_drop_period) {
+            crates_spawn();
+            crate_timer.restart();
         }
 
         for (auto& c : crates)
@@ -954,6 +974,7 @@ public:
     std::map<u32, std::shared_ptr<player_controller>>     controllers;
     std::map<player_name_t, std::shared_ptr<ai_operator>> ai_operators;
     std::shared_ptr<level>                                cur_level;
+    game_mode                                             cur_game_mode;
     std::unique_ptr<player_configurator_ui>               pconf_ui;
     std::optional<cfg_value_control>                      cfgval_ctrl;
     cfg_watcher                                           conf_watcher;
@@ -970,6 +991,7 @@ public:
     bool debug_physics       = false;
     /* true on the multiplayer client: crates are driven by the server state */
     bool crates_networked    = false;
+    bool game_mode_networked = false; /* network client: the server sets the game mode */
     /* References the global dfdh::bullet_gravity_enabled flag */
     bool& gravity_for_bullets;
     bool lua_cmd_enabled     = true;

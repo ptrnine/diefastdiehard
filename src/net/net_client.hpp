@@ -69,6 +69,10 @@ inline player::physic_state to_physic_state(const state_player& sp) {
             unpack_unit(sp.accel_rf)};
 }
 
+inline game_mode to_game_mode(const game_mode_info& gmi) {
+    return {.section = gmi.section, .bullet_gravity = gmi.bullet_gravity, .crate_drop_period = gmi.crate_drop_period};
+}
+
 inline weapon_instance::sync_state to_weapon_state(const weapon_sync& ws) {
     return {ws.ammo,
             ws.anim,
@@ -768,6 +772,13 @@ private:
         bool newest = st.tick > _last_state_tick;
         if (newest)
             _last_state_tick = st.tick;
+
+        /* The server sets the game mode: only the newest state changes it */
+        if (st.mode && newest) {
+            gs.game_mode_networked = true;
+            if (auto gm = to_game_mode(*st.mode); gm != gs.cur_game_mode)
+                gs.game_mode_set(gm);
+        }
 
         /*
          * Player configs: only the newest state changes a known one (an older

@@ -24,6 +24,10 @@ inline sf::Color unpack_color(u32 v) {
     return sf::Color(u8((v >> 24) & 0xff), u8((v >> 16) & 0xff), u8((v >> 8) & 0xff), u8(v & 0xff));
 }
 
+inline game_mode_info to_game_mode_info(const game_mode& gm) {
+    return {gm.section, gm.bullet_gravity, gm.crate_drop_period};
+}
+
 /**
  * Multiplayer server.
  *
@@ -44,9 +48,9 @@ public:
     /* Without inputs for this long the client's player gets a neutral input */
     static constexpr auto input_timeout = std::chrono::milliseconds(500);
     /*
-     * Player configs are sent to a client during this long after it joined
-     * or after the config changed, and to everyone every config_refresh
-     * broadcasts (lost datagrams cost nothing)
+     * Player configs and the game mode are sent to a client during this
+     * long after it joined or after they changed, and to everyone every
+     * config_refresh broadcasts (lost datagrams cost nothing)
      */
     static constexpr auto config_resend  = std::chrono::seconds(1);
     static constexpr u32  config_refresh = 30;
@@ -277,6 +281,10 @@ private:
         }
         _configs = std::move(configs);
 
+        /* The game mode (remembering when it changed) */
+        if (_game_mode.mode != gs.cur_game_mode)
+            _game_mode = known_game_mode{gs.cur_game_mode, now};
+
         /*
          * Every bullet spawned since the last broadcast (network players, the
          * host's local player and bots). The client disables local bullet
@@ -335,6 +343,11 @@ private:
             for (auto& [_, kc] : _configs)
                 if (refresh || new_client || now - kc.changed < config_resend)
                     st.configs.push_back(kc.cfg);
+
+            /* The game mode, if the client may not know it */
+            st.mode.reset();
+            if (refresh || new_client || now - _game_mode.changed < config_resend)
+                st.mode = to_game_mode_info(_game_mode.mode);
 
             _sock.send_to(client.address, client.port, encode_msg(msg_type::state, st));
         }
@@ -591,6 +604,12 @@ private:
     std::map<player_name_t, u16> _player_ids;
     u16                          _next_player_id = 0;
     std::map<u16, known_config>  _configs;
+
+    struct known_game_mode {
+        game_mode         mode;
+        clock::time_point changed; // since when the game mode is like this
+    };
+    known_game_mode _game_mode;
 };
 
 } // namespace dfdh::net

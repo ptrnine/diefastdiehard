@@ -15,6 +15,7 @@
 #include "net/net_client.hpp"
 #include "net_player_controller.hpp"
 #include "game_state.hpp"
+#include "game_commands.hpp"
 #include "script/lua_init.hpp" /* luacpp pushers for dfdh types */
 
 using namespace dfdh;
@@ -149,6 +150,22 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(r.players[0].hits == std::vector<u32>{4, 5});
         CHECK(r.players[1].id == 2);
         CHECK_FALSE(r.players[1].flags);
+    }
+
+    SECTION("state with the game mode") {
+        state st;
+        st.mode = game_mode_info{"gm_ballistic", 500.f, 5.f};
+
+        auto data = encode_msg(msg_type::state, st);
+        auto r    = read_msg<state>(decode_msg({data.data(), data.size()}).payload);
+        REQUIRE(r.mode);
+        CHECK(r.mode->section == "gm_ballistic");
+        CHECK(r.mode->bullet_gravity == 500.f);
+        CHECK(r.mode->crate_drop_period == 5.f);
+
+        st.mode.reset();
+        data = encode_msg(msg_type::state, st);
+        CHECK_FALSE(read_msg<state>(decode_msg({data.data(), data.size()}).payload).mode);
     }
 
     SECTION("state with shots and the alive bullets") {
@@ -905,6 +922,40 @@ TEST_CASE("net_client: join and state application") {
         auto& me = *gs_cli.players.at("me");
         CHECK(me.get_position().x == Catch::Approx(55.f));
         CHECK(me.get_position().y == Catch::Approx(66.f));
+    }
+
+    SECTION("the server's game mode is applied on the client") {
+        srv.update(gs_srv); /* welcome */
+        cli.update(gs_cli);
+
+        /* Both start with the default game mode */
+        CHECK(gs_srv.cur_game_mode.section == "gm_default");
+        CHECK_FALSE(gs_srv.gravity_for_bullets);
+        CHECK_FALSE(gs_srv.cur_game_mode.crates_enabled());
+
+        REQUIRE(gs_srv.game_mode_apply("ballistic"));
+        CHECK(gs_srv.cur_game_mode.section == "gm_ballistic");
+        CHECK(gs_srv.gravity_for_bullets);
+        CHECK(gs_srv.sim.bullet_gravity().y == 500.f);
+
+        broadcast();
+        cli.update(gs_cli);
+        CHECK(gs_cli.game_mode_networked);
+        CHECK(gs_cli.cur_game_mode == gs_srv.cur_game_mode);
+        CHECK(gs_cli.gravity_for_bullets);
+        CHECK(gs_cli.sim.bullet_gravity().y == 500.f);
+
+        /* A later change reaches the client as well */
+        REQUIRE(gs_srv.game_mode_apply("gm_default"));
+        broadcast();
+        cli.update(gs_cli);
+        CHECK(gs_cli.cur_game_mode.section == "gm_default");
+        CHECK_FALSE(gs_cli.gravity_for_bullets);
+        CHECK(gs_cli.sim.bullet_gravity().y == 0.f);
+
+        /* An unknown game mode is not applied */
+        CHECK_FALSE(gs_srv.game_mode_apply("no_such_mode"));
+        CHECK(gs_srv.cur_game_mode.section == "gm_default");
     }
 
     SECTION("server broadcasts bullets fired by network players") {
@@ -2352,4 +2403,56 @@ TEST_CASE("net: the hands of standing players keep still on the client") {
     CHECK(local_jiggle < 0.01f);
     /* Standing still is predicted exactly (the hidden vertical velocity included) */
     CHECK(f.cli->corrections() == 0);
+}
+
+TEST_CASE("game_state: crates drop by the game mode") {
+    game_clock_manual_guard clock_guard;
+    game_state              gs;
+    REQUIRE(gs.level_current("lvl_aes"));
+    gs.game_run(true);
+
+    auto run_for = [&](std::chrono::milliseconds duration) {
+        for (auto end = game_clock::now() + duration; game_clock::now() < end;) {
+            game_clock::advance(std::chrono::milliseconds(10));
+            gs.game_update();
+        }
+    };
+
+    /* The default game mode never drops crates */
+    run_for(std::chrono::seconds(6));
+    CHECK(gs.crates.empty());
+
+    REQUIRE(gs.game_mode_apply("crates"));
+    CHECK(gs.cur_game_mode.crate_drop_period == 5.f);
+    run_for(std::chrono::seconds(4));
+    CHECK(gs.crates.empty());
+    run_for(std::chrono::seconds(2));
+    CHECK(gs.crates.size() == 1);
+}
+
+TEST_CASE("game_commands: game mode") {
+    game_state    gs;
+    game_commands cmds{gs};
+
+    auto run = [](std::string cmd) {
+        command_buffer().push(std::move(cmd));
+        command_buffer().run_handlers();
+    };
+
+    run("game mode list");
+    run("game mode");
+    CHECK(gs.cur_game_mode.section == "gm_default");
+
+    run("game mode ballistic");
+    CHECK(gs.cur_game_mode.section == "gm_ballistic");
+    CHECK(gs.gravity_for_bullets);
+
+    run("game mode default");
+    CHECK(gs.cur_game_mode.section == "gm_default");
+    CHECK_FALSE(gs.gravity_for_bullets);
+
+    /* The network client gets the game mode from the server only */
+    gs.game_mode_networked = true;
+    run("game mode gm_crates");
+    CHECK(gs.cur_game_mode.section == "gm_default");
 }

@@ -25,6 +25,7 @@ public:
         command_buffer().add_handler("list", &game_commands::cmd_list, this);
         command_buffer().add_handler("game", &game_commands::cmd_game, this);
         command_buffer().add_handler("game speed", &game_commands::cmd_game_speed, this);
+        command_buffer().add_handler("game mode", &game_commands::cmd_game_mode, this);
         command_buffer().add_handler("level", &game_commands::cmd_level, this);
         command_buffer().add_handler("spawn", &game_commands::cmd_spawn, this);
         command_buffer().add_handler("ai", &game_commands::cmd_ai, this);
@@ -94,6 +95,15 @@ public:
                    "  level current                 - prints section name of the current level\n"
                    "  level current [level_section] - setup current level\n"
                    "  level current none            - reset current level";
+        }
+        else if (cmd == "game") {
+            help = "game settings\n"
+                   "available commands:\n"
+                   "  game [on/off]?          - shows or setups game running state\n"
+                   "  game speed [speed]?     - shows or setups game speed\n"
+                   "  game mode               - shows current game mode\n"
+                   "  game mode [game_mode]   - setup current game mode (\"default\" or \"gm_default\")\n"
+                   "  game mode list          - list available game modes";
         }
         else if (cmd == "ai") {
             help = "ai operator settings\n"
@@ -455,9 +465,33 @@ public:
         }
     }
 
+    void cmd_game_mode(const std::optional<std::string>& value) {
+        auto& gm = gs.cur_game_mode;
+        if (!value) {
+            glog().info("game mode: {} (bullet_gravity = {}, crate_drop_period = {})",
+                        gm.section,
+                        gm.bullet_gravity,
+                        gm.crate_drop_period);
+        }
+        else if (*value == "list") {
+            glog().detail("Available game modes: {}", game_mode::list_available());
+        }
+        else if (*value == "help") {
+            cmd_help("game");
+        }
+        else if (gs.game_mode_networked) {
+            glog().error("game mode: the game mode is set by the server");
+        }
+        else {
+            gs.game_mode_apply(*value);
+        }
+    }
+
     void cmd_game(const std::optional<std::string>& value) {
         if (value) {
-            if (*value == "on")
+            if (*value == "help")
+                cmd_help("game");
+            else if (*value == "on")
                 gs.game_run();
             else if (*value == "off")
                 gs.game_stop();
