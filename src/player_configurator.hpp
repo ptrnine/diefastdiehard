@@ -7,6 +7,7 @@
 #include "base/log.hpp"
 #include "base/cfg.hpp"
 #include "base/color.hpp"
+#include "weapon.hpp"
 
 namespace dfdh {
 class player_configurator {
@@ -27,7 +28,13 @@ public:
         auto  sect_name = cfg_section_name{"player_settings_" + std::string(name)};
         auto& sect      = conf.get_or_create(sect_name);
 
-        pistol = sect.value_or_default_and_set("pistol", "wpn_glk17"s);
+        pistol = sect.value_or_default_and_set("pistol", std::string(weapon::default_secondary));
+        /* Only a secondary gun can be configured */
+        if (!weapon::is_secondary_section(pistol)) {
+            glog().warn("player {}: {} is not a secondary weapon, replaced by {}", name, pistol, weapon::default_secondary);
+            pistol = std::string(weapon::default_secondary);
+            sect.set("pistol", pistol);
+        }
 
         face_id    = sect.value_or_default_and_set<u32>("face_id", 0);
         body_id    = sect.value_or_default_and_set<u32>("body_id", 0);
@@ -122,7 +129,7 @@ public:
 
 public:
     player_name_t name         = "";
-    std::string   pistol       = "wpn_glk17";
+    std::string   pistol       = std::string(weapon::default_secondary);
     u32           face_id      = 0;
     u32           body_id      = 0;
     sf::Color     body_color   = {255, 255, 255};

@@ -355,14 +355,38 @@ TEST_CASE("dropped guns: unique ids and the thrower") {
     CHECK(a->id() != b->id());
 
     gs.game_run(true);
+    pl->setup_pistol("wpn_ak9");
     REQUIRE(pl->drop_gun());
-    for (int i = 0; i < 60 && !pl->pistol_section().empty(); ++i)
+    for (int i = 0; i < 60 && pl->pistol_section() == "wpn_ak9"; ++i)
         sim_tick(gs);
     REQUIRE(gs.dropped_guns.size() == 3);
     auto& thrown = *gs.dropped_guns.guns().back();
     CHECK(thrown.owner() == pl->name());
     CHECK_FALSE(thrown.predicted());
     CHECK(thrown.id() != b->id());
+}
+
+TEST_CASE("weapon slots: secondary guns, respawn with the secondary gun") {
+    game_state gs;
+    REQUIRE(gs.level_current("lvl_aes"));
+    auto pl = gs.player_create("slots");
+    REQUIRE(pl != nullptr);
+
+    for (auto wpn : {"wpn_glk17", "wpn_brn10", "wpn_de", "wpn_sw500"})
+        CHECK(weapon::is_secondary_section(wpn));
+    for (auto wpn : {"wpn_1887", "wpn_416", "wpn_ak9", "wpn_ss50", "wpn_m40", "wpn_vss", "wpn_vssk"})
+        CHECK_FALSE(weapon::is_secondary_section(wpn));
+    CHECK_FALSE(weapon::is_secondary_section("wpn_missing"));
+
+    /* A secondary pickup becomes the secondary gun, a primary one does not */
+    pl->setup_pistol("wpn_de");
+    pl->setup_pistol("wpn_ak9");
+    CHECK(pl->secondary_section() == "wpn_de");
+    CHECK_FALSE(pl->holds_secondary());
+
+    gs.player_on_dead(pl);
+    CHECK(pl->pistol_section() == "wpn_de");
+    CHECK(pl->holds_secondary());
 }
 
 TEST_CASE("game mode: limited magazines, an emptied gun is dropped") {
@@ -373,8 +397,9 @@ TEST_CASE("game mode: limited magazines, an emptied gun is dropped") {
     gs.game_run(true);
     pl->teleport({1300.f, 1040.f});
 
-    SECTION("pistols are unlimited") {
-        pl->setup_pistol("wpn_glk17", 2);
+    SECTION("secondary guns are unlimited") {
+        auto wpn = GENERATE(as<std::string>{}, "wpn_glk17", "wpn_sw500");
+        pl->setup_pistol(wpn, 2);
         CHECK(pl->get_gun().ammo_reserve() == weapon_instance::unlimited_ammo);
     }
 
@@ -383,7 +408,7 @@ TEST_CASE("game mode: limited magazines, an emptied gun is dropped") {
         CHECK(pl->get_gun().ammo_reserve() == weapon_instance::unlimited_ammo);
     }
 
-    SECTION("mag_size * magazines_count rounds, then the gun is dropped") {
+    SECTION("mag_size * magazines_count rounds, then the gun is dropped and the secondary one is taken") {
         auto wpn = GENERATE(as<std::string>{}, "wpn_ak9", "wpn_1887"); /* magazine and shell by shell reloads */
         pl->setup_pistol(wpn, 2);
         auto mag_size = pl->get_gun().get_weapon()->mag_size();
@@ -392,12 +417,12 @@ TEST_CASE("game mode: limited magazines, an emptied gun is dropped") {
 
         u32 shots = 0;
         pl->shot();
-        for (int i = 0; i < 60 * 60 && !pl->pistol_section().empty(); ++i) {
+        for (int i = 0; i < 60 * 60 && pl->pistol_section() == wpn; ++i) {
             sim_tick(gs);
-            if (!pl->pistol_section().empty())
+            if (pl->pistol_section() == wpn)
                 shots = pl->get_gun().get_sync_state().shot_index;
         }
-        CHECK(pl->pistol_section().empty());
+        CHECK(pl->pistol_section() == "wpn_glk17");
         CHECK(shots == mag_size * 2);
         CHECK(gs.dropped_guns.size() == 1);
     }
@@ -586,8 +611,16 @@ TEST_CASE("player: apply_input") {
         CHECK(pl->get_gun().pull_trigger(std::nullopt) == true);  /* trigger is free again */
     }
 
+    SECTION("the secondary gun is never dropped") {
+        REQUIRE(pl->pistol_section() == "wpn_glk17");
+        gs.game_run(true);
+        pl->apply_input(net::player_input_state{.drop = true});
+        CHECK_FALSE(pl->throwing());
+        CHECK_FALSE(pl->drop_gun());
+    }
+
     SECTION("drop gun") {
-        REQUIRE(!pl->pistol_section().empty());
+        pl->setup_pistol("wpn_ak9");
         auto before = gs.dropped_guns.size();
 
         gs.game_run(true);
@@ -609,11 +642,12 @@ TEST_CASE("player: apply_input") {
         for (int i = 0; i < 2 && pl->throwing(); ++i)
             sim_tick(gs);
         CHECK_FALSE(pl->throwing());
-        CHECK(pl->pistol_section().empty());
+        CHECK(pl->pistol_section() == "wpn_glk17"); /* the secondary gun right away */
         CHECK(gs.dropped_guns.size() == before + 1);
     }
 
     SECTION("throw pose") {
+        pl->setup_pistol("wpn_ak9");
         REQUIRE(pl->drop_gun());
         auto d      = pl->throw_duration();
         auto windup = pl->throw_pose(d * 0.75f);
@@ -752,6 +786,18 @@ TEST_CASE("net_server: handshake, rename and leave") {
         CHECK(pl.body_color() == sf::Color(1, 2, 3, 4));
         CHECK(pl.tracer_color() == sf::Color(5, 6, 7, 8));
         CHECK(srv.client_count() == 1);
+    }
+
+    SECTION("join with a primary gun: the default secondary one") {
+        net::hello h;
+        h.name   = "test1";
+        h.pistol = "wpn_ak9";
+        REQUIRE(cli.send(net::encode_msg(net::msg_type::hello, h)));
+
+        srv.update(gs);
+
+        REQUIRE(gs.players.contains("test1"));
+        CHECK(gs.players.at("test1")->pistol_section() == "wpn_glk17");
     }
 
     SECTION("rename on rejoin") {
@@ -1585,8 +1631,8 @@ TEST_CASE("net: limited ammo is synced and an emptied gun is dropped") {
     });
     f.input = {};
 
-    CHECK(f.server_side().pistol_section().empty());
-    CHECK(f.local().pistol_section().empty());
+    CHECK(f.server_side().pistol_section() == "wpn_glk17");
+    CHECK(f.local().pistol_section() == "wpn_glk17");
     CHECK(f.cli->weapon_corrections() == 0);
     CHECK(srv_dropped == 1);
     CHECK(cli_confirmed);
@@ -2594,29 +2640,32 @@ TEST_CASE("net: gun throws are shown on the client") {
 
     auto bot = f.gs_srv.player_create("bot");
     REQUIRE(bot != nullptr);
+    /* Primary guns: the secondary ones are never dropped */
+    bot->setup_pistol("wpn_ak9");
+    f.server_side().setup_pistol("wpn_ak9");
     f.run_for(1000ms);
     REQUIRE(f.gs_cli.players.contains("bot"));
-    REQUIRE_FALSE(f.local().pistol_section().empty());
+    REQUIRE(f.local().pistol_section() == "wpn_ak9");
 
     SECTION("a remote player throws its gun") {
         auto& remote = *f.gs_cli.players.at("bot");
-        REQUIRE_FALSE(remote.pistol_section().empty());
+        REQUIRE(remote.pistol_section() == "wpn_ak9");
         REQUIRE(bot->drop_gun());
 
-        /* The throw is shown with the gun in the hands, the server's drop removes it at the release */
+        /* The throw is shown with the gun in the hands, the secondary gun replaces it at the release */
         bool   seen_throwing = false, gun_while_throwing = true;
         size_t max_guns      = 0; /* the thrown gun may fly out of the level */
         f.run_for(1500ms, [&] {
             max_guns = std::max(max_guns, f.gs_srv.dropped_guns.size());
             if (remote.throwing()) {
                 seen_throwing = true;
-                gun_while_throwing = gun_while_throwing && !remote.pistol_section().empty();
+                gun_while_throwing = gun_while_throwing && remote.pistol_section() == "wpn_ak9";
             }
         });
         CHECK(seen_throwing);
         CHECK(gun_while_throwing);
-        CHECK(bot->pistol_section().empty());
-        CHECK(remote.pistol_section().empty());
+        CHECK(bot->pistol_section() == "wpn_glk17");
+        CHECK(remote.pistol_section() == "wpn_glk17");
         CHECK(max_guns == 1);
     }
 
@@ -2633,11 +2682,11 @@ TEST_CASE("net: gun throws are shown on the client") {
         size_t max_guns = 0;
         f.run_for(1500ms, [&] {
             max_guns = std::max(max_guns, f.gs_srv.dropped_guns.size());
-            released = released || f.local().pistol_section().empty();
-            gun_back = gun_back || (released && !f.local().pistol_section().empty());
+            released = released || f.local().pistol_section() == "wpn_glk17";
+            gun_back = gun_back || (released && f.local().pistol_section() == "wpn_ak9");
         });
-        CHECK(f.server_side().pistol_section().empty());
-        CHECK(f.local().pistol_section().empty());
+        CHECK(f.server_side().pistol_section() == "wpn_glk17");
+        CHECK(f.local().pistol_section() == "wpn_glk17");
         CHECK_FALSE(gun_back);
         CHECK(max_guns == 1);
     }

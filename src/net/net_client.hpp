@@ -830,6 +830,11 @@ private:
              */
             pl->set_server_driven(true);
 
+            /* A mispredicted switch to the secondary gun (the server kept the gun): take the server's gun back */
+            if (is_local && newest && pl->pistol_section() != cfg->second.pistol && !pl->throwing() &&
+                st.ack_seq > pl->predicted_switch_seq() + predicted_switch_confirm_ticks)
+                pl->setup_pistol_on_release(cfg->second.pistol, gs.cur_game_mode.magazines_count);
+
             if (is_local)
                 reconcile(gs, *pl, to_physic_state(sp), st.ack_seq, sp.hits, sp.teleports,
                           st.own_weapon && cfg->second.pistol == pl->pistol_section()
@@ -995,18 +1000,17 @@ private:
             pl->set_body(body, unpack_color(cfg.body_color));
         if (pl->face_texture_path() != face)
             pl->set_face(face);
-        /* An empty pistol section means the server-side player has no gun
-         * (e.g. dropped it), so clear it locally as well: at the release of
+        /* A dropped gun is replaced by the secondary one on the server (an
+         * empty pistol section: no gun): replace it locally at the release of
          * a shown throw (remote players are shown in the past) */
-        if (pl->pistol_section() != cfg.pistol) {
-            if (cfg.pistol.empty())
-                pl->clear_pistol_on_release();
-            else
-                pl->setup_pistol(cfg.pistol, gs.cur_game_mode.magazines_count);
-        }
+        if (pl->pistol_section() != cfg.pistol)
+            pl->setup_pistol_on_release(cfg.pistol, gs.cur_game_mode.magazines_count);
         pl->tracer_color(unpack_color(cfg.tracer_color));
         pl->group(cfg.group);
     }
+
+    /* Input ticks the server's switch to the secondary gun may lag behind the predicted one */
+    static constexpr u32 predicted_switch_confirm_ticks = 30;
 
     udp_channel     _sock;
     sf::IpAddress   _server_ip;

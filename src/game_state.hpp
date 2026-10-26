@@ -313,6 +313,9 @@ public:
         }
 
         if (player) {
+            /* A player spawns with its secondary gun only (server-driven: synced from the server) */
+            if (!player->server_driven())
+                player->equip_secondary();
             player->teleport(cur_level->pick_player_spawn());
             player->enable_double_jump();
         } else {

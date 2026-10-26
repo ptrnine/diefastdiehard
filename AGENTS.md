@@ -59,12 +59,15 @@ instead of sleeping. Use it for any new gameplay/network timer.
   `add_update_callback` / `add_platform_callback` / `add_bounce_callback`.
   Default gravity is **zero**.
 - `src/player.hpp`, `src/weapon.hpp`, `src/bullet.hpp` — player, pistol,
-  bullets. Bullet gravity is spawned per-bullet; the global
+  bullets. Weapon configs have `slot = primary|secondary`: the player
+  configures (and spawns with) a secondary gun only (others are replaced by
+  `wpn_glk17`), secondary guns have unlimited ammo and are never dropped,
+  dropping a primary gun gives the secondary one back. Bullet gravity is spawned per-bullet; the global
   `diefast::bullet_gravity_enabled` (src/bullet.hpp) is what
   `game_state::gravity_for_bullets` references (toggle from Lua:
   `GS.gravity_for_bullets`).
 - `src/game_mode.hpp` — game mode: game rules (bullet gravity, crate drop
-  period, magazines count: non-pistol ammo limit, emptied guns are dropped) from the `gm_` sections of `data/game_mode.cfg`, not from the
+  period, magazines count: primary gun ammo limit, emptied guns are dropped) from the `gm_` sections of `data/game_mode.cfg`, not from the
   level. `gm_default` is applied on start; console `game mode [name|list]`
   (`game_state::game_mode_apply`). The server sends it to clients in STATE.
 - `src/net/` — multiplayer: authoritative UDP server. Protocol in

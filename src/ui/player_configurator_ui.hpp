@@ -24,7 +24,7 @@ public:
         for (auto& face_path : pconf.available_face_textures())
             faces.push_back({face_path});
 
-        for (auto& pistol_sect : weapon::get_pistol_sections()) {
+        for (auto& pistol_sect : weapon::get_secondary_sections()) {
             pistols.emplace_back();
             auto& back   = pistols.back();
             back.wpn     = &weapon_mgr().load(pistol_sect);

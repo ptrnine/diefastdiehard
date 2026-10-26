@@ -66,16 +66,40 @@ public:
         shotgun
     };
 
-    static std::vector<std::string> get_pistol_sections() {
+    /* Primary guns are picked up and can be dropped, a secondary gun is the player's own one */
+    enum weapon_slot {
+        primary = 0,
+        secondary
+    };
+
+    static constexpr std::string_view default_secondary = "wpn_glk17";
+
+    static weapon_slot weapon_slot_from_str(const std::string& str) {
+        if (str == "primary")
+            return primary;
+        if (str == "secondary")
+            return secondary;
+        throw std::runtime_error("Invalid weapon slot: " + str);
+    }
+
+    /* Whether section is a weapon config of the secondary slot (without loading the weapon) */
+    static bool is_secondary_section(const std::string& section) {
+        if (!section.starts_with("wpn_"))
+            return false;
+        auto& sections = cfg::global().get_sections();
+        auto  found    = sections.find(section);
+        if (found == sections.end())
+            return false;
+        auto slot = static_cast<const cfg_section<true>&>(found->second).try_get<std::string>("slot");
+        return slot && slot->has_value() && slot->value() == "secondary";
+    }
+
+    static std::vector<std::string> get_secondary_sections() {
         std::vector<std::string> result;
 
-        for (auto& [sect_name, sect] : cfg::global().get_sections()) {
-            if (sect_name.starts_with("wpn_")) {
-                auto wpn_class = static_cast<const cfg_section<true>&>(sect).try_get<std::string>("class");
-                if (wpn_class /* && wpn_class->second == "pistol"*/)
-                    result.push_back(sect_name);
-            }
-        }
+        for (auto& [sect_name, _] : cfg::global().get_sections())
+            if (is_secondary_section(sect_name))
+                result.push_back(sect_name);
 
         return result;
     }
@@ -121,6 +145,7 @@ public:
         _shot_flash      = sect.value_or_default("shot_flash", false);
         _eject_shell     = sect.value_or_default("eject_shell", false);
         _wpn_class       = weapon_class_from_str(sect.value<std::string>("class"));
+        _slot            = weapon_slot_from_str(sect.value<std::string>("slot"));
         _bullet_vel_tier = sect.value<u32>("bullet_velocity_tier");
         _long_shot_angle = sect.value<float>("long_shot_angle");
         _shot_snd_path   = sect.value_or_default("shot_sound", "none"s);
@@ -293,6 +318,7 @@ private:
     std::string _shot_snd_path;
 
     weapon_class _wpn_class;
+    weapon_slot  _slot;
     bool         _shot_flash;
     bool         _eject_shell;
 
@@ -349,6 +375,11 @@ public:
     [[nodiscard]]
     weapon_class wpn_class() const {
         return _wpn_class;
+    }
+
+    [[nodiscard]]
+    weapon_slot slot() const {
+        return _slot;
     }
 
     [[nodiscard]]
@@ -514,7 +545,7 @@ public:
     };
 
     weapon_instance() = default;
-    /* magazines_count: the ammo is limited to mag_size * magazines_count, 0 or a pistol: unlimited */
+    /* magazines_count: the ammo is limited to mag_size * magazines_count, 0 or a secondary gun: unlimited */
     weapon_instance(weapon* wpn, u32 magazines_count = 0):
         _ammo_elapsed(wpn->mag_size()), _ammo_reserve(initial_reserve(*wpn, magazines_count)), _wpn(wpn) {
         if (_wpn->_shot_flash) {
@@ -535,7 +566,7 @@ public:
 
     [[nodiscard]]
     static u32 initial_reserve(const weapon& wpn, u32 magazines_count) {
-        if (magazines_count == 0 || wpn.wpn_class() == weapon::pistol)
+        if (magazines_count == 0 || wpn.slot() == weapon::secondary)
             return unlimited_ammo;
         return wpn.mag_size() * (magazines_count - 1);
     }

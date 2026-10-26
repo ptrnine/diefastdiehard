@@ -474,11 +474,12 @@ public:
     /**
      * Throw the currently held gun away: the arm winds up and throws (see
      * throw_pose), the gun is released at the end of the throw
-     * (throw_update). Returns false if the player has no gun or is already
-     * throwing it
+     * (throw_update), then the secondary gun is taken. Returns false if the
+     * player has no gun, holds the secondary one (it is never dropped) or is
+     * already throwing it
      */
     bool drop_gun() {
-        if (!_pistol || _throw || (!_drop_gun_cb && !server_driven()))
+        if (!_pistol || holds_secondary() || _throw || (!_drop_gun_cb && !server_driven()))
             return false;
 
         _pistol.relax_trigger();
@@ -517,13 +518,19 @@ public:
 
     /**
      * Server-driven player: the server dropped the gun (the pistol section
-     * sync), but the throw is still shown. Remove the gun at the release
+     * sync), but the throw is still shown. Replace the gun by section (the
+     * secondary one; empty: no gun) at the release
      */
-    void clear_pistol_on_release() {
-        if (throwing())
+    void setup_pistol_on_release(const std::string& section, u32 magazines_count = 0) {
+        if (throwing()) {
             _throw->clear_on_release = true;
-        else
+            _throw->replace_section  = section;
+            _throw->replace_mags     = magazines_count;
+        }
+        else if (section.empty())
             clear_pistol();
+        else
+            setup_pistol(section, magazines_count);
     }
 
     /**
@@ -561,15 +568,24 @@ public:
     dropped_gun* release_gun() {
         /*
          * Server-authoritative player (client side): the drop request goes
-         * to the server, the pistol section sync removes the gun from the
+         * to the server, the pistol section sync replaces the gun in the
          * hands (hidden until then). The client's local player spawns a
-         * predicted gun right away: the server's gun takes it over when it
-         * arrives with the state broadcast
+         * predicted gun right away (the server's gun takes it over when it
+         * arrives with the state broadcast) and takes the secondary gun (the
+         * client corrects a misprediction, see predicted_switch_seq)
          */
         if (server_driven()) {
             auto* gun = predicted() && _pistol && _drop_gun_cb ? spawn_dropped_gun(true) : nullptr;
-            if (_throw && _throw->clear_on_release)
-                clear_pistol();
+            if (_throw && _throw->clear_on_release) {
+                if (_throw->replace_section.empty())
+                    clear_pistol();
+                else
+                    setup_pistol(_throw->replace_section, _throw->replace_mags);
+            }
+            else if (predicted()) {
+                _predicted_switch_seq = _last_input_seq;
+                equip_secondary();
+            }
             return gun;
         }
 
@@ -580,7 +596,7 @@ public:
 
         auto* gun = spawn_dropped_gun(false);
         if (gun)
-            clear_pistol();
+            equip_secondary();
         else
             _throw.reset();
 
@@ -925,11 +941,41 @@ public:
         set_some(path, _hat_txtr, _hat, _size, color);
     }
 
-    /* magazines_count: ammo limit of a non-pistol gun (see game_mode::magazines_count) */
+    /**
+     * magazines_count: ammo limit of a primary gun (see game_mode::magazines_count).
+     * A secondary gun becomes the player's secondary one
+     */
     void setup_pistol(const std::string& section, u32 magazines_count = 0) {
         _pistol = weapon_instance(section, magazines_count);
         _pistol_section = section;
+        if (_pistol.get_weapon()->slot() == weapon::secondary)
+            _secondary_section = section;
         _throw.reset();
+    }
+
+    /* Take the secondary gun (no gun if there is none) */
+    void equip_secondary() {
+        if (_secondary_section.empty())
+            clear_pistol();
+        else
+            setup_pistol(_secondary_section);
+    }
+
+    [[nodiscard]]
+    bool holds_secondary() const {
+        auto* wpn = _pistol.get_weapon();
+        return wpn && wpn->slot() == weapon::secondary;
+    }
+
+    [[nodiscard]]
+    const std::string& secondary_section() const {
+        return _secondary_section;
+    }
+
+    /* Predicted player: the input tick of the last predicted switch to the secondary gun (release_gun) */
+    [[nodiscard]]
+    u32 predicted_switch_seq() const {
+        return _predicted_switch_seq;
     }
 
     [[nodiscard]]
@@ -1211,6 +1257,7 @@ private:
 private:
     player_name_t _name;
     std::string   _pistol_section;
+    std::string   _secondary_section;
     std::string   _body_txtr_path;
     std::string   _face_txtr_path;
     sf::Color     _body_color;
@@ -1262,6 +1309,7 @@ private:
     bool _server_driven      = false;
     bool _predicted          = false;
     u32  _last_input_seq     = 0;
+    u32  _predicted_switch_seq = 0;
     bool _replaying          = false;
     bool _net_controlled     = false;
     bool _jump_pressed       = false;
@@ -1295,6 +1343,8 @@ private:
         float duration         = 0.3f;
         bool  released         = false;
         bool  clear_on_release = false; /* server-driven: the server already dropped the gun */
+        std::string replace_section = {}; /* the gun after the release when clear_on_release (empty: none) */
+        u32         replace_mags = 0;
     };
     std::optional<throw_state_t> _throw;
 
