@@ -82,11 +82,14 @@ public:
 
         auto player = player::create(player_name, sim, player::default_size());
         player->set_from_config();
-        player->set_drop_gun_cb([this](const player::drop_gun_spec_t& spec) {
-            return dropped_guns.spawn(spec.section, spec.position, spec.on_left,
-                                      spec.long_shot, spec.group, spec.velocity,
-                                      spec.angle_velocity,
-                                      spec.angle);
+        player->set_drop_gun_cb([this, player_name](const player::drop_gun_spec_t& spec) {
+            auto* gun = dropped_guns.spawn(spec.section, spec.position, spec.on_left,
+                                           spec.long_shot, spec.group, spec.velocity,
+                                           spec.angle_velocity,
+                                           spec.angle);
+            gun->owner(player_name);
+            gun->predicted(spec.predicted);
+            return gun;
         });
         auto [it, _] = players.emplace(player_name, player);
         player_spawn(it->second.get());

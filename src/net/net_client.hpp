@@ -251,6 +251,12 @@ public:
         return _max_bullet_correction;
     }
 
+    /** Largest correction of a predicted own dropped gun towards the server's so far, px */
+    [[nodiscard]]
+    float max_gun_correction() const {
+        return _max_gun_correction;
+    }
+
     /** Own bullets predicted locally and not confirmed by the server yet */
     [[nodiscard]]
     size_t pending_predicted_bullets() const {
@@ -882,10 +888,15 @@ private:
         for (auto& gi : st.guns) {
             dropped_gun* local = nullptr;
             for (auto& g : gs.dropped_guns.guns())
-                if (g->id() == gi.id && g->net_synced()) {
+                if (g->id() == gi.id && (g->net_synced() || g->confirmed())) {
                     local = g.get();
                     break;
                 }
+
+            /* The authoritative counterpart of the local player's predicted throw */
+            auto owner = _configs.find(gi.owner);
+            if (!local && _joined && gi.owner != 0 && owner != _configs.end() && owner->second.name == _name)
+                local = confirm_predicted_gun(gs, gi.id);
 
             if (!local) {
                 local = gs.dropped_guns.spawn_net(gi.id, gi.section, {gi.pos_x, gi.pos_y},
@@ -893,18 +904,61 @@ private:
                 glog().info("net client: dropped gun {} synced at ({}, {})", gi.id, gi.pos_x, gi.pos_y);
             }
 
-            local->position({gi.pos_x, gi.pos_y});
-            local->velocity({gi.vel_x, gi.vel_y});
-            local->sync_angle(gi.angle);
+            if (local->predicted())
+                correct_predicted_gun(gs, *local, gi);
+            else {
+                local->position({gi.pos_x, gi.pos_y});
+                local->velocity({gi.vel_x, gi.vel_y});
+                local->sync_angle(gi.angle);
+            }
             received_gun_ids.push_back(gi.id);
         }
 
+        /* Predicted guns the server never confirmed (the server did not drop that gun) */
+        auto predicted_timeout = std::max(1.f, _rtt_s * 2.f + 0.5f);
         for (auto it = gs.dropped_guns.guns().begin(); it != gs.dropped_guns.guns().end();) {
             auto& g = *it;
-            bool keep = !g->net_synced() ||
-                        std::find(received_gun_ids.begin(), received_gun_ids.end(), g->id()) != received_gun_ids.end();
+            bool keep = g->predicted() && !g->confirmed()
+                            ? g->age() < predicted_timeout
+                            : (!g->net_synced() && !g->confirmed()) ||
+                                  std::find(received_gun_ids.begin(), received_gun_ids.end(), g->id()) !=
+                                      received_gun_ids.end();
             it = keep ? std::next(it) : gs.dropped_guns.guns().erase(it);
         }
+    }
+
+    /* The server's gun of the local player's throw arrived: the oldest unconfirmed prediction takes its id */
+    static dropped_gun* confirm_predicted_gun(game_state& gs, u32 id) {
+        dropped_gun* oldest = nullptr;
+        for (auto& g : gs.dropped_guns.guns())
+            if (g->predicted() && !g->confirmed() && (!oldest || g->age() > oldest->age()))
+                oldest = g.get();
+
+        if (oldest) {
+            oldest->confirm(id);
+            glog().info("net client: predicted dropped gun confirmed as {}", id);
+        }
+        return oldest;
+    }
+
+    /**
+     * A predicted gun follows the server's one: the server state is
+     * forwarded by the flight time the prediction is ahead of it (the local
+     * throw was released that much earlier on the local timeline) along the
+     * ballistic path, the remaining difference is smoothed away
+     */
+    void correct_predicted_gun(game_state& gs, dropped_gun& g, const gun_info& gi) {
+        auto lead = std::clamp(g.age() - float(gi.age_ms) / 1000.f, 0.f, game_state::max_lag_compensation);
+        auto grav = gs.sim.gravity();
+        auto vel  = vec2f{gi.vel_x, gi.vel_y};
+        auto pos  = vec2f{gi.pos_x, gi.pos_y} + vel * lead + grav * (0.5f * lead * lead);
+
+        auto correction     = magnitude(pos - g.get_position());
+        _max_gun_correction = std::max(_max_gun_correction, correction);
+        if (correction > 1.f)
+            glog().detail("net client: predicted dropped gun corrected by {} px", correction);
+
+        g.correct(pos, vel + grav * lead, gi.angle + g.angle_velocity() * lead);
     }
 
     /* Create the player of a config or update it (only what differs: a new pistol resets the weapon) */
@@ -969,6 +1023,7 @@ private:
     double                                                           _last_remote_apply_s = 0.0;
     std::deque<predicted_bullet_t>                                   _predicted;
     float                                                            _max_bullet_correction = 0.f;
+    float                                                            _max_gun_correction    = 0.f;
 };
 
 } // namespace dfdh::net

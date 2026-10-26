@@ -323,7 +323,7 @@ TEST_CASE("protocol: dropped gun state sync") {
     /* state with a gun round-trips over the wire */
     state st;
     st.tick = 42;
-    st.guns.push_back(gun_info{7, "wpn_test", 10.f, 20.f, 3.f, 4.f, 45.f, 1, 0});
+    st.guns.push_back(gun_info{7, "wpn_test", 10.f, 20.f, 3.f, 4.f, 45.f, 1, 0, 3, 250});
     auto data = encode_msg(msg_type::state, st);
     auto msg  = decode_msg({data.data(), data.size()});
     auto wire = read_msg<state>(msg.payload);
@@ -338,6 +338,30 @@ TEST_CASE("protocol: dropped gun state sync") {
     CHECK(wire.guns[0].angle == 45.f);
     CHECK(wire.guns[0].on_left == 1);
     CHECK(wire.guns[0].long_shot == 0);
+    CHECK(wire.guns[0].owner == 3);
+    CHECK(wire.guns[0].age_ms == 250);
+}
+
+TEST_CASE("dropped guns: unique ids and the thrower") {
+    game_state gs;
+    auto       pl = gs.player_create("thrower");
+    REQUIRE(pl != nullptr);
+
+    auto* a = gs.dropped_guns.spawn("wpn_glk17", {0.f, 0.f}, false, false, -1, {0.f, 0.f}, 0.f);
+    auto* b = gs.dropped_guns.spawn("wpn_glk17", {0.f, 0.f}, false, false, -1, {0.f, 0.f}, 0.f);
+    CHECK(a->id() != 0);
+    CHECK(b->id() != 0);
+    CHECK(a->id() != b->id());
+
+    gs.game_run(true);
+    REQUIRE(pl->drop_gun());
+    for (int i = 0; i < 60 && !pl->pistol_section().empty(); ++i)
+        sim_tick(gs);
+    REQUIRE(gs.dropped_guns.size() == 3);
+    auto& thrown = *gs.dropped_guns.guns().back();
+    CHECK(thrown.owner() == pl->name());
+    CHECK_FALSE(thrown.predicted());
+    CHECK(thrown.id() != b->id());
 }
 
 TEST_CASE("udp channel: loopback") {
@@ -2543,5 +2567,43 @@ TEST_CASE("net: gun throws are shown on the client") {
         CHECK(f.local().pistol_section().empty());
         CHECK_FALSE(gun_back);
         CHECK(max_guns == 1);
+    }
+
+    SECTION("the local player's thrown gun is predicted") {
+        auto predicted_gun = [&]() -> dropped_gun* {
+            for (auto& g : f.gs_cli.dropped_guns.guns())
+                if (g->predicted())
+                    return g.get();
+            return nullptr;
+        };
+
+        f.input = {.drop = true};
+        for (int i = 0; i < 20 && !f.local().throwing(); ++i)
+            f.frame();
+        f.input = {};
+        REQUIRE(f.local().throwing());
+
+        /* The predicted gun flies right after the local release, before the server drops its gun */
+        for (int i = 0; i < 200 && !predicted_gun(); ++i)
+            f.frame();
+        REQUIRE(predicted_gun());
+        CHECK(f.gs_srv.dropped_guns.size() == 0);
+        CHECK_FALSE(predicted_gun()->confirmed());
+        CHECK(f.gs_cli.dropped_guns.size() == 1);
+
+        /* The server's gun takes the prediction over: no second gun on the client */
+        size_t max_cli_guns = 0;
+        bool   confirmed    = false;
+        f.run_for(1000ms, [&] {
+            max_cli_guns = std::max(max_cli_guns, f.gs_cli.dropped_guns.size());
+            if (auto* g = predicted_gun(); g && g->confirmed()) {
+                confirmed = true;
+                CHECK(g->id() == f.gs_srv.dropped_guns.guns().front()->id());
+            }
+        });
+        CHECK(confirmed);
+        CHECK(max_cli_guns == 1);
+        UNSCOPED_INFO("max gun correction: " << f.cli->max_gun_correction() << " px");
+        CHECK(f.cli->max_gun_correction() < 10.f);
     }
 }

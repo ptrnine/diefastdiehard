@@ -450,7 +450,8 @@ public:
      * velocity is the starting x velocity ("drop_velocity" mirrored when the
      * player faces left), angle_velocity rotates the sprite only
      * ("drop_angle_velocity", also mirrored when the player faces left),
-     * starting from angle (the gun angle at the release of the throw)
+     * starting from angle (the gun angle at the release of the throw).
+     * predicted: the client's prediction of the local player's throw
      */
     struct drop_gun_spec_t {
         std::string section;
@@ -460,7 +461,8 @@ public:
         int         group;
         vec2f       velocity;
         float       angle_velocity;
-        float       angle = 0.f;
+        float       angle     = 0.f;
+        bool        predicted = false;
     };
 
     using drop_gun_fn_t = std::function<dropped_gun*(const drop_gun_spec_t&)>;
@@ -558,15 +560,17 @@ public:
      */
     dropped_gun* release_gun() {
         /*
-         * Server-authoritative player (client side): don't spawn the gun
-         * locally. The drop request goes to the server; the dropped gun
-         * arrives with the state broadcast, and the pistol section sync
-         * removes the gun from the hands (hidden until then)
+         * Server-authoritative player (client side): the drop request goes
+         * to the server, the pistol section sync removes the gun from the
+         * hands (hidden until then). The client's local player spawns a
+         * predicted gun right away: the server's gun takes it over when it
+         * arrives with the state broadcast
          */
         if (server_driven()) {
+            auto* gun = predicted() && _pistol && _drop_gun_cb ? spawn_dropped_gun(true) : nullptr;
             if (_throw && _throw->clear_on_release)
                 clear_pistol();
-            return nullptr;
+            return gun;
         }
 
         if (!_pistol || !_drop_gun_cb) {
@@ -574,6 +578,17 @@ public:
             return nullptr;
         }
 
+        auto* gun = spawn_dropped_gun(false);
+        if (gun)
+            clear_pistol();
+        else
+            _throw.reset();
+
+        return gun;
+    }
+
+    /* Spawn the held gun as a dropped gun in the release pose of the throw */
+    dropped_gun* spawn_dropped_gun(bool predicted_gun) {
         auto [release_offset, release_angle] = throw_pose(_throw ? _throw->duration : 0.f);
         auto  pos = arm_position(get_position()) + release_offset;
         auto* wpn = _pistol.get_weapon();
@@ -592,13 +607,8 @@ public:
                                                   * angle (and flips the x scale) when on_left, which is exactly
                                                   * the mirror of the right-facing rotation */
                                                  .angle_velocity = wpn->drop_angle_velocity(),
-                                                 .angle          = release_angle});
-
-        if (gun)
-            clear_pistol();
-        else
-            _throw.reset();
-
+                                                 .angle          = release_angle,
+                                                 .predicted      = predicted_gun});
         return gun;
     }
 

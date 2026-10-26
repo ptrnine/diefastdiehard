@@ -23,6 +23,11 @@ namespace dfdh {
  *
  * The sprite rotates at "drop_angle_velocity" (degrees/sec); the rotation
  * only affects the sprite, not the physical bounding box.
+ *
+ * On a network client a gun thrown by the local player is predicted: it
+ * flies right away with local physics (no collisions: the server decides
+ * them), takes over the id of the server's gun when it arrives and is then
+ * corrected towards it (see net_client)
  */
 class dropped_gun {
 public:
@@ -82,6 +87,13 @@ public:
 
     /** Advance the sprite rotation (does not affect the physical bb) */
     void update(float timestep) {
+        _age += timestep;
+
+        /* The correction offset decays (half-life ~50ms) */
+        _render_offset *= std::exp2(-timestep / render_offset_half_life);
+        if (magnitude(_render_offset) < 0.01f)
+            _render_offset = {0.f, 0.f};
+
         /* Ghost (net-synced) guns get their angle from the server */
         if (!_net_synced)
             _angle = std::fmod(_angle + _angle_velocity * timestep, 360.f);
@@ -95,8 +107,8 @@ public:
      * and is pushed out of the player. Returns true on a hit
      */
     bool collide_with(const std::map<player_name_t, std::shared_ptr<player>>& players) {
-        /* Ghost (net-synced) guns have no local physics or collisions */
-        if (_net_synced || _hit_cooldown > 0 || _box->ready_delete_later())
+        /* Ghost (net-synced) guns have no local physics or collisions, predicted ones no collisions */
+        if (_net_synced || _predicted || _hit_cooldown > 0 || _box->ready_delete_later())
             return false;
 
         auto pos = _box->get_position();
@@ -155,7 +167,7 @@ public:
         auto pos      = _box->get_position();
         auto next_pos = pos + _box->get_velocity() * timestep;
         pos = lerp(pos, next_pos, interpolation_factor);
-        _wpn->draw(pos, _on_left, _angle, wnd);
+        _wpn->draw(pos + _render_offset, _on_left, _angle, wnd);
     }
 
     [[nodiscard]]
@@ -236,7 +248,64 @@ public:
         return _net_synced;
     }
 
+    /* Player who threw the gun (empty if none) */
+    void owner(const player_name_t& value) {
+        _owner = value;
+    }
+
+    [[nodiscard]]
+    const player_name_t& owner() const {
+        return _owner;
+    }
+
+    /* Flight time since the spawn (simulation seconds) */
+    [[nodiscard]]
+    float age() const {
+        return _age;
+    }
+
+    [[nodiscard]]
+    float angle_velocity() const {
+        return _angle_velocity;
+    }
+
+    /** Client-side prediction of the local player's throw */
+    void predicted(bool value) {
+        _predicted = value;
+    }
+
+    [[nodiscard]]
+    bool predicted() const {
+        return _predicted;
+    }
+
+    /** The server's gun arrived: the prediction takes its id */
+    void confirm(u32 server_id) {
+        _id        = server_id;
+        _confirmed = true;
+    }
+
+    [[nodiscard]]
+    bool confirmed() const {
+        return _confirmed;
+    }
+
+    /** Move the gun to the corrected state, the jump is smoothed by the render offset */
+    void correct(const vec2f& pos, const vec2f& vel, float angle) {
+        _render_offset += _box->get_position() - pos;
+        _box->position(pos);
+        _box->velocity(vel);
+        sync_angle(angle);
+    }
+
+    [[nodiscard]]
+    const vec2f& render_offset() const {
+        return _render_offset;
+    }
+
 private:
+    static constexpr float render_offset_half_life = 0.05f;
+
     std::shared_ptr<physic_group> _box;
     weapon*                       _wpn      = nullptr;
     vec2f                         _size;
@@ -249,6 +318,11 @@ private:
     u32                           _id           = 0;
     bool                          _net_synced   = false;
     u32                           _hit_cooldown = 0;
+    player_name_t                 _owner;
+    float                         _age          = 0.f;
+    bool                          _predicted    = false;
+    bool                          _confirmed    = false;
+    vec2f                         _render_offset = {0.f, 0.f};
 };
 
 class dropped_gun_mgr {
@@ -272,10 +346,12 @@ public:
                        const vec2f&       velocity,
                        float              angle_velocity,
                        float              angle = 0.f) {
-        return _guns
-            .emplace_back(std::make_unique<dropped_gun>(
-                _sim, section, position, on_left, long_shot, group, velocity, angle_velocity, angle))
-            .get();
+        auto* gun = _guns
+                        .emplace_back(std::make_unique<dropped_gun>(
+                            _sim, section, position, on_left, long_shot, group, velocity, angle_velocity, angle))
+                        .get();
+        gun->id(_next_id++);
+        return gun;
     }
 
     /**
@@ -304,9 +380,10 @@ public:
         for (auto& g : _guns)
             g->collide_with(_players);
 
-        /* Ghost guns are removed by the client when the server drops them */
+        /* Ghost and predicted guns are removed by the client when the server drops them */
         std::erase_if(_guns, [this](const auto& g) {
-            return g->box()->ready_delete_later() || (!g->net_synced() && g->out_of_bounds(_level_size));
+            return g->box()->ready_delete_later() ||
+                   (!g->net_synced() && !g->predicted() && g->out_of_bounds(_level_size));
         });
     }
 
@@ -330,6 +407,7 @@ private:
     std::map<player_name_t, std::shared_ptr<player>>& _players;
     vec2f                                           _level_size = {0.f, 0.f};
     std::vector<std::unique_ptr<dropped_gun>>       _guns;
+    u32                                             _next_id = 1;
 };
 
 } // namespace dfdh

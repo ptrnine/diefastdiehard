@@ -323,7 +323,9 @@ private:
                                        vel.y,
                                        g->angle(),
                                        static_cast<u8>(g->on_left()),
-                                       static_cast<u8>(g->long_shot())});
+                                       static_cast<u8>(g->long_shot()),
+                                       g->owner().empty() ? u16(0) : player_id(g->owner()),
+                                       u16(std::min(g->age() * 1000.f, 65535.f))});
         }
 
         bool refresh = st.tick % config_refresh == 0;

@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 9;
+inline constexpr u16 protocol_version = 10;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -379,13 +379,15 @@ struct gun_info {
     float       angle     = 0.f; // sprite rotation (degrees, pre-mirror)
     u8          on_left   = 0;
     u8          long_shot = 0;
+    u16         owner     = 0; // id of the player who threw it, 0: none
+    u16         age_ms    = 0; // flight time since the throw (clamped)
 
     void serialize(auto& s) const {
-        s.write(id, section, pos_x, pos_y, vel_x, vel_y, angle, on_left, long_shot);
+        s.write(id, section, pos_x, pos_y, vel_x, vel_y, angle, on_left, long_shot, owner, age_ms);
     }
 
     void deserialize(auto& d) {
-        d.read(id, section, pos_x, pos_y, vel_x, vel_y, angle, on_left, long_shot);
+        d.read(id, section, pos_x, pos_y, vel_x, vel_y, angle, on_left, long_shot, owner, age_ms);
     }
 };
 
