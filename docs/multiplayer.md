@@ -77,6 +77,7 @@ STATE contains:
 - **`state_player`, per player:**
   - id;
   - physic state: pos and **raw** velocity as full floats (the client reconciles with them), flags (lock_y, on_left, shooting), jumps_left, accel factors (u16 fixed point);
+  - `throwing`: the player throws its gun away (`player::drop_gun` plays a 0.25-0.45 s wind-up and throw, the server drops the gun at its end). Clients show the throw of remote players from this flag and the local one from the predicted drop input; the server's drop (an empty pistol in the player config) removes the gun at the release of the shown throw (`player::clear_pistol_on_release`);
   - teleport counter;
   - `hits`: ids of the bullets that hit the player in the last second.
 - **`shot_info`, per shot spawned since the last broadcast:** owner id, first bullet id, shot key (`pull_seq`, `shot_index`, first pellet), muzzle start, forward time (u16, 1/32768 s), hit_mass, gravity flag, and the muzzle velocity of each pellet. Pellet `i` has the id `first_id + i` and the pellet number `first_pellet + i`; pellets of one shot share everything but the velocity. The server keeps spawned bullets in a pending list until the next broadcast.

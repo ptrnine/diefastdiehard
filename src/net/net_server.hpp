@@ -202,6 +202,8 @@ private:
             flags |= state_player::flag_on_left;
         if (pl.shotting())
             flags |= state_player::flag_shooting;
+        if (pl.throwing())
+            flags |= state_player::flag_throwing;
 
         return {id,
                 ph.pos.x,

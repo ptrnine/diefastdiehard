@@ -85,7 +85,8 @@ public:
         player->set_drop_gun_cb([this](const player::drop_gun_spec_t& spec) {
             return dropped_guns.spawn(spec.section, spec.position, spec.on_left,
                                       spec.long_shot, spec.group, spec.velocity,
-                                      spec.angle_velocity);
+                                      spec.angle_velocity,
+                                      spec.angle);
         });
         auto [it, _] = players.emplace(player_name, player);
         player_spawn(it->second.get());

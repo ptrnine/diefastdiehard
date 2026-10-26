@@ -23,6 +23,7 @@ struct remote_player_snapshot {
     player::physic_state ph;
     bool                 on_left  = false;
     bool                 shooting = false;
+    bool                 throwing = false;
     std::vector<u32>     hits; // bullets that hit the player in the last second
     u16                  teleports = 0;
 
@@ -693,6 +694,10 @@ private:
                 pl.shot();
             else
                 pl.relax();
+
+            /* The throw is shown only: the server drops the gun (and the pistol sync removes it) */
+            if (snap->throwing && !pl.throwing())
+                pl.drop_gun();
         }
     }
 
@@ -824,6 +829,7 @@ private:
                                    remote_player_snapshot{to_physic_state(sp),
                                                           (sp.flags & state_player::flag_on_left) != 0,
                                                           (sp.flags & state_player::flag_shooting) != 0,
+                                                          (sp.flags & state_player::flag_throwing) != 0,
                                                           sp.hits,
                                                           sp.teleports});
         }
@@ -915,10 +921,11 @@ private:
         if (pl->face_texture_path() != face)
             pl->set_face(face);
         /* An empty pistol section means the server-side player has no gun
-         * (e.g. dropped it), so clear it locally as well */
+         * (e.g. dropped it), so clear it locally as well: at the release of
+         * a shown throw (remote players are shown in the past) */
         if (pl->pistol_section() != cfg.pistol) {
             if (cfg.pistol.empty())
-                pl->clear_pistol();
+                pl->clear_pistol_on_release();
             else
                 pl->setup_pistol(cfg.pistol);
         }

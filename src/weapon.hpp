@@ -701,9 +701,10 @@ public:
                               bool              left_dir,
                               bool              enable_long_shot,
                               sf::RenderWindow& wnd,
-                              const vec2f&      shell_additional_vel = {0.f, 0.f}) {
+                              const vec2f&      shell_additional_vel = {0.f, 0.f},
+                              float             extra_angle_deg      = 0.f) {
         float                 LF       = left_dir ? -1.f : 1.f;
-        auto shot_angle_deg = enable_long_shot ? _wpn->_long_shot_angle : 0.f;
+        auto shot_angle_deg = (enable_long_shot ? _wpn->_long_shot_angle : 0.f) + extra_angle_deg;
         auto shot_angle_rad = shot_angle_deg * float(M_PI) / 180.f;
 
         static constexpr auto leftyfix = [](const vec2f& v, float invert) {

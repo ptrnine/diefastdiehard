@@ -527,9 +527,43 @@ TEST_CASE("player: apply_input") {
         REQUIRE(!pl->pistol_section().empty());
         auto before = gs.dropped_guns.size();
 
+        gs.game_run(true);
+
+        /* The arm winds up and throws: the gun is released at the end of the throw */
         pl->apply_input(net::player_input_state{.drop = true});
+        CHECK(pl->throwing());
+        CHECK(pl->throw_duration() >= 0.2f);
+        CHECK(pl->throw_duration() <= 0.5f);
+        CHECK_FALSE(pl->shot()); /* no shots while throwing */
+        CHECK_FALSE(pl->drop_gun()); /* already throwing */
+
+        auto ticks = int(pl->throw_duration() * 60.f);
+        for (int i = 0; i < ticks - 1; ++i)
+            sim_tick(gs);
+        CHECK(pl->throwing());
+        CHECK(gs.dropped_guns.size() == before);
+
+        for (int i = 0; i < 2 && pl->throwing(); ++i)
+            sim_tick(gs);
+        CHECK_FALSE(pl->throwing());
         CHECK(pl->pistol_section().empty());
         CHECK(gs.dropped_guns.size() == before + 1);
+    }
+
+    SECTION("throw pose") {
+        REQUIRE(pl->drop_gun());
+        auto d      = pl->throw_duration();
+        auto windup = pl->throw_pose(d * 0.6f);
+        auto end    = pl->throw_pose(d);
+        auto dir    = pl->facing_dir().x;
+
+        /* Wound up: the arm is back and up, the muzzle raised */
+        CHECK(windup.first.x * dir < 0.f);
+        CHECK(windup.first.y < 0.f);
+        CHECK(windup.second < -45.f);
+        /* Released: the arm is in front, the muzzle tips down */
+        CHECK(end.first.x * dir > 0.f);
+        CHECK(end.second > 0.f);
     }
 }
 
@@ -2455,4 +2489,59 @@ TEST_CASE("game_commands: game mode") {
     gs.game_mode_networked = true;
     run("game mode gm_crates");
     CHECK(gs.cur_game_mode.section == "gm_default");
+}
+
+TEST_CASE("net: gun throws are shown on the client") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{40, 60};
+
+    auto bot = f.gs_srv.player_create("bot");
+    REQUIRE(bot != nullptr);
+    f.run_for(1000ms);
+    REQUIRE(f.gs_cli.players.contains("bot"));
+    REQUIRE_FALSE(f.local().pistol_section().empty());
+
+    SECTION("a remote player throws its gun") {
+        auto& remote = *f.gs_cli.players.at("bot");
+        REQUIRE_FALSE(remote.pistol_section().empty());
+        REQUIRE(bot->drop_gun());
+
+        /* The throw is shown with the gun in the hands, the server's drop removes it at the release */
+        bool   seen_throwing = false, gun_while_throwing = true;
+        size_t max_guns      = 0; /* the thrown gun may fly out of the level */
+        f.run_for(1500ms, [&] {
+            max_guns = std::max(max_guns, f.gs_srv.dropped_guns.size());
+            if (remote.throwing()) {
+                seen_throwing = true;
+                gun_while_throwing = gun_while_throwing && !remote.pistol_section().empty();
+            }
+        });
+        CHECK(seen_throwing);
+        CHECK(gun_while_throwing);
+        CHECK(bot->pistol_section().empty());
+        CHECK(remote.pistol_section().empty());
+        CHECK(max_guns == 1);
+    }
+
+    SECTION("the local player throws its gun") {
+        f.input = {.drop = true};
+        for (int i = 0; i < 20 && !f.local().throwing(); ++i)
+            f.frame();
+        f.input = {};
+        REQUIRE(f.local().throwing());
+
+        /* Predicted throw: the gun stays in the hands until the server drops it, then never comes back */
+        bool   gun_back = false;
+        bool   released = false;
+        size_t max_guns = 0;
+        f.run_for(1500ms, [&] {
+            max_guns = std::max(max_guns, f.gs_srv.dropped_guns.size());
+            released = released || f.local().pistol_section().empty();
+            gun_back = gun_back || (released && !f.local().pistol_section().empty());
+        });
+        CHECK(f.server_side().pistol_section().empty());
+        CHECK(f.local().pistol_section().empty());
+        CHECK_FALSE(gun_back);
+        CHECK(max_guns == 1);
+    }
 }

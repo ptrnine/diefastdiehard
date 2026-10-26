@@ -33,7 +33,8 @@ public:
                 bool               long_shot,
                 int                group,
                 const vec2f&       velocity,
-                float              angle_velocity):
+                float              angle_velocity,
+                float              angle = 0.f):
         _on_left(on_left),
         _long_shot(long_shot),
         _group(group),
@@ -42,7 +43,7 @@ public:
         auto& wpn = weapon_mgr().load(section);
         _wpn      = &wpn;
         _size     = wpn.dropped_bb();
-        _angle    = long_shot ? wpn.long_shot_angle() : 0.f;
+        _angle    = (long_shot ? wpn.long_shot_angle() : 0.f) + angle;
 
         auto w = _size.x * 0.5f;
         auto h = _size.y * 0.5f;
@@ -269,10 +270,11 @@ public:
                        bool               long_shot,
                        int                group,
                        const vec2f&       velocity,
-                       float              angle_velocity) {
+                       float              angle_velocity,
+                       float              angle = 0.f) {
         return _guns
             .emplace_back(std::make_unique<dropped_gun>(
-                _sim, section, position, on_left, long_shot, group, velocity, angle_velocity))
+                _sim, section, position, on_left, long_shot, group, velocity, angle_velocity, angle))
             .get();
     }
 

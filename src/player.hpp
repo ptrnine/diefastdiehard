@@ -121,7 +121,7 @@ public:
                 update_was = shot();
             }
             else if (c == ks.drop) {
-                update_was = drop_gun() != nullptr;
+                update_was = drop_gun();
             }
             else if (c == ks.adjust_up) {
                 _long_shot_enabled = true;
@@ -434,7 +434,7 @@ public:
     }
 
     bool shot() {
-        if (!_pistol)
+        if (!_pistol || _throw)
             return false;
 
         auto pulled = _pistol.pull_trigger(_tracer_color);
@@ -449,7 +449,8 @@ public:
      * orientation and mirroring as the gun drawn in the player's hands.
      * velocity is the starting x velocity ("drop_velocity" mirrored when the
      * player faces left), angle_velocity rotates the sprite only
-     * ("drop_angle_velocity", also mirrored when the player faces left)
+     * ("drop_angle_velocity", also mirrored when the player faces left),
+     * starting from angle (the gun angle at the release of the throw)
      */
     struct drop_gun_spec_t {
         std::string section;
@@ -459,6 +460,7 @@ public:
         int         group;
         vec2f       velocity;
         float       angle_velocity;
+        float       angle = 0.f;
     };
 
     using drop_gun_fn_t = std::function<dropped_gun*(const drop_gun_spec_t&)>;
@@ -468,24 +470,112 @@ public:
     }
 
     /**
-     * Drop the currently held gun: a dropped gun spawns at the arm position
-     * and the gun disappears from the player's hands. Returns the spawned
-     * dropped gun, or nullptr if the player has no gun or no callback set
+     * Throw the currently held gun away: the arm winds up and throws (see
+     * throw_pose), the gun is released at the end of the throw
+     * (throw_update). Returns false if the player has no gun or is already
+     * throwing it
      */
-    dropped_gun* drop_gun() {
-        if (!_pistol || !_drop_gun_cb)
-            return nullptr;
+    bool drop_gun() {
+        if (!_pistol || _throw || (!_drop_gun_cb && !server_driven()))
+            return false;
 
+        _pistol.relax_trigger();
+        _throw = throw_state_t{.duration = throw_duration()};
+        return true;
+    }
+
+    /* The arm winds up or throws the gun (it is not released yet) */
+    [[nodiscard]]
+    bool throwing() const {
+        return _throw && !_throw->released;
+    }
+
+    /* Throw duration of the held gun: heavier guns are thrown slower */
+    [[nodiscard]]
+    float throw_duration() const {
+        auto* wpn = _pistol.get_weapon();
+        return std::clamp(0.2f + 0.2f * (wpn ? wpn->mass() : 0.5f), 0.25f, 0.45f);
+    }
+
+    /* Advance the gun throw by one simulation tick, the gun is released at its end */
+    void throw_update(float timestep) {
+        if (!_throw)
+            return;
+
+        _throw->time += timestep;
+        if (!_throw->released && _throw->time >= _throw->duration) {
+            _throw->released = true;
+            release_gun();
+        }
+
+        /* A released server-driven gun is hidden until the server drops it: it did not, show it again */
+        if (_throw && _throw->released && _throw->time >= _throw->duration + throw_release_hold)
+            _throw.reset();
+    }
+
+    /**
+     * Server-driven player: the server dropped the gun (the pistol section
+     * sync), but the throw is still shown. Remove the gun at the release
+     */
+    void clear_pistol_on_release() {
+        if (throwing())
+            _throw->clear_on_release = true;
+        else
+            clear_pistol();
+    }
+
+    /**
+     * Arm offset and additional gun angle (degrees, unmirrored: weapon draw
+     * mirrors it) of the throw, time seconds after its start. The arm swings
+     * back and up with the muzzle raised, then forward to the release, where
+     * the muzzle tips down and the dropped gun keeps rotating forward
+     * (drop_angle_velocity)
+     */
+    [[nodiscard]]
+    std::pair<vec2f, float> throw_pose(float time) const {
+        if (!_throw)
+            return {{0.f, 0.f}, 0.f};
+
+        auto scaled = [this](const vec2f& f) {
+            return vec2f(f.x * _size.x * facing_dir().x, f.y * _size.y);
+        };
+
+        auto windup = _throw->duration * throw_windup_part;
+        if (time < windup) {
+            auto f = time / windup;
+            f      = f * (2.f - f); /* ease out: slows down to the top of the wind-up */
+            return {scaled(throw_windup_offset) * f, throw_windup_angle * f};
+        }
+
+        auto f = std::min((time - windup) / (_throw->duration - windup), 1.f);
+        f *= f; /* ease in: speeds up to the release */
+        return {lerp(scaled(throw_windup_offset), scaled(throw_release_offset), f), lerp(throw_windup_angle, throw_release_angle, f)};
+    }
+
+    /**
+     * Release the thrown gun: a dropped gun spawns at the arm position of
+     * the release and the gun disappears from the player's hands
+     */
+    dropped_gun* release_gun() {
         /*
          * Server-authoritative player (client side): don't spawn the gun
          * locally. The drop request goes to the server; the dropped gun
          * arrives with the state broadcast, and the pistol section sync
-         * removes the gun from the hands
+         * removes the gun from the hands (hidden until then)
          */
-        if (server_driven())
+        if (server_driven()) {
+            if (_throw && _throw->clear_on_release)
+                clear_pistol();
             return nullptr;
+        }
 
-        auto  pos = arm_position(get_position());
+        if (!_pistol || !_drop_gun_cb) {
+            _throw.reset();
+            return nullptr;
+        }
+
+        auto [release_offset, release_angle] = throw_pose(_throw ? _throw->duration : 0.f);
+        auto  pos = arm_position(get_position()) + release_offset;
         auto* wpn = _pistol.get_weapon();
         auto lf   = _on_left ? -1.f : 1.f;
 
@@ -501,10 +591,13 @@ public:
                                                  /* angle_velocity is passed unmirrored: weapon::draw inverts the
                                                   * angle (and flips the x scale) when on_left, which is exactly
                                                   * the mirror of the right-facing rotation */
-                                                 .angle_velocity = wpn->drop_angle_velocity()});
+                                                 .angle_velocity = wpn->drop_angle_velocity(),
+                                                 .angle          = release_angle});
 
         if (gun)
             clear_pistol();
+        else
+            _throw.reset();
 
         return gun;
     }
@@ -579,6 +672,8 @@ public:
                              volume);
             _fall_velocity.reset();
         }
+
+        throw_update(sim.last_timestep());
 
         /* Update weapon */
         if (_pistol) {
@@ -775,12 +870,16 @@ public:
             leg->setPosition(leg_pos);
         }
 
-        if (_pistol) {
-            auto [lh, rh] = _pistol.draw(arm_position(pos),
+        /* A released gun of a server-driven player is hidden until the server drops it */
+        if (_pistol && !(_throw && _throw->released)) {
+            auto [throw_offset, throw_angle] =
+                throw_pose(_throw ? _throw->time + interpolation_factor * timestep : 0.f);
+            auto [lh, rh] = _pistol.draw(arm_position(pos) + throw_offset,
                                         _on_left,
                                         gravity_for_bullets && _long_shot_enabled,
                                         wnd,
-                                        _collision_box->get_velocity());
+                                        _collision_box->get_velocity(),
+                                        throw_angle);
             _left_hand.setPosition(lh);
             _right_hand.setPosition(rh);
         }
@@ -815,6 +914,7 @@ public:
     void setup_pistol(const std::string& section) {
         _pistol = weapon_instance(section);
         _pistol_section = section;
+        _throw.reset();
     }
 
     [[nodiscard]]
@@ -826,6 +926,7 @@ public:
     void clear_pistol() {
         _pistol = {};
         _pistol_section.clear();
+        _throw.reset();
     }
 
     [[nodiscard]]
@@ -1164,6 +1265,22 @@ private:
     sf::Clock _step_sound_timer;
 
     drop_gun_fn_t _drop_gun_cb;
+
+    /* Gun throw (drop_gun) */
+    static constexpr float throw_windup_part    = 0.6f;            /* the wind-up part of the throw duration */
+    static constexpr float throw_release_hold   = 1.f;             /* seconds a released server-driven gun is hidden */
+    static constexpr vec2f throw_windup_offset  = {-0.7f, -0.35f}; /* arm offset (player size factors), facing right */
+    static constexpr vec2f throw_release_offset = {0.55f, -0.1f};
+    static constexpr float throw_windup_angle   = -55.f;           /* muzzle raised back */
+    static constexpr float throw_release_angle  = 25.f;            /* muzzle tips down at the release */
+
+    struct throw_state_t {
+        float time             = 0.f;
+        float duration         = 0.3f;
+        bool  released         = false;
+        bool  clear_on_release = false; /* server-driven: the server already dropped the gun */
+    };
+    std::optional<throw_state_t> _throw;
 
     vec2f              _pending_impulse = {0.f, 0.f};
     tick_impulses_t    _tick_impulses;
