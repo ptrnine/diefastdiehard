@@ -25,7 +25,7 @@ inline sf::Color unpack_color(u32 v) {
 }
 
 inline game_mode_info to_game_mode_info(const game_mode& gm) {
-    return {gm.section, gm.bullet_gravity, gm.crate_drop_period, gm.magazines_count};
+    return {gm.section, gm.bullet_gravity, gm.crate_drop_period, gm.magazines_count, u8(gm.score_system), gm.start_lives};
 }
 
 /**

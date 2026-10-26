@@ -156,7 +156,7 @@ TEST_CASE("protocol: message round-trips") {
 
     SECTION("state with the game mode") {
         state st;
-        st.mode = game_mode_info{"gm_ballistic", 500.f, 5.f, 3};
+        st.mode = game_mode_info{"gm_ballistic", 500.f, 5.f, 3, u8(game_mode::score_system_t::lives), 5};
 
         auto data = encode_msg(msg_type::state, st);
         auto r    = read_msg<state>(decode_msg({data.data(), data.size()}).payload);
@@ -165,6 +165,8 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(r.mode->bullet_gravity == 500.f);
         CHECK(r.mode->crate_drop_period == 5.f);
         CHECK(r.mode->magazines_count == 3);
+        CHECK(r.mode->score_system == u8(game_mode::score_system_t::lives));
+        CHECK(r.mode->start_lives == 5);
 
         st.mode.reset();
         data = encode_msg(msg_type::state, st);
@@ -2948,4 +2950,104 @@ TEST_CASE("game_state: score of kills and suicides") {
         CHECK(b->score() == -1);
         CHECK(a->score() == 0);
     }
+}
+
+TEST_CASE("game_state: lives score system") {
+    game_state gs;
+    REQUIRE(gs.level_current("lvl_aes"));
+    gs.game_run(true);
+    auto a = gs.player_create("a");
+    REQUIRE(a);
+
+    auto gm         = gs.cur_game_mode;
+    gm.section      = "gm_lives_test";
+    gm.score_system = game_mode::score_system_t::lives;
+    gm.start_lives  = 2;
+    a->add_score(4);
+    gs.game_mode_set(gm);
+    CHECK(a->score() == 2); /* the switch resets the scores */
+
+    auto b = gs.player_create("b");
+    REQUIRE(b);
+    CHECK(b->score() == 2); /* a new player starts with the lives too */
+
+    SECTION("any death takes a life, no lives: out of the game") {
+        a->on_bullet_hit({-900.f, -400.f}, a->get_position(), bullet_ref{1, {}, b->name()});
+        gs.player_on_dead(a);
+        CHECK(a->score() == 1);
+        CHECK(b->score() == 2); /* no score for a kill */
+        CHECK_FALSE(a->eliminated());
+
+        gs.player_on_dead(a);
+        CHECK(a->score() == 0);
+        CHECK(a->eliminated());
+
+        /* Parked, never respawned nor dead again */
+        for (int i = 0; i < 120; ++i)
+            sim_tick(gs);
+        CHECK(a->eliminated());
+        CHECK(a->score() == 0);
+        CHECK(a->get_position().x == game_state::eliminated_park_pos.x);
+        CHECK(a->get_position().y == game_state::eliminated_park_pos.y);
+        CHECK(gs.player_out_of_lives(*a));
+    }
+
+    SECTION("switching the game mode brings everyone back") {
+        gs.player_on_dead(a);
+        gs.player_on_dead(a);
+        REQUIRE(a->eliminated());
+
+        REQUIRE(gs.game_mode_apply("default"));
+        CHECK(a->score() == 0);
+        CHECK(b->score() == 0);
+        CHECK_FALSE(a->eliminated());
+        CHECK(a->collision_box()->is_gravity_enabled());
+        CHECK(a->get_position().x != game_state::eliminated_park_pos.x); /* respawned on the level */
+
+        gs.player_on_dead(a);
+        CHECK(a->score() == -1);
+        CHECK_FALSE(a->eliminated());
+    }
+
+    SECTION("the lives game mode from the config") {
+        REQUIRE(gs.game_mode_apply("lives"));
+        CHECK(gs.cur_game_mode.lives_enabled());
+        CHECK(a->score() == gs.cur_game_mode.start_lives);
+    }
+
+    SECTION("a hot reload of the same rules keeps the scores") {
+        gs.player_on_dead(a);
+        gm.bullet_gravity = 500.f;
+        gs.game_mode_set(gm);
+        CHECK(a->score() == 1);
+    }
+}
+
+TEST_CASE("net: lives and the elimination are synced") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{100, 100};
+
+    auto gm         = f.gs_srv.cur_game_mode;
+    gm.section      = "gm_lives_test";
+    gm.score_system = game_mode::score_system_t::lives;
+    gm.start_lives  = 1;
+    f.gs_srv.game_mode_set(gm);
+    f.run_for(1000ms);
+    REQUIRE(f.gs_cli.cur_game_mode.lives_enabled());
+    CHECK(f.local().score() == 1);
+    CHECK_FALSE(f.local().eliminated());
+
+    f.gs_srv.player_on_dead(&f.server_side());
+    REQUIRE(f.server_side().eliminated());
+    f.run_for(1000ms);
+    CHECK(f.local().score() == 0);
+    CHECK(f.local().eliminated());
+
+    /* Back to the default game mode: in the game again */
+    REQUIRE(f.gs_srv.game_mode_apply("default"));
+    f.run_for(1000ms);
+    CHECK_FALSE(f.server_side().eliminated());
+    CHECK_FALSE(f.local().eliminated());
+    CHECK(f.local().score() == 0);
+    CHECK(f.local().get_position().x != game_state::eliminated_park_pos.x);
 }

@@ -96,6 +96,7 @@ public:
 
         auto player = player::create(player_name, sim, player::default_size());
         player->set_from_config(cur_game_mode.magazines_count);
+        player->score(cur_game_mode.start_score());
         player->set_drop_gun_cb([this, player_name](const player::drop_gun_spec_t& spec) {
             auto* gun = dropped_guns.spawn(spec.section, spec.position, spec.on_left,
                                            spec.long_shot, spec.group, spec.velocity,
@@ -267,11 +268,23 @@ public:
 
     /* Apply the game mode rules (the network client applies the server's game mode this way) */
     void game_mode_set(const game_mode& gm) {
+        bool reset_scores = !cur_game_mode.same_score_rules(gm);
         cur_game_mode = gm;
         sim.bullet_gravity({0.f, gm.bullet_gravity});
         gravity_for_bullets = gm.bullet_gravity_enabled();
         crate_timer.restart();
-        glog().info("game mode {} was applied", gm.section);
+        if (reset_scores)
+            players_score_reset();
+        glog().info("game mode {} was applied (score system: {})",
+                    gm.section,
+                    game_mode::score_system_name(gm.score_system));
+    }
+
+    /* Everyone starts over: the game mode's start score, eliminated players are back in the game */
+    void players_score_reset() {
+        for (auto& [_, pl] : players)
+            pl->score(cur_game_mode.start_score());
+        players_elimination_update();
     }
 
     bool level_cache(const std::string& level_name) {
@@ -302,10 +315,26 @@ public:
     }
 
     /*
-     * Fell off the map: a kill of the last attacker (+1 to the attacker),
-     * a suicide without one (-1 to the player)
+     * Fell off the map. Default score system: a kill of the last attacker
+     * (+1 to the attacker), a suicide without one (-1 to the player).
+     * Lives score system: -1 life for any death, out of the game without lives
      */
     void player_on_dead(player* player) {
+        if (cur_game_mode.lives_enabled()) {
+            player->add_score(-1);
+            player->increase_deaths();
+            if (!player->attacker().empty())
+                glog().info("{} knocked out {} (lives {})", player->attacker(), player->name(), player->score());
+            else
+                glog().info("{} fell off (lives {})", player->name(), player->score());
+
+            if (player->score() <= 0)
+                player_eliminate(player);
+            else
+                player_spawn(player);
+            return;
+        }
+
         auto found = players.find(player->attacker());
         if (!player->attacker().empty() && found != players.end() && found->second.get() != player) {
             found->second->add_score(1);
@@ -320,6 +349,47 @@ public:
         player_spawn(player);
     }
 
+    /* Eliminated players are kept far away from the level */
+    static constexpr vec2f eliminated_park_pos = {-100000.f, -100000.f};
+
+    /* Lives score system: an out of lives player is out of the game until the scores reset */
+    [[nodiscard]]
+    bool player_out_of_lives(const player& pl) const {
+        return cur_game_mode.lives_enabled() && pl.score() <= 0;
+    }
+
+    /*
+     * Out of the game: parked away from the level without gravity, not updated,
+     * drawn or respawned (server-driven: parked by the server)
+     */
+    void player_eliminate(player* pl) {
+        pl->eliminated(true);
+        pl->collision_box()->enable_gravity(false);
+        if (!pl->server_driven()) {
+            pl->teleport(eliminated_park_pos);
+        }
+        glog().info("{} is out of the game", pl->name());
+    }
+
+    void player_revive(player* pl) {
+        pl->eliminated(false);
+        pl->collision_box()->enable_gravity(true);
+        if (!pl->server_driven())
+            player_spawn(pl);
+        glog().info("{} is back in the game", pl->name());
+    }
+
+    /* Eliminates or revives players by their scores (network client: by the synced scores) */
+    void players_elimination_update() {
+        for (auto& [_, pl] : players) {
+            bool out = player_out_of_lives(*pl);
+            if (out && !pl->eliminated())
+                player_eliminate(pl.get());
+            else if (!out && pl->eliminated())
+                player_revive(pl.get());
+        }
+    }
+
     void player_spawn(player* player = nullptr) {
         if (!cur_level) {
             glog().warn("Can't spawn players: level was not loaded");
@@ -327,6 +397,8 @@ public:
         }
 
         if (player) {
+            if (player->eliminated())
+                return;
             /* A player spawns with its secondary gun only (server-driven: synced from the server) */
             if (!player->server_driven())
                 player->equip_secondary();
@@ -414,7 +486,8 @@ public:
         cur_level->draw(wnd);
 
         for (auto& [_, player] : players)
-            player->draw(wnd, sim.interpolation_factor(), sim.last_timestep(), gravity_for_bullets);
+            if (!player->eliminated())
+                player->draw(wnd, sim.interpolation_factor(), sim.last_timestep(), gravity_for_bullets);
 
         for (auto& crate_ : crates)
             crate_->draw(wnd, sim.interpolation_factor(), sim.last_timestep());
@@ -501,7 +574,7 @@ public:
 
         std::vector<std::string> lines;
         for (auto* pl : sorted)
-            lines.push_back(std::string(pl->name()) + ": " + std::to_string(pl->score()));
+            lines.push_back(std::string(pl->name()) + ": " + (pl->eliminated() ? "out" : std::to_string(pl->score())));
 
         auto height = hud_row_height * float(lines.size()) + 2.f * hud_margin;
         hud_text_draw(ui, "score_hud", nk_rect(window_size.x - hud_width - hud_margin, hud_margin, hud_width, height), lines);
@@ -918,7 +991,18 @@ public:
      * on the server and in the client's prediction
      */
     void players_tick_update() {
+        players_elimination_update();
+
         for (auto& [_, pl] : players) {
+            /* Out of the game: stays parked */
+            if (pl->eliminated()) {
+                if (!pl->server_driven()) {
+                    pl->position(eliminated_park_pos);
+                    pl->velocity({0.f, 0.f});
+                }
+                continue;
+            }
+
             if (controlled_players.contains(pl->name()) || ai_operators.contains(pl->name()) || pl->net_controlled() ||
                 pl->predicted())
                 pl->game_update(sim,
@@ -933,7 +1017,7 @@ public:
 
         /* Server-driven players die and respawn on the server */
         for (auto& [_, pl] : players) {
-            if (pl->server_driven())
+            if (pl->server_driven() || pl->eliminated())
                 continue;
             pl->update_attacker();
             if (pl->collision_box()->get_position().y > 2100.f)
@@ -1088,7 +1172,13 @@ public:
             };
         });
 
-        ai_mgr().provide_players(players, [gy = sim.gravity().y](const std::shared_ptr<player>& pl) {
+        /* Eliminated players are out of the AI's world */
+        std::vector<std::pair<player_name_t, std::shared_ptr<player>>> active;
+        for (auto& [name, pl] : players)
+            if (!pl->eliminated())
+                active.emplace_back(name, pl);
+
+        ai_mgr().provide_players(active, [gy = sim.gravity().y](const std::shared_ptr<player>& pl) {
             auto& gun = pl->get_gun();
             auto* wpn = gun.get_weapon();
             auto  dir = vec2f(pl->get_on_left() ? -1.f : 1.f, 0.f);

@@ -1302,6 +1302,7 @@ private:
 
     u32 _deaths = 0;
     i32 _score  = 0;
+    bool _eliminated = false; /* out of the game: no lives left (see game_state::player_eliminate) */
     u64 _evt_counter = 0;
 
     /* The last player who hit this one: credited if this one falls off the map (see update_attacker) */
@@ -1403,6 +1404,16 @@ public:
 
     void add_score(i32 value) {
         _score += value;
+    }
+
+    /* Out of the game (lives score system): not updated, drawn or respawned */
+    [[nodiscard]]
+    bool eliminated() const {
+        return _eliminated;
+    }
+
+    void eliminated(bool value) {
+        _eliminated = value;
     }
 
     /* The last player who hit this one, empty if none (a fall off the map is a suicide) */

@@ -71,6 +71,11 @@ instead of sleeping. Use it for any new gameplay/network timer.
   after `player::hit_cooldown` (time to compensate the knockback with air
   control). `game_state::player_on_dead`: +1 to the attacker, or -1 to the
   player (suicide). The server syncs it in `state_player::score`.
+  Game mode `score_system = lives`: the score is the lives left (`start_lives`),
+  -1 for any death; at 0 the player is `player::eliminated()` (parked at
+  `game_state::eliminated_park_pos`, not updated/drawn/respawned, out of the
+  AI's world). Clients derive it from the synced score. A switch to other
+  score rules resets the scores (`game_state::players_score_reset`).
 - `src/game_mode.hpp` — game mode: game rules (bullet gravity, crate drop
   period, magazines count: primary gun ammo limit, emptied guns are dropped) from the `gm_` sections of `data/game_mode.cfg`, not from the
   level. `gm_default` is applied on start; console `game mode [name|list]`

@@ -160,9 +160,11 @@ public:
     void provide_players(const C& c, F get_adapter) {
         std::lock_guard lock{mtx};
 
+        /* The provided players only: removed (or eliminated) ones are gone */
+        _data.players.clear();
         for (auto& [_, p] : c) {
             auto insert_player = get_adapter(p);
-            _data.players.insert_or_assign(insert_player.name, get_adapter(p));
+            _data.players.insert_or_assign(insert_player.name, std::move(insert_player));
         }
     }
 
@@ -1112,6 +1114,12 @@ inline void ai_operator_native::work(const ai_data_t& ai_data) {
     ai_move_spec move_spec;
 
     update_shot_next_frame(ai_data.physic_sim);
+
+    /* The targets may be gone (removed or eliminated players) */
+    if (!ai_data.players.contains(_target_id))
+        _target_id = ai_operator_native::no_target;
+    if (!ai_data.players.contains(_last_target_id))
+        _last_target_id = ai_operator_native::no_target;
 
     if (_target_id == ai_operator_native::no_target) {
         if (auto id = easy_ai_find_nearest(player, ai_data.players, ai_data.level, *this))

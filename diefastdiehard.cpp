@@ -210,6 +210,8 @@ private:
         vec2f center_max = {std::numeric_limits<float>::lowest(),
                             std::numeric_limits<float>::lowest()};
         for (auto& [_, pl] : gs.players) {
+            if (pl->eliminated())
+                continue;
             auto pos =
                 lerp(pl->collision_box()->get_position(),
                      pl->collision_box()->get_position() + pl->collision_box()->get_velocity() * gs.sim.last_timestep(),
@@ -226,7 +228,7 @@ private:
         auto center = (center_min + center_max) / 2.f;
 
         for (auto& [_, this_player] : gs.players) {
-            if (!gs.locally_controlled(*this_player))
+            if (!gs.locally_controlled(*this_player) || this_player->eliminated())
                 continue;
 
             auto pl_pos_x = lerp(this_player->get_position().x,
