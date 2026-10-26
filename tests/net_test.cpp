@@ -1011,6 +1011,50 @@ TEST_CASE("net_sync: server clock and snapshot interpolation") {
         CHECK(buf.sample(3.0)->x == Catch::Approx(20.f));
     }
 
+    SECTION("knockback offset") {
+        constexpr float slowdown = 700.f, gravity = 1200.f, dt = 1.f / 120.f;
+        auto run = [&](knockback_offset<int>& kb, float seconds) {
+            for (float t = 0.f; t < seconds; t += dt)
+                kb.step(dt, slowdown, gravity);
+        };
+
+        /* A grounded push slides and stops: v^2 / (2 * slowdown) */
+        knockback_offset<int> push;
+        push.predict(1, {300.f, 0.f}, true);
+        run(push, 1.f);
+        CHECK(push.offset().x == Catch::Approx(300.f * 300.f / (2.f * slowdown)).margin(3.f));
+        CHECK(push.velocity().x == Catch::Approx(0.f));
+
+        /* A lift arcs back to the ground */
+        knockback_offset<int> lift;
+        lift.predict(1, {0.f, -600.f}, true);
+        run(lift, 0.3f);
+        CHECK(lift.offset().y < -50.f);
+        run(lift, 1.f);
+        CHECK(lift.offset().y == Catch::Approx(0.f));
+
+        /* Predicted + confirmed: the opposite motion cancels it out, nothing stays */
+        knockback_offset<int> confirmed;
+        confirmed.predict(7, {300.f, 0.f}, true);
+        run(confirmed, 0.2f);
+        auto mid = confirmed.offset().x;
+        CHECK(mid > 30.f);
+        confirmed.confirm([](int ref) { return ref == 7; }, true);
+        run(confirmed, 0.02f);
+        CHECK(confirmed.offset().x < mid); /* hands over continuously, no jump */
+        CHECK(confirmed.offset().x > mid - 10.f);
+        run(confirmed, 2.f);
+        CHECK(confirmed.empty());
+
+        /* Not confirmed in time: fades out */
+        knockback_offset<int> missed;
+        missed.predict(1, {300.f, 0.f}, true);
+        run(missed, 0.3f);
+        missed.miss_older_than(0.25f);
+        run(missed, 1.f);
+        CHECK(missed.empty());
+    }
+
     SECTION("input history") {
         input_history<int, int, int> h;
         for (u32 seq = 1; seq <= 10; ++seq)
@@ -1346,6 +1390,113 @@ TEST_CASE("net: own bullets are predicted and confirmed by the server") {
     std::ranges::sort(cli_ids);
     REQUIRE(srv_ids.size() > 1);
     CHECK(cli_ids == srv_ids);
+}
+
+/*
+ * Two players standing on the lvl_aes floor (pl0: y 1050, x 150..2450), "me"
+ * (the client, group 0) on the left facing right, a server-side "bot"
+ * (group 1, simulated like the host's player) on the right facing left
+ */
+struct hit_fixture : net_game_fixture {
+    player* bot;
+
+    hit_fixture(): net_game_fixture(80, 170) {
+        using namespace std::chrono_literals;
+        bot = gs_srv.player_create("bot");
+        REQUIRE(bot);
+        bot->setup_pistol("wpn_glk17");
+        bot->group(1);
+        auto ctrl         = std::make_shared<player_controller>(5);
+        ctrl->player_name = "bot";
+        REQUIRE(gs_srv.controller_attach(5, ctrl));
+        gs_srv.rebuild_controlled_players();
+
+        server_side().position({700.f, 1040.f});
+        server_side().velocity({0.f, 0.f});
+        bot->position({1100.f, 1040.f});
+        bot->velocity({0.f, 0.f});
+        bot->on_left(true);
+        run_for(3000ms);
+        REQUIRE(gs_cli.players.contains("bot"));
+        REQUIRE(local().collision_box()->is_lock_y());
+        REQUIRE(gs_cli.players.at("bot")->get_group() == 1);
+    }
+
+    player& remote_bot() {
+        return *gs_cli.players.at("bot");
+    }
+};
+
+TEST_CASE("net: bullet hits on the local player are predicted") {
+    using namespace std::chrono_literals;
+    hit_fixture f;
+
+    using clock = std::chrono::steady_clock;
+    std::optional<clock::time_point> srv_hit, cli_hit;
+
+    REQUIRE(f.bot->shot());
+    f.run_for(1500ms, [&] {
+        if (!srv_hit && f.server_side().get_velocity().x < -50.f)
+            srv_hit = clock::now();
+        if (!cli_hit && f.local().get_velocity().x < -50.f)
+            cli_hit = clock::now();
+        if (srv_hit && cli_hit)
+            f.bot->relax();
+    });
+    f.bot->relax();
+
+    REQUIRE(srv_hit);
+    REQUIRE(cli_hit);
+    /* Without prediction the knockback shows up one way trip (160..340 ms) after the server hit */
+    CHECK(*cli_hit - *srv_hit < 100ms);
+
+    /* Settled: confirmed hits were not applied twice */
+    f.run_for(2500ms);
+    CHECK(f.local().get_position().x == Catch::Approx(f.server_side().get_position().x).margin(1.f));
+}
+
+TEST_CASE("net: own bullet hits on remote players are predicted") {
+    using namespace std::chrono_literals;
+    hit_fixture f;
+
+    using clock = std::chrono::steady_clock;
+    std::optional<clock::time_point> srv_hit, cli_hit;
+    auto srv_x0 = f.bot->get_position().x;
+    auto cli_x0 = f.remote_bot().get_position().x;
+
+    f.input = {.shot = true};
+    f.run_for(1500ms, [&] {
+        if (!srv_hit && f.bot->get_position().x > srv_x0 + 2.f)
+            srv_hit = clock::now();
+        if (!cli_hit && f.remote_bot().get_position().x > cli_x0 + 2.f)
+            cli_hit = clock::now();
+        if (srv_hit && cli_hit)
+            f.input = {};
+    });
+    f.input = {};
+
+    REQUIRE(srv_hit);
+    REQUIRE(cli_hit);
+    /* The client shoots one way trip before the server applies the shot: it sees its hit first */
+    CHECK(*cli_hit < *srv_hit);
+
+    /* Settled: the predicted knockback handed over to the server's, no double push */
+    f.run_for(2500ms);
+    CHECK(f.remote_bot().get_position().x == Catch::Approx(f.bot->get_position().x).margin(1.f));
+    CHECK(f.remote_bot().get_position().y == Catch::Approx(f.bot->get_position().y).margin(1.f));
+}
+
+TEST_CASE("net: predicted hits the server did not register fade out") {
+    using namespace std::chrono_literals;
+    hit_fixture f;
+
+    auto x0 = f.remote_bot().get_position().x;
+    f.remote_bot().on_bullet_hit({1500.f, 0.f}, f.remote_bot().get_position(), bullet_ref{999999, {}});
+    f.run_for(150ms);
+    CHECK(f.remote_bot().get_position().x > x0 + 5.f);
+
+    f.run_for(2500ms);
+    CHECK(f.remote_bot().get_position().x == Catch::Approx(f.bot->get_position().x).margin(0.5f));
 }
 
 TEST_CASE("weapon: seeded shots are deterministic") {

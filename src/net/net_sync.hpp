@@ -1,11 +1,15 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <deque>
 #include <limits>
 #include <optional>
+#include <vector>
 
 #include "base/types.hpp"
+#include "base/vec2.hpp"
+#include "base/vec_math.hpp"
 
 namespace dfdh::net {
 
@@ -48,6 +52,15 @@ public:
     [[nodiscard]]
     double server_now(double local_s) const {
         return local_s - _min_offset;
+    }
+
+    /**
+     * How much longer than the fastest recent state the state sent at
+     * server_s took to arrive (its share of the latency jitter)
+     */
+    [[nodiscard]]
+    double excess_delay(double local_s, double server_s) const {
+        return std::max(local_s - server_s - _min_offset, 0.0);
     }
 
     /** Remote players are shown this far in the past */
@@ -215,6 +228,162 @@ public:
 
 private:
     std::deque<entry_t> _entries;
+};
+
+/**
+ * Visual knockback of a remote player, predicted on the client.
+ *
+ * Remote players are shown from server snapshots, so a hit predicted on the
+ * client is shown as an offset on top of them, driven by a simple model of
+ * the knockback motion (grounded: slides with the player's slowdown, lifts
+ * fall back to the ground with gravity; in the air: decays). When the
+ * snapshots start to show the real hit (confirm), the same motion is started
+ * with the opposite sign: the sum converges to zero while the authoritative
+ * motion takes over, without pushing twice. An unconfirmed hit (the server
+ * did not register it) fades out
+ */
+template <typename Ref>
+class knockback_offset {
+public:
+    static constexpr float air_decay_s  = 0.25f;
+    static constexpr float fade_s       = 0.1f;
+    static constexpr float remove_below = 0.1f;
+
+    struct motion_t {
+        vec2f offset   = {0.f, 0.f};
+        vec2f vel      = {0.f, 0.f};
+        bool  grounded = false;
+        float sign     = 1.f;
+
+        void step(float dt, float slowdown, float gravity) {
+            offset += vel * dt;
+
+            if (!grounded) {
+                vel *= std::exp(-dt / air_decay_s);
+                return;
+            }
+
+            /* Lifted off the ground: falls back to it, no friction in the air */
+            if (offset.y < 0.f || std::abs(vel.y) > 0.f) {
+                vel.y += gravity * dt;
+                if (offset.y >= 0.f && vel.y > 0.f) {
+                    offset.y = 0.f;
+                    vel.y    = 0.f;
+                }
+                return;
+            }
+
+            auto dec = slowdown * dt;
+            vel.x    = std::abs(vel.x) <= dec ? 0.f : vel.x - std::copysign(dec, vel.x);
+        }
+
+        [[nodiscard]]
+        bool settled() const {
+            return magnitude(vel) < 0.01f;
+        }
+    };
+
+    struct hit_t {
+        Ref                     ref;
+        vec2f                   dv;
+        motion_t                predicted;
+        std::optional<motion_t> authoritative;
+        float                   age  = 0.f;
+        float                   fade = 1.f; /* < 1: fading out */
+        bool                    missed = false;
+
+        [[nodiscard]]
+        vec2f offset() const {
+            auto o = predicted.offset;
+            if (authoritative)
+                o += authoritative->offset * authoritative->sign;
+            return o * fade;
+        }
+
+        [[nodiscard]]
+        vec2f velocity() const {
+            auto v = predicted.vel;
+            if (authoritative)
+                v += authoritative->vel * authoritative->sign;
+            return v * fade;
+        }
+    };
+
+    /* A hit predicted now: velocity change dv (zero y if the hit doesn't lift a grounded player) */
+    void predict(const Ref& ref, const vec2f& dv, bool grounded) {
+        _hits.push_back({ref, dv, motion_t{{0.f, 0.f}, dv, grounded, 1.f}, {}});
+    }
+
+    /* The snapshots show the hit (matches(ref)): start the opposite motion */
+    template <typename F>
+    void confirm(F&& matches, bool grounded) {
+        for (auto& h : _hits)
+            if (!h.authoritative && !h.missed && matches(h.ref)) {
+                auto dv = h.dv;
+                if (grounded && !h.predicted.grounded)
+                    dv.y = 0.f;
+                h.authoritative = motion_t{{0.f, 0.f}, dv, grounded, -1.f};
+            }
+    }
+
+    /* Hits not confirmed for this long were not registered by the server */
+    void miss_older_than(float age_s) {
+        for (auto& h : _hits)
+            if (!h.authoritative && h.age > age_s)
+                h.missed = true;
+    }
+
+    void step(float dt, float slowdown, float gravity) {
+        for (auto& h : _hits) {
+            h.age += dt;
+            if (h.missed) {
+                h.predicted.vel = {0.f, 0.f};
+                h.fade *= std::exp(-dt / fade_s);
+                continue;
+            }
+
+            h.predicted.step(dt, slowdown, gravity);
+            if (h.authoritative) {
+                h.authoritative->step(dt, slowdown, gravity);
+                /* Both motions are over: fade out what the model got wrong */
+                if (h.predicted.settled() && h.authoritative->settled())
+                    h.fade *= std::exp(-dt / fade_s);
+            }
+        }
+
+        std::erase_if(_hits, [](const hit_t& h) {
+            return (h.missed || h.authoritative) && magnitude(h.offset()) < remove_below &&
+                   magnitude(h.velocity()) < remove_below;
+        });
+    }
+
+    [[nodiscard]]
+    vec2f offset() const {
+        vec2f o = {0.f, 0.f};
+        for (auto& h : _hits)
+            o += h.offset();
+        return o;
+    }
+
+    [[nodiscard]]
+    vec2f velocity() const {
+        vec2f v = {0.f, 0.f};
+        for (auto& h : _hits)
+            v += h.velocity();
+        return v;
+    }
+
+    [[nodiscard]]
+    bool empty() const {
+        return _hits.empty();
+    }
+
+    auto& hits() {
+        return _hits;
+    }
+
+private:
+    std::vector<hit_t> _hits;
 };
 
 } // namespace dfdh::net

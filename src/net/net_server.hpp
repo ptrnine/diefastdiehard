@@ -204,7 +204,7 @@ public:
     }
 
 private:
-    static state_player make_state_player(const player& pl) {
+    static state_player make_state_player(player& pl) {
         state_player sp;
         sp.name         = pl.name();
         sp.pistol       = pl.pistol_section();
@@ -225,6 +225,8 @@ private:
         sp.accel_rf     = ph.accel_right_f;
         sp.on_left      = pl.get_on_left() ? 1 : 0;
         sp.shooting     = pl.shotting() ? 1 : 0;
+        sp.group        = pl.get_group();
+        sp.hits         = pl.recent_hit_ids();
         return sp;
     }
 

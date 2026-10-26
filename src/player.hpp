@@ -196,6 +196,13 @@ public:
         increment_evt_counter();
     }
 
+    /* A hit predicted on the client, waiting for the server's confirmation */
+    struct predicted_hit_t {
+        bullet_ref ref;
+        vec2f      impulse;
+        bool       grounded; // the player stood on a platform when hit
+    };
+
     /**
      * The part of the player state that the physics tick evolves; a
      * snapshot of it is enough to restore and re-simulate the player
@@ -737,17 +744,18 @@ public:
     }
 
     /**
-     * Server-driven player whose own bullets are predicted: its weapon spawns
-     * them locally right away (the client's local player); the server's
-     * authoritative bullets are then matched to them
+     * Client-predicted server-driven player (the client's local player): its
+     * own bullets are spawned locally right away and matched to the server's
+     * authoritative ones later, bullet hits push it right away (the
+     * prediction reconciles them with the server)
      */
-    void set_predict_bullets(bool value) {
-        _predict_bullets = value;
+    void set_predicted(bool value) {
+        _predicted = value;
     }
 
     [[nodiscard]]
-    bool predicts_bullets() const {
-        return _predict_bullets;
+    bool predicted() const {
+        return _predicted;
     }
 
     /**
@@ -997,7 +1005,7 @@ private:
     enum player_dir_t { dir_none = 0, dir_left, dir_right } _dir;
     bool _on_left            = false;
     bool _server_driven      = false;
-    bool _predict_bullets    = false;
+    bool _predicted          = false;
     u32  _last_input_seq     = 0;
     bool _replaying          = false;
     bool _net_controlled     = false;
@@ -1021,6 +1029,9 @@ private:
     drop_gun_fn_t _drop_gun_cb;
 
     vec2f              _pending_impulse = {0.f, 0.f};
+
+    std::vector<predicted_hit_t>                                  _predicted_hits;
+    std::deque<std::pair<u32, std::chrono::steady_clock::time_point>> _recent_hits;
     vec2f              _render_offset   = {0.f, 0.f};
     lag_compensation_t _lag_comp;
 
@@ -1222,21 +1233,55 @@ public:
         return _evt_counter;
     }
 
+    /* Knockback of a bullet hit: lifts the player off the ground if hit from below hard enough */
+    void apply_hit_physics(const vec2f& impulse) {
+        if (_collision_box->is_lock_y() && impulse.y < -180.f)
+            _collision_box->unlock_y();
+        _collision_box->apply_impulse(impulse);
+        reset_accel_f(impulse.x < 0.f);
+    }
+
     /**
      * Bullet (or hit-scan) hit: knockback with the bullet impulse, plus hit
-     * feedback. Server-driven players get the feedback only, their knockback
-     * arrives with the server state
+     * feedback.
+     * - authoritative player: knockback, the bullet id is remembered for a
+     *   while (reported to the clients, see recent_hit_ids)
+     * - predicted local player (client): knockback right away, queued for
+     *   the prediction history
+     * - remote player mirror (client): queued only, the client shows it as a
+     *   visual knockback until the server state has it
      */
-    void on_bullet_hit(const vec2f& impulse, const vec2f& hit_position) {
+    void on_bullet_hit(const vec2f& impulse, const vec2f& hit_position, const bullet_ref& ref = {}) {
         if (!_server_driven) {
-            if (_collision_box->is_lock_y() && impulse.y < -180.f)
-                _collision_box->unlock_y();
-            _collision_box->apply_impulse(impulse);
-            reset_accel_f(impulse.x < 0.f);
+            apply_hit_physics(impulse);
+            if (ref.id != 0)
+                _recent_hits.push_back({ref.id, std::chrono::steady_clock::now()});
+        }
+        else {
+            if (_predicted)
+                apply_hit_physics(impulse);
+            _predicted_hits.push_back({ref, impulse, _collision_box->is_lock_y()});
         }
 
         set_on_hit_event();
         play_hit_sound(hit_position, magnitude(impulse) > 2200.f);
+    }
+
+    std::vector<predicted_hit_t> take_predicted_hits() {
+        return std::exchange(_predicted_hits, {});
+    }
+
+    /* Ids of the bullets that hit this (authoritative) player in the last second */
+    [[nodiscard]]
+    std::vector<u32> recent_hit_ids() {
+        auto now = std::chrono::steady_clock::now();
+        while (!_recent_hits.empty() && now - _recent_hits.front().second > std::chrono::seconds(1))
+            _recent_hits.pop_front();
+
+        std::vector<u32> ids;
+        for (auto& [id, _] : _recent_hits)
+            ids.push_back(id);
+        return ids;
     }
 
     void set_on_hit_event() {
@@ -1258,7 +1303,7 @@ inline void player_hit_callback(physic_point*            bullet_pnt,
 
         bullet_pnt->delete_later();
         std::any_cast<player*>(player_grp->get_user_any())
-            ->on_bullet_hit(bullet_pnt->impulse(), bullet_pnt->get_position());
+            ->on_bullet_hit(bullet_pnt->impulse(), bullet_pnt->get_position(), bullet_ref::of(bullet_pnt));
     }
 }
 } // namespace dfdh

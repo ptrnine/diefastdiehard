@@ -35,14 +35,14 @@ client A                          server                         client B
 * UDP datagrams carry a 4-byte header `u16 type, u16 payload_size` followed
   by a payload serialized with the existing `ss::serializer` (little-endian).
 
-### Protocol messages (protocol version 3)
+### Protocol messages (protocol version 4)
 
 | id  | dir        | payload |
 |-----|------------|---------|
 | 1   | C → S      | HELLO: `u16 version`, player name, pistol section, face_id, body_id, body color, tracer color. A version other than `net::protocol_version` is answered with ERROR |
 | 2   | S → C      | WELCOME: player name |
 | 3   | C → S      | INPUT: `u32 last_seq`, `u32 client_time_ms`, `u16 rtt_ms`, `u16 interp_ms`, `vector<u16> bits` — the input bits of the last up to 32 ticks, `bits[i]` belongs to tick `last_seq - size + 1 + i` |
-| 4   | S → C      | STATE (encoded per client): `u32 tick` (broadcast sequence number), `u32 server_time_ms` (time of the simulated tick), `u32 ack_seq` (last input tick applied to the client's player), `u32 echo_client_time_ms` + `u16 echo_hold_ms` (RTT echo of the newest input); per player: name, pistol, face_id, body_id, body color, tracer color, physic state (pos.xy, vel.xy, jumps_left, lock_y, accel factors), on_left, shooting; the bullets spawned this frame (owner, id, shot key: pull_seq/shot_index/pellet, muzzle start.xy, spawn pos.xy, vel.xy, hit_mass, tracer color, gravity); the crates (id, pos.xy, vel.xy, landed); the dropped guns (id, section, pos.xy, vel.xy, angle, on_left, long_shot); the ids of all bullets alive on the server |
+| 4   | S → C      | STATE (encoded per client): `u32 tick` (broadcast sequence number), `u32 server_time_ms` (time of the simulated tick), `u32 ack_seq` (last input tick applied to the client's player), `u32 echo_client_time_ms` + `u16 echo_hold_ms` (RTT echo of the newest input); per player: name, pistol, face_id, body_id, body color, tracer color, physic state (pos.xy, vel.xy, jumps_left, lock_y, accel factors), on_left, shooting, group, ids of the bullets that hit the player in the last second; the bullets spawned this frame (owner, id, shot key: pull_seq/shot_index/pellet, muzzle start.xy, spawn pos.xy, vel.xy, hit_mass, tracer color, gravity); the crates (id, pos.xy, vel.xy, landed); the dropped guns (id, section, pos.xy, vel.xy, angle, on_left, long_shot); the ids of all bullets alive on the server |
 | 5   | C → S      | LEAVE: player name |
 | 6   | S → C      | ERROR: message string (join failed, version mismatch, etc.) |
 
@@ -116,8 +116,10 @@ tick begin/end callbacks that the network layer hooks into.
   the shooter saw them (`player::position_trace_lookup`). A hit applies
   the bullet hit (`player::on_bullet_hit`) and consumes the bullet.
 * The broadcast carries the muzzle position. A client forwards a
-  received bullet once more by its own one-way lag, so it appears at
-  `start + vel * (shooter lag + own lag)`, in present time, and hit-scans
+  received bullet once more by the age of its state (half the fastest
+  recent round trip plus this datagram's extra delay over the fastest
+  recent state), so it appears at `start + vel * (shooter lag + own lag)`,
+  in present time, and hit-scans
   the skipped segment against its own view for hit feedback (hits are
   decided by the server). Bullets the server already consumed are not
   spawned.
@@ -138,6 +140,31 @@ tick begin/end callbacks that the network layer hooks into.
   estimate needed), or is removed if the server bullet is already dead.
   A server bullet without a prediction is spawned normally; a prediction
   the server never confirms expires after `max(0.5 s, 2 * rtt + 0.25 s)`.
+
+### Hit prediction
+
+Bullet hits push the players on the client right away; the server reports
+per player the ids of the bullets that hit it in the last second
+(`player::recent_hit_ids`, `state_player::hits`), so the predictions are
+matched to the authoritative hits by bullet (`bullet_ref` on the bullet's
+physic point: the server id, or the shot key of an unconfirmed own
+bullet, resolved to the id when the bullet is confirmed).
+
+* **Local player** (any bullet or the cosmetic hit-scan): the knockback
+  (`player::apply_hit_physics`) applies at once and is recorded with its
+  tick in the prediction history, so re-simulations keep it. Hits the
+  server state already contains are stripped from the unacknowledged
+  ticks (never applied twice); a hit the server did not register is undone
+  by the next reconciliation (smoothed).
+* **Remote players** (own bullets, other players' bullets): the hit
+  starts a `knockback_offset` on top of the interpolated snapshots, a
+  model of the knockback motion (grounded slide with the player's
+  slowdown, lift and fall back, decay in the air). When the rendered
+  snapshots show the hit, the same motion starts with the opposite sign,
+  so the offset converges to zero while the server's motion takes over;
+  a hit the server did not register within
+  `max(1 s, 2 * rtt + interp + 0.3 s)` fades out.
+* Player groups are synchronized, so client-side collisions respect teams.
 
 ### Testing with latency
 

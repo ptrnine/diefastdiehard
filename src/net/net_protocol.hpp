@@ -24,7 +24,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 3;
+inline constexpr u16 protocol_version = 4;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -177,18 +177,21 @@ struct state_player {
     float accel_lf   = 1.f;
     float accel_rf   = 1.f;
 
-    u8 on_left  = 0;
-    u8 shooting = 0; // trigger held
+    u8  on_left  = 0;
+    u8  shooting = 0; // trigger held
+    i32 group    = 0;
+
+    std::vector<u32> hits; // ids of the bullets that hit the player in the last second
 
     void serialize(auto& s) const {
         s.write(std::string(name), pistol, face_id, body_id, body_color, tracer_color,
-                pos_x, pos_y, vel_x, vel_y, jumps_left, lock_y, accel_lf, accel_rf, on_left, shooting);
+                pos_x, pos_y, vel_x, vel_y, jumps_left, lock_y, accel_lf, accel_rf, on_left, shooting, group, hits);
     }
 
     void deserialize(auto& d) {
         std::string n;
         d.read(n, pistol, face_id, body_id, body_color, tracer_color,
-               pos_x, pos_y, vel_x, vel_y, jumps_left, lock_y, accel_lf, accel_rf, on_left, shooting);
+               pos_x, pos_y, vel_x, vel_y, jumps_left, lock_y, accel_lf, accel_rf, on_left, shooting, group, hits);
         name = n;
     }
 };

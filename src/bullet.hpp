@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <list>
+#include <optional>
 #include <SFML/Graphics/Sprite.hpp>
 #include <SFML/Graphics/Texture.hpp>
 
@@ -19,6 +20,31 @@ namespace dfdh {
  * (existing bullets keep the gravity flag they were spawned with).
  */
 inline bool bullet_gravity_enabled = false;
+
+/* Identifies a bullet of a network player's shot on both the client and the server */
+struct shot_key_t {
+    u32 pull_seq   = 0; // input tick of the trigger pull
+    u32 shot_index = 0; // shot number since the pull
+    u32 pellet     = 0; // pellet number in the shot
+
+    bool operator==(const shot_key_t&) const = default;
+};
+
+/**
+ * Network identity of a bullet: the server id, or (own bullet predicted on
+ * the client, not confirmed yet) its shot key. Stored on the bullet's
+ * physic point, so hits can be matched between the client and the server
+ */
+struct bullet_ref {
+    u32                       id = 0;
+    std::optional<shot_key_t> key;
+
+    [[nodiscard]]
+    static bullet_ref of(const physic_point* ph) {
+        auto ref = std::any_cast<bullet_ref>(&ph->get_user_any());
+        return ref ? *ref : bullet_ref{};
+    }
+};
 
 class bullet_sprite_cache {
 public:
@@ -128,6 +154,12 @@ public:
      */
     void net_id(u32 id) {
         _net_id = id;
+        _ph->user_any(bullet_ref{id, {}});
+    }
+
+    /* Predicted own bullet (client): referenced by its shot key until confirmed */
+    void predicted_key(const shot_key_t& key) {
+        _ph->user_any(bullet_ref{0, key});
     }
 
     [[nodiscard]]

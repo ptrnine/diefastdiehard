@@ -23,6 +23,7 @@ struct remote_player_snapshot {
     player::physic_state ph;
     bool                 on_left  = false;
     bool                 shooting = false;
+    std::vector<u32>     hits; // bullets that hit the player in the last second
 
     static remote_player_snapshot interpolate(const remote_player_snapshot& a, const remote_player_snapshot& b, float f) {
         auto res   = f < 1.f ? a : b;
@@ -216,7 +217,16 @@ public:
 private:
     using clock = std::chrono::steady_clock;
 
-    using history_t = input_history<player_input_state, player::physic_state, vec2f>;
+    /* Per predicted tick, besides the input: recoil impulse, predicted bullet hits */
+    struct tick_extra {
+        vec2f                                        impulse;
+        std::vector<std::pair<bullet_ref, vec2f>>    hits;
+    };
+
+    using history_t = input_history<player_input_state, player::physic_state, tick_extra>;
+
+    /* Knockback model for the remote players' predicted hits (see knockback_offset) */
+    static constexpr float lift_impulse = -180.f; /* player::apply_hit_physics */
 
     [[nodiscard]]
     u32 time_ms() const {
@@ -245,7 +255,7 @@ private:
 
         auto in = _input_source();
         ++_input_seq;
-        pl->set_predict_bullets(true);
+        pl->set_predicted(true);
         pl->last_input_seq(_input_seq);
         pl->apply_input(in);
 
@@ -254,15 +264,19 @@ private:
             _sent_inputs.pop_front();
 
         /* The impulses applied since the previous tick (recoil) belong to this tick */
-        _history.push({_input_seq, in, pl->take_pending_impulse(), timestep});
+        _history.push({_input_seq, in, {pl->take_pending_impulse(), {}}, timestep});
     }
 
-    /* Simulation tick end: remember the predicted state */
+    /* Simulation tick end: remember the predicted state and the bullet hits predicted on the tick */
     void record_prediction(game_state& gs) {
         auto entry = _history.back();
         auto pl    = local_player(gs);
-        if (entry && pl && entry->seq == _input_seq)
-            entry->state = pl->get_physic_state();
+        if (!entry || !pl || entry->seq != _input_seq)
+            return;
+
+        for (auto& hit : pl->take_predicted_hits())
+            entry->extra.hits.emplace_back(hit.ref, hit.impulse);
+        entry->state = pl->get_physic_state();
     }
 
     [[nodiscard]]
@@ -277,11 +291,23 @@ private:
      * Reconcile the local player with the server state of the tick ack_seq:
      * on divergence restore it and re-simulate the unacknowledged ticks
      */
-    void reconcile(game_state& gs, player& pl, const player::physic_state& server_st, u32 ack_seq) {
+    void reconcile(game_state& gs, player& pl, const player::physic_state& server_st, u32 ack_seq,
+                   const std::vector<u32>& server_hits) {
         /* Reordered older state, or the same ack again (already reconciled) */
         if (ack_seq < _last_ack || (ack_seq == _last_ack && ack_seq != 0))
             return;
         _last_ack = ack_seq;
+
+        /*
+         * Hits the server already applied are in the server state: never replay
+         * the prediction of them again (it was predicted later than the server
+         * had it, otherwise its tick would be acknowledged already)
+         */
+        for (auto& e : _history)
+            if (e.seq > ack_seq)
+                std::erase_if(e.extra.hits, [&](const auto& hit) {
+                    return hit.first.id != 0 && std::ranges::find(server_hits, hit.first.id) != server_hits.end();
+                });
 
         auto predicted = _history.find(ack_seq);
         if (!predicted || diverged(predicted->state, server_st)) {
@@ -293,7 +319,9 @@ private:
                 if (e.seq <= ack_seq)
                     continue;
                 pl.apply_movement_input(e.input);
-                pl.apply_impulse(e.extra);
+                pl.apply_impulse(e.extra.impulse);
+                for (auto& [_, impulse] : e.extra.hits)
+                    pl.apply_hit_physics(impulse);
                 gs.sim.step_isolated(pl.collision_box(), e.timestep, [&](float dt) { pl.physic_update(gs.sim, dt); });
                 e.state = pl.get_physic_state();
             }
@@ -312,15 +340,14 @@ private:
     /**
      * Spawn a server bullet in the local simulation. It reaches the client one
      * way trip after the server spawned it (already forwarded by the shooter's
-     * lag), so it is forwarded again by the client's own lag: start + vel *
+     * lag), so it is forwarded again by the age of its state (state_age): start + vel *
      * (shooter lag + own lag). The segment from the muzzle to there is
      * hit-scanned against the local view of the players (hit feedback only:
      * hits are decided by the server). Bullets already dead on the server
      * (consumed by the server hit-scan) are not spawned
      */
-    void spawn_server_bullet(game_state& gs, const bullet_info& b, bool alive) {
+    void spawn_server_bullet(game_state& gs, const bullet_info& b, bool alive, float lag) {
         auto found_owner = gs.players.find(player_name_t(b.owner));
-        auto lag         = std::min(_rtt_s * 0.5f, game_state::max_lag_compensation);
         auto start       = vec2f{b.start_x, b.start_y};
         auto vel         = vec2f{b.vel_x, b.vel_y};
         auto [pos, fwd_vel] = gs.ballistic_forward({b.pos_x, b.pos_y}, vel, b.gravity, lag);
@@ -330,7 +357,7 @@ private:
 
         if (found_owner != gs.players.end()) {
             if (auto hit = gs.hitscan(start, pos, 0.f, *found_owner->second)) {
-                hit->target->on_bullet_hit(vel * b.hit_mass, hit->position);
+                hit->target->on_bullet_hit(vel * b.hit_mass, hit->position, bullet_ref{b.id, {}});
                 return;
             }
         }
@@ -343,7 +370,7 @@ private:
     }
 
     struct predicted_bullet_t {
-        game_state::shot_key_t      key;
+        shot_key_t      key;
         std::weak_ptr<physic_point> physic;
         double                      time_s;
     };
@@ -363,7 +390,7 @@ private:
      * dead on the server. Returns false if nothing was predicted for the key
      */
     bool confirm_predicted_bullet(game_state& gs, const bullet_info& b, bool alive) {
-        auto key   = game_state::shot_key_t{b.pull_seq, b.shot_index, b.pellet};
+        auto key   = shot_key_t{b.pull_seq, b.shot_index, b.pellet};
         auto found = std::ranges::find_if(_predicted, [&](const predicted_bullet_t& p) { return p.key == key; });
         if (found == _predicted.end())
             return false;
@@ -386,6 +413,12 @@ private:
             else
                 ph->delete_later(); /* it hit something on the server */
         }
+
+        /* Hits predicted for this bullet can now be matched to the server's */
+        for (auto& [_, kb] : _knockbacks)
+            for (auto& hit : kb.hits())
+                if (hit.ref.key && *hit.ref.key == key)
+                    hit.ref.id = b.id;
 
         _predicted.erase(found);
         return true;
@@ -412,7 +445,11 @@ private:
         if (!_clock.valid())
             return;
 
-        auto t = _clock.render_time(time_s());
+        auto now = time_s();
+        auto dt  = float(std::clamp(now - _last_remote_apply_s, 0.0, 0.1));
+        _last_remote_apply_s = now;
+
+        auto t = _clock.render_time(now);
         for (auto& [name, snaps] : _remote) {
             /* A state received before WELCOME could not tell the local player apart */
             if (_joined && name == _name)
@@ -426,7 +463,25 @@ private:
                 continue;
 
             auto& pl = *found->second;
-            pl.restore_physic_state(snap->ph);
+
+            /* Predicted hits: shown as a knockback offset until the snapshots show them */
+            auto& kb   = _knockbacks[name];
+            auto  mass = pl.collision_box()->get_mass();
+            for (auto& hit : pl.take_predicted_hits()) {
+                auto dv = hit.impulse / mass;
+                if (hit.grounded && hit.impulse.y >= lift_impulse)
+                    dv.y = 0.f;
+                kb.predict(hit.ref, dv, hit.grounded);
+            }
+            for (auto id : snap->hits)
+                kb.confirm([id](const bullet_ref& ref) { return ref.id == id; }, snap->ph.lock_y);
+            kb.miss_older_than(std::max(1.f, 2.f * _rtt_s + float(_clock.interp_delay()) + 0.3f));
+            kb.step(dt, pl.get_x_slowdown(), gs.sim.gravity().y);
+
+            auto ph = snap->ph;
+            ph.pos += kb.offset();
+            ph.vel += kb.velocity();
+            pl.restore_physic_state(ph);
             pl.on_left(snap->on_left);
 
             /*
@@ -464,6 +519,22 @@ private:
             return;
         _rtt_s = _rtt_measured ? _rtt_s + (sample - _rtt_s) * 0.1f : sample;
         _rtt_measured = true;
+
+        auto now = time_s();
+        _rtt_samples.push_back({now, sample});
+        while (_rtt_samples.size() > 1 && _rtt_samples.front().first < now - server_clock::window_s)
+            _rtt_samples.pop_front();
+        _rtt_min_s = std::ranges::min_element(_rtt_samples, {}, [](auto& smp) { return smp.second; })->second;
+    }
+
+    /**
+     * Age of a state when it arrived: half of the fastest recent round trip
+     * plus this datagram's extra delay over the fastest recent state
+     */
+    [[nodiscard]]
+    float state_age(const state& st) const {
+        auto excess = _clock.excess_delay(time_s(), double(st.server_time_ms) / 1000.0);
+        return _rtt_min_s * 0.5f + float(excess);
     }
 
     void handle_welcome(const net_msg& msg) {
@@ -514,6 +585,8 @@ private:
             }
 
             auto pl = gs.players.at(sp.name).get();
+            if (newest)
+                pl->group(sp.group);
 
             /*
              * Every server-known player is authoritative: bullets for it come
@@ -523,14 +596,15 @@ private:
             pl->set_server_driven(true);
 
             if (is_local)
-                reconcile(gs, *pl, to_physic_state(sp), st.ack_seq);
+                reconcile(gs, *pl, to_physic_state(sp), st.ack_seq, sp.hits);
             else
                 _remote[sp.name].push(double(st.server_time_ms) / 1000.0,
-                                      remote_player_snapshot{to_physic_state(sp), sp.on_left != 0, sp.shooting != 0});
+                                      remote_player_snapshot{to_physic_state(sp), sp.on_left != 0, sp.shooting != 0, sp.hits});
         }
 
+        auto age = std::min(state_age(st), game_state::max_lag_compensation);
         for (auto& b : st.bullets)
-            spawn_server_bullet(gs, b, std::ranges::find(st.alive_bullet_ids, b.id) != st.alive_bullet_ids.end());
+            spawn_server_bullet(gs, b, std::ranges::find(st.alive_bullet_ids, b.id) != st.alive_bullet_ids.end(), age);
 
         if (!newest)
             return;
@@ -638,6 +712,8 @@ private:
     u32               _last_sent_seq = 0;
     float             _rtt_s         = 0.f;
     bool              _rtt_measured  = false;
+    float             _rtt_min_s     = 0.f;
+    std::deque<std::pair<double, float>> _rtt_samples;
 
     history_t    _history;
     u32          _last_ack        = 0;
@@ -646,6 +722,8 @@ private:
     float        _max_correction  = 0.f;
     server_clock _clock;
     std::map<player_name_t, snapshot_buffer<remote_player_snapshot>> _remote;
+    std::map<player_name_t, knockback_offset<bullet_ref>>            _knockbacks;
+    double                                                           _last_remote_apply_s = 0.0;
     std::deque<predicted_bullet_t>                                   _predicted;
     float                                                            _max_bullet_correction = 0.f;
 };

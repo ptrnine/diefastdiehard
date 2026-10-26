@@ -371,15 +371,6 @@ public:
      * Bullets spawned during the last game_update() frame,
      * collected for the server to broadcast to clients
      */
-    /* Identifies a bullet of a network player's shot on both the client and the server */
-    struct shot_key_t {
-        u32 pull_seq   = 0; // input tick of the trigger pull
-        u32 shot_index = 0; // shot number since the pull
-        u32 pellet     = 0; // pellet number in the shot
-
-        bool operator==(const shot_key_t&) const = default;
-    };
-
     struct bullet_event_t {
         player_name_t owner;
         u32           id;           // bullet net_id (no live bullet if the hit-scan consumed it), 0 if predicted
@@ -401,7 +392,7 @@ public:
     /* Spawns the bullets of a player's weapon through spawn_bullet() */
     struct bullet_spawn_callback {
         void operator()(const vec2f& position, const vec2f& velocity, float mass) {
-            if (!pl->server_driven() || pl->predicts_bullets())
+            if (!pl->server_driven() || pl->predicted())
                 gs->spawn_bullet(*pl, position, velocity, mass, gravity);
         }
 
@@ -481,6 +472,7 @@ public:
         if (owner.server_driven()) {
             auto& blt = blt_mgr.shot(sim, start, mass, velocity, owner.tracer_color(), gravity, owner.get_group(),
                                      player::player_group_getter);
+            blt.predicted_key(key);
             cur_frame_bullets.push_back(
                 {owner.name(), 0, key, start, start, velocity, mass, owner.tracer_color(), gravity, true, blt.physic()});
             return;
@@ -492,7 +484,7 @@ public:
 
         if (lag > 0.f) {
             if (auto hit = hitscan(start, pos, rewind, owner)) {
-                hit->target->on_bullet_hit(velocity * mass, hit->position);
+                hit->target->on_bullet_hit(velocity * mass, hit->position, bullet_ref{id, {}});
                 cur_frame_bullets.push_back({owner.name(), id, key, start, start, velocity, mass, owner.tracer_color(), gravity, false, {}});
                 return;
             }
@@ -536,7 +528,7 @@ public:
 
             for (auto& [_, pl] : players) {
                 if (controlled_players.contains(pl->name()) || ai_operators.contains(pl->name()) || pl->net_controlled() ||
-                    pl->predicts_bullets())
+                    pl->predicted())
                     pl->game_update(sim,
                                     blt_mgr,
                                     cam_pos,
