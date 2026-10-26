@@ -110,7 +110,7 @@ TEST_CASE("protocol: message round-trips") {
                                           .flags = state_player::flag_lock_y | state_player::flag_on_left |
                                                    state_player::flag_shooting,
                                           .jumps_left = 1, .accel_lf = pack_unit(0.5f), .teleports = 9,
-                                          .hits = {4, 5}});
+                                          .score = -3, .hits = {4, 5}});
         st.players.push_back(state_player{.id = 2});
 
         auto data = encode_msg(msg_type::state, st);
@@ -147,6 +147,7 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(unpack_unit(r.players[0].accel_lf) == Catch::Approx(0.5f).margin(1e-4));
         CHECK(unpack_unit(r.players[0].accel_rf) == 1.f);
         CHECK(r.players[0].teleports == 9);
+        CHECK(r.players[0].score == -3);
         CHECK(r.players[0].hits == std::vector<u32>{4, 5});
         CHECK(r.players[1].id == 2);
         CHECK_FALSE(r.players[1].flags);
@@ -216,7 +217,7 @@ TEST_CASE("protocol: message round-trips") {
 
         auto size = encode_msg(msg_type::state, st).size();
         UNSCOPED_INFO("state datagram: " << size << " bytes");
-        CHECK(size <= 360);
+        CHECK(size <= 370);
 
         /* Configs ride along only when a client may not know them */
         for (u16 id = 1; id <= 4; ++id)
@@ -2778,5 +2779,79 @@ TEST_CASE("net: gun throws are shown on the client") {
         CHECK(remote.get_position().x > bot_x + 5.f);
         UNSCOPED_INFO("max gun correction: " << f.cli->max_gun_correction() << " px");
         CHECK(f.cli->max_gun_correction() < 20.f);
+    }
+}
+
+TEST_CASE("game_state: score of kills and suicides") {
+    game_clock_manual_guard clock_guard;
+    game_state              gs;
+    REQUIRE(gs.level_current("lvl_aes"));
+    gs.game_run(true);
+    auto a = gs.player_create("a");
+    auto b = gs.player_create("b");
+    auto c = gs.player_create("c");
+    REQUIRE((a && b && c));
+
+    auto tick = [&] {
+        game_clock::advance(std::chrono::microseconds(16667));
+        gs.sim.update_immediate(1.f / 60.f, game_clock::now());
+    };
+    auto hit_by = [](player* victim, player* attacker, const vec2f& impulse) {
+        victim->on_bullet_hit(impulse, victim->get_position(), bullet_ref{1, {}, attacker->name()});
+    };
+
+    SECTION("a fall without an attacker is a suicide") {
+        gs.player_on_dead(a);
+        CHECK(a->score() == -1);
+        CHECK(b->score() == 0);
+    }
+
+    SECTION("a fall after a hit is a kill: the last hit wins") {
+        hit_by(b, a, {-900.f, -400.f});
+        CHECK(b->attacker() == a->name());
+        hit_by(b, c, {-900.f, -400.f});
+        CHECK(b->attacker() == c->name());
+
+        gs.player_on_dead(b);
+        CHECK(c->score() == 1);
+        CHECK(a->score() == 0);
+        CHECK(b->score() == 0);
+        CHECK(b->attacker().empty()); /* the respawn forgets it */
+    }
+
+    SECTION("own hits are not attacks") {
+        hit_by(a, a, {-900.f, 0.f});
+        CHECK(a->attacker().empty());
+    }
+
+    SECTION("heavier hits take longer to compensate") {
+        CHECK(a->hit_cooldown({0.f, -500.f}) == 0.f);
+        CHECK(a->hit_cooldown({300.f, 0.f}) < a->hit_cooldown({3000.f, 0.f}));
+        CHECK(a->hit_cooldown({-3000.f, 0.f}) == Catch::Approx(a->hit_cooldown({3000.f, 0.f})));
+    }
+
+    SECTION("the attacker is forgotten on the ground after the hit cooldown") {
+        b->teleport({1200.f, 1040.f});
+        for (int i = 0; i < 60 && !b->collision_box()->is_lock_y(); ++i)
+            tick();
+        REQUIRE(b->collision_box()->is_lock_y());
+
+        hit_by(b, a, {-300.f, 0.f}); /* knockback along the ground */
+        auto cooldown = b->hit_cooldown({-300.f, 0.f});
+        REQUIRE(cooldown > 0.05f);
+
+        tick();
+        REQUIRE(b->collision_box()->is_lock_y());
+        CHECK(b->attacker() == a->name());
+
+        auto ticks = int(cooldown * 60.f) + 2;
+        for (int i = 0; i < ticks; ++i)
+            tick();
+        REQUIRE(b->collision_box()->is_lock_y());
+        CHECK(b->attacker().empty());
+
+        gs.player_on_dead(b);
+        CHECK(b->score() == -1);
+        CHECK(a->score() == 0);
     }
 }

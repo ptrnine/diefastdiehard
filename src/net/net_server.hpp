@@ -215,6 +215,7 @@ private:
                 pack_unit(ph.accel_left_f),
                 pack_unit(ph.accel_right_f),
                 pl.teleports(),
+                i16(std::clamp(pl.score(), i32(INT16_MIN), i32(INT16_MAX))),
                 pl.recent_hit_ids()};
     }
 

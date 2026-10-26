@@ -66,6 +66,11 @@ instead of sleeping. Use it for any new gameplay/network timer.
   `diefast::bullet_gravity_enabled` (src/bullet.hpp) is what
   `game_state::gravity_for_bullets` references (toggle from Lua:
   `GS.gravity_for_bullets`).
+- Score: a hit records its shooter/thrower (`bullet_ref::owner`) as the
+  victim's `player::attacker` (the last hit wins), forgotten on the ground
+  after `player::hit_cooldown` (time to compensate the knockback with air
+  control). `game_state::player_on_dead`: +1 to the attacker, or -1 to the
+  player (suicide). The server syncs it in `state_player::score`.
 - `src/game_mode.hpp` — game mode: game rules (bullet gravity, crate drop
   period, magazines count: primary gun ammo limit, emptied guns are dropped) from the `gm_` sections of `data/game_mode.cfg`, not from the
   level. `gm_default` is applied on start; console `game mode [name|list]`

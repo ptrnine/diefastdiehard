@@ -39,6 +39,7 @@ struct shot_key_t {
 struct bullet_ref {
     u32                       id = 0;
     std::optional<shot_key_t> key;
+    player_name_t             owner = {}; /* the shooter (or thrower), local only: not sent */
 
     [[nodiscard]]
     static bullet_ref of(const physic_point* ph) {
@@ -155,7 +156,7 @@ public:
      */
     void net_id(u32 id) {
         _net_id = id;
-        _ph->user_any(bullet_ref{id, {}});
+        _ph->user_any(bullet_ref{id, {}, _owner});
     }
 
     /**
@@ -164,8 +165,8 @@ public:
      * flight. Such a bullet does not collide with players physically, the
      * game sweeps it against the rewound players every tick
      */
-    void lag_compensate(const player_name_t& owner, float rewind_s) {
-        _owner      = owner;
+    void lag_compensate(const player_name_t& owner_name, float rewind_s) {
+        owner(owner_name);
         _rewind     = rewind_s;
         _swept_from = _ph->get_position();
         _ph->set_collide_allower([](const physic_point*) { return false; });
@@ -181,6 +182,15 @@ public:
         return _owner;
     }
 
+    /* The shooter, credited for the hits of the bullet (see player::attacker) */
+    void owner(const player_name_t& value) {
+        _owner = value;
+        if (auto ref = std::any_cast<bullet_ref>(&_ph->get_user_any()))
+            ref->owner = value;
+        else
+            _ph->user_any(bullet_ref{0, {}, value});
+    }
+
     /* Path since the last sweep (lag-compensated bullets) */
     std::pair<vec2f, vec2f> take_swept_segment() {
         auto from   = _swept_from;
@@ -190,7 +200,7 @@ public:
 
     /* Predicted own bullet (client): referenced by its shot key until confirmed */
     void predicted_key(const shot_key_t& key) {
-        _ph->user_any(bullet_ref{0, key});
+        _ph->user_any(bullet_ref{0, key, _owner});
     }
 
     [[nodiscard]]

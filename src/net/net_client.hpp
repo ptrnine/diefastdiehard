@@ -829,6 +829,8 @@ private:
              * also covers locally simulated bots that exist on both sides)
              */
             pl->set_server_driven(true);
+            if (newest)
+                pl->score(sp.score);
 
             /* A mispredicted switch to the secondary gun (the server kept the gun): take the server's gun back */
             if (is_local && newest && pl->pistol_section() != cfg->second.pistol && !pl->throwing() &&

@@ -52,7 +52,7 @@ public:
         dropped_guns.set_collision_handlers(
             [this](const player& pl, float rewind) { return rewound_bb(pl, rewind); },
             [this](dropped_gun& gun, player& victim, const vec2f& impulse, const vec2f& pos) {
-                auto ref = bullet_ref{gun.hit_ref_id(), {}};
+                auto ref = bullet_ref{gun.hit_ref_id(), {}, gun.owner()};
                 if (gun.rewind() > 0.f)
                     rewound_gun_hits.push_back(
                         {victim.name(), impulse, pos, ref, sim.current_update_time() - to_duration(gun.rewind())});
@@ -301,7 +301,21 @@ public:
         game_run(false);
     }
 
+    /*
+     * Fell off the map: a kill of the last attacker (+1 to the attacker),
+     * a suicide without one (-1 to the player)
+     */
     void player_on_dead(player* player) {
+        auto found = players.find(player->attacker());
+        if (!player->attacker().empty() && found != players.end() && found->second.get() != player) {
+            found->second->add_score(1);
+            glog().info("{} knocked out {} (score {})", found->first, player->name(), found->second->score());
+        }
+        else {
+            player->add_score(-1);
+            glog().info("{} fell off (score {})", player->name(), player->score());
+        }
+
         player->increase_deaths();
         player_spawn(player);
     }
@@ -442,8 +456,10 @@ public:
     }
 
     void ui_update(ui_ctx& ui, const vec2f& window_size) {
-        if (on_game)
+        if (on_game) {
             ammo_hud_draw(ui, window_size);
+            score_hud_draw(ui, window_size);
+        }
         if (pconf_ui)
             pconf_ui->update(ui);
     }
@@ -467,30 +483,55 @@ public:
         for (auto& [name, text] : ammo)
             lines.push_back(ammo.size() > 1 ? name + ": " + text : text);
 
-        constexpr int   outline    = 3; /* black outline thickness, px */
-        constexpr float row_height = ui_ctx::hud_font_size + 2.f * float(outline);
-        constexpr float width      = 400.f;
-        constexpr float margin     = 12.f;
-        auto            height     = row_height * float(lines.size()) + 2.f * margin;
+        auto height = hud_row_height * float(lines.size()) + 2.f * hud_margin;
+        hud_text_draw(ui,
+                      "ammo_hud",
+                      nk_rect(window_size.x - hud_width - hud_margin, window_size.y - height, hud_width, height),
+                      lines);
+    }
 
+    /* Scores of all players at the top right corner, best first */
+    void score_hud_draw(ui_ctx& ui, const vec2f& window_size) {
+        std::vector<const player*> sorted;
+        for (auto& [_, pl] : players)
+            sorted.push_back(pl.get());
+        if (sorted.empty())
+            return;
+        std::ranges::stable_sort(sorted, std::greater{}, [](const player* pl) { return pl->score(); });
+
+        std::vector<std::string> lines;
+        for (auto* pl : sorted)
+            lines.push_back(std::string(pl->name()) + ": " + std::to_string(pl->score()));
+
+        auto height = hud_row_height * float(lines.size()) + 2.f * hud_margin;
+        hud_text_draw(ui, "score_hud", nk_rect(window_size.x - hud_width - hud_margin, hud_margin, hud_width, height), lines);
+    }
+
+    static constexpr int   hud_outline    = 3; /* black outline thickness, px */
+    static constexpr float hud_row_height = ui_ctx::hud_font_size + 2.f * float(hud_outline);
+    static constexpr float hud_width      = 400.f;
+    static constexpr float hud_margin     = 12.f;
+
+    /* Right-aligned HUD lines, white with a black outline, in a transparent window */
+    static void hud_text_draw(ui_ctx& ui, const char* window_name, struct nk_rect bounds, const std::vector<std::string>& lines) {
         auto style = &ui.nk_ctx()->style;
         ui.style_push_style_item(&style->window.fixed_background, nk_style_item_color(nk_rgba(0, 0, 0, 0)));
         ui.style_push_vec2(&style->window.padding, {0.f, 0.f});
         ui.style_push_vec2(&style->window.spacing, {0.f, 0.f});
 
-        /* Nuklear takes the bounds of a new window only: keep it in the corner (window resize, more lines) */
-        auto bounds = nk_rect(window_size.x - width - margin, window_size.y - height, width, height);
-        ui.window_set_bounds("ammo_hud", bounds);
-        if (ui.begin("ammo_hud", bounds, NK_WINDOW_NO_INPUT | NK_WINDOW_NO_SCROLLBAR)) {
+        /* Nuklear takes the bounds of a new window only: keep it in place (window resize, more lines) */
+        ui.window_set_bounds(window_name, bounds);
+        if (ui.begin(window_name, bounds, NK_WINDOW_NO_INPUT | NK_WINDOW_NO_SCROLLBAR)) {
             auto* font   = ui.hud_font();
             auto* canvas = ui.window_get_canvas();
-            ui.layout_row_dynamic(row_height, 1);
+            ui.layout_row_dynamic(hud_row_height, 1);
             for (auto& line : lines) {
                 struct nk_rect row;
                 if (nk_widget(&row, ui.nk_ctx()) == NK_WIDGET_INVALID)
                     continue;
 
                 /* Right-aligned: the text is drawn several times around its place for the outline */
+                constexpr auto outline = hud_outline;
                 auto len   = int(line.size());
                 auto tw    = font->width(font->userdata, font->height, line.data(), len);
                 auto place = nk_rect(row.x + row.w - tw - float(outline), row.y + float(outline), tw + 1.f, font->height);
@@ -641,7 +682,7 @@ public:
 
         if (lag > 0.f) {
             if (auto hit = hitscan(start, pos, rewind, owner)) {
-                apply_hit_at(*hit->target, velocity * mass, hit->position, bullet_ref{id, {}},
+                apply_hit_at(*hit->target, velocity * mass, hit->position, bullet_ref{id, {}, owner.name()},
                              sim.current_update_time() - to_duration(rewind));
                 cur_frame_bullets.push_back(
                     {owner.name(), id, key, start, start, velocity, velocity, 0.f, mass, owner.tracer_color(), gravity, false, {}});
@@ -651,6 +692,7 @@ public:
 
         auto& blt = blt_mgr.shot(sim, pos, mass, vel, owner.tracer_color(), gravity, owner.get_group(),
                                  player::player_group_getter, player::owner_checker(&owner));
+        blt.owner(owner.name());
         blt.net_id(id);
         if (lag > 0.f)
             blt.lag_compensate(owner.name(), rewind);
@@ -873,9 +915,13 @@ public:
         }
 
         /* Server-driven players die and respawn on the server */
-        for (auto& [_, pl] : players)
-            if (!pl->server_driven() && pl->collision_box()->get_position().y > 2100.f)
+        for (auto& [_, pl] : players) {
+            if (pl->server_driven())
+                continue;
+            pl->update_attacker();
+            if (pl->collision_box()->get_position().y > 2100.f)
                 player_on_dead(pl.get());
+        }
     }
 
     /* Crates */

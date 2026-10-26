@@ -388,6 +388,7 @@ public:
         _render_offset = {0.f, 0.f};
         ++_teleports;
         place_legs();
+        clear_attacker();
     }
 
     /** Number of teleports so far (wraps around) */
@@ -1300,7 +1301,13 @@ private:
     u32 max_jumps = 1;
 
     u32 _deaths = 0;
+    i32 _score  = 0;
     u64 _evt_counter = 0;
+
+    /* The last player who hit this one: credited if this one falls off the map (see update_attacker) */
+    player_name_t                         _attacker;
+    std::chrono::steady_clock::time_point _attacker_hit_time = {};
+    float                                 _attacker_cooldown = 0.f; /* seconds */
 
     weapon_instance _pistol;
 
@@ -1382,6 +1389,53 @@ public:
     [[nodiscard]]
     u32 get_deaths() const {
         return _deaths;
+    }
+
+    [[nodiscard]]
+    i32 score() const {
+        return _score;
+    }
+
+    /* Set the score (server-driven players: synced from the server) */
+    void score(i32 value) {
+        _score = value;
+    }
+
+    void add_score(i32 value) {
+        _score += value;
+    }
+
+    /* The last player who hit this one, empty if none (a fall off the map is a suicide) */
+    [[nodiscard]]
+    const player_name_t& attacker() const {
+        return _attacker;
+    }
+
+    void clear_attacker() {
+        _attacker = {};
+    }
+
+    /**
+     * Seconds the player needs to compensate the hit by moving in the
+     * opposite direction in the air: the hit's horizontal velocity against
+     * the air acceleration, which is reset to zero by the hit and recovers
+     * at 2/s (velocity compensated after t: a*t^2 for t <= 0.5, a*(t - 0.25) later)
+     */
+    [[nodiscard]]
+    float hit_cooldown(const vec2f& impulse) const {
+        if (_x_accel <= 0.f)
+            return 0.f;
+        auto k = std::abs(impulse.x) / _collision_box->get_mass() / _x_accel;
+        return k <= 0.25f ? std::sqrt(k) : k + 0.25f;
+    }
+
+    /* The attacker is forgotten once the player is on the ground after the hit cooldown */
+    void update_attacker() {
+        if (_attacker.empty() || _replaying || !_collision_box->is_lock_y())
+            return;
+        auto elapsed = std::chrono::duration<float>(game_clock::now() - _attacker_hit_time).count();
+        if (elapsed > _attacker_cooldown)
+            clear_attacker();
     }
 
     void group(int value) {
@@ -1570,6 +1624,12 @@ public:
     void hit_feedback(const vec2f& impulse, const vec2f& hit_position, const bullet_ref& ref = {}) {
         if (!_server_driven && ref.id != 0)
             _recent_hits.push_back({ref.id, game_clock::now()});
+        /* The last hit wins: its attacker, time and cooldown replace the previous ones */
+        if (!_server_driven && !ref.owner.empty() && ref.owner != _name) {
+            _attacker          = ref.owner;
+            _attacker_hit_time = game_clock::now();
+            _attacker_cooldown = hit_cooldown(impulse);
+        }
         set_on_hit_event();
         play_hit_sound(hit_position, magnitude(impulse) > 2200.f);
     }
