@@ -177,6 +177,38 @@ public:
         return _rewind;
     }
 
+    /* Muzzle trajectory of a bullet simulated in the client's predicted frame */
+    struct framed_t {
+        vec2f start;
+        vec2f velocity;
+        bool  gravity;
+        float rewind;        // the server tests it against the players this long ago (0: collides physically), s
+        float flight;        // flight time along the trajectory now, s
+        float shown_flight;  // flight time the shown players were tested up to, s
+    };
+
+    /**
+     * Server bullet on a client, simulated in the frame of the predicted
+     * local player: it is where the server will have it when it tests the
+     * local player's current tick, ahead of the remote players (shown in the
+     * past). It does not collide with players physically, the client sweeps
+     * it against the local player and, delayed along the muzzle trajectory,
+     * against the remote players every tick (net_client). The first sweep
+     * starts at from
+     */
+    void frame_on_client(const framed_t& value, const vec2f& from) {
+        _framed     = value;
+        _swept_from = from;
+        _ph->set_collide_allower([group = _group](const physic_point* p) {
+            return p->get_user_data() != user_data_type::player && group == -1;
+        });
+    }
+
+    [[nodiscard]]
+    std::optional<framed_t>& framed() {
+        return _framed;
+    }
+
     [[nodiscard]]
     const player_name_t& owner() const {
         return _owner;
@@ -191,7 +223,7 @@ public:
             _ph->user_any(bullet_ref{0, {}, value});
     }
 
-    /* Path since the last sweep (lag-compensated bullets) */
+    /* Path since the last sweep (lag-compensated and framed bullets) */
     std::pair<vec2f, vec2f> take_swept_segment() {
         auto from   = _swept_from;
         _swept_from = _ph->get_position();
@@ -217,6 +249,8 @@ private:
     player_name_t _owner;
     float         _rewind     = 0.f;
     vec2f         _swept_from = {0.f, 0.f};
+
+    std::optional<framed_t> _framed;
 };
 
 class bullet_mgr {

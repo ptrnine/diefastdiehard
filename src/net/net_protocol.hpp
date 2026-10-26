@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 12;
+inline constexpr u16 protocol_version = 13;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -275,7 +275,9 @@ struct pellet_info {
  * pellet i has the id first_id + i and the shot key (pull_seq, shot_index,
  * first_pellet + i). Every pellet starts at the muzzle; the server forwarded
  * them by forward seconds along their ballistic path (lag compensation, 0
- * for a bullet consumed by the server's spawn hit-scan)
+ * for a bullet consumed by the server's spawn hit-scan). The server tests
+ * them against the players as they were rewind seconds ago (the shooter's
+ * view, 0 for a player without lag compensation)
  */
 struct shot_info {
     static constexpr u8    flag_gravity  = 1 << 0;
@@ -289,6 +291,7 @@ struct shot_info {
     float start_x      = 0.f;
     float start_y      = 0.f;
     u16   forward      = 0;
+    u16   rewind       = 0; // same units as forward
     float hit_mass     = 0.f;
     u8    flags        = 0;
 
@@ -299,16 +302,21 @@ struct shot_info {
         return float(forward) / forward_scale;
     }
 
+    [[nodiscard]]
+    float rewind_s() const {
+        return float(rewind) / forward_scale;
+    }
+
     static u16 pack_forward(float seconds) {
         return u16(std::lround(std::clamp(seconds, 0.f, 65535.f / forward_scale) * forward_scale));
     }
 
     void serialize(auto& s) const {
-        s.write(owner, first_id, pull_seq, shot_index, first_pellet, start_x, start_y, forward, hit_mass, flags, pellets);
+        s.write(owner, first_id, pull_seq, shot_index, first_pellet, start_x, start_y, forward, rewind, hit_mass, flags, pellets);
     }
 
     void deserialize(auto& d) {
-        d.read(owner, first_id, pull_seq, shot_index, first_pellet, start_x, start_y, forward, hit_mass, flags, pellets);
+        d.read(owner, first_id, pull_seq, shot_index, first_pellet, start_x, start_y, forward, rewind, hit_mass, flags, pellets);
     }
 };
 

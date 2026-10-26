@@ -239,6 +239,7 @@ private:
         for (auto& be : _pending_bullets) {
             auto owner   = player_id(be.owner);
             auto forward = shot_info::pack_forward(be.forward);
+            auto rewind  = shot_info::pack_forward(be.rewind);
             auto flags   = u8(be.gravity ? shot_info::flag_gravity : 0);
 
             auto* last = st.shots.empty() ? nullptr : &st.shots.back();
@@ -246,7 +247,7 @@ private:
                         last->shot_index == u16(be.key.shot_index) &&
                         last->first_id + u32(last->pellets.size()) == be.id &&
                         last->first_pellet + last->pellets.size() == be.key.pellet && exactly_equal(last->start_x, be.start.x) &&
-                        exactly_equal(last->start_y, be.start.y) && last->forward == forward &&
+                        exactly_equal(last->start_y, be.start.y) && last->forward == forward && last->rewind == rewind &&
                         exactly_equal(last->hit_mass, be.hit_mass) &&
                         last->flags == flags;
             if (!same)
@@ -258,6 +259,7 @@ private:
                                              be.start.x,
                                              be.start.y,
                                              forward,
+                                             rewind,
                                              be.hit_mass,
                                              flags,
                                              {}});

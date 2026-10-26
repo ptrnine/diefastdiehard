@@ -175,7 +175,7 @@ TEST_CASE("protocol: message round-trips") {
         st.tick = 5;
         st.shots.push_back(shot_info{.owner = 1, .first_id = 10, .pull_seq = 30, .shot_index = 2, .first_pellet = 0,
                                      .start_x = -1.f, .start_y = 2.f, .forward = shot_info::pack_forward(0.125f),
-                                     .hit_mass = 1.5f, .flags = shot_info::flag_gravity,
+                                     .rewind = shot_info::pack_forward(0.0625f), .hit_mass = 1.5f, .flags = shot_info::flag_gravity,
                                      .pellets = {{100.f, 0.f}, {90.f, 10.f}}});
         st.alive_bullets = alive_set::from_ids(std::vector<u32>{11, 3, 20});
 
@@ -190,6 +190,7 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(r.shots[0].shot_index == 2);
         CHECK(r.shots[0].start_x == -1.f);
         CHECK(r.shots[0].forward_s() == Catch::Approx(0.125f).margin(1e-4));
+        CHECK(r.shots[0].rewind_s() == Catch::Approx(0.0625f).margin(1e-4));
         CHECK(r.shots[0].hit_mass == 1.5f);
         CHECK(r.shots[0].flags == shot_info::flag_gravity);
         REQUIRE(r.shots[0].pellets.size() == 2);
@@ -1883,7 +1884,7 @@ TEST_CASE("game_state: lag-compensated bullets hit rewound players for their who
     }
 }
 
-TEST_CASE("net: clients see server bullets in present time") {
+TEST_CASE("net: clients see server bullets in the local player's frame") {
     using namespace std::chrono_literals;
     net_game_fixture f{80, 170};
     f.run_for(3000ms);
@@ -1905,18 +1906,26 @@ TEST_CASE("net: clients see server bullets in present time") {
     });
 
     REQUIRE(f.gs_cli.blt_mgr.bullets().size() >= 1);
-    auto id = f.gs_cli.blt_mgr.bullets().front().net_id();
-    auto srv_blt = std::ranges::find_if(f.gs_srv.blt_mgr.bullets(), [&](const bullet& b) { return b.net_id() == id; });
-    REQUIRE(srv_blt != f.gs_srv.blt_mgr.bullets().end());
+    auto& cli_blt = f.gs_cli.blt_mgr.bullets().front();
+    REQUIRE(cli_blt.framed());
+    auto id    = cli_blt.net_id();
+    auto cli_x = cli_blt.physic()->get_position().x;
+    auto seq   = f.cli->input_seq();
 
     /*
-     * Forwarded by the client's one-way lag estimate: the client bullet is
-     * where the server bullet is now (within the latency jitter of ~45 ms)
+     * The client bullet is ahead of the server's: where the server has it
+     * when it simulates the local player's current input tick
      */
-    auto cli_x = f.gs_cli.blt_mgr.bullets().front().physic()->get_position().x;
+    auto srv_blt = f.gs_srv.blt_mgr.bullets().end();
+    for (int i = 0; i < 400 && f.server_side().last_input_seq() < seq; ++i)
+        f.frame();
+    REQUIRE(f.server_side().last_input_seq() == seq);
+    srv_blt = std::ranges::find_if(f.gs_srv.blt_mgr.bullets(), [&](const bullet& b) { return b.net_id() == id; });
+    REQUIRE(srv_blt != f.gs_srv.blt_mgr.bullets().end());
+
     auto srv_x = srv_blt->physic()->get_position().x;
     auto speed = srv_blt->physic()->scalar_velocity();
-    CHECK(std::abs(cli_x - srv_x) < speed * 0.07f);
+    CHECK(std::abs(cli_x - srv_x) < speed * 0.035f); /* ~2 ticks */
 }
 
 TEST_CASE("net: own bullets are predicted and confirmed by the server") {
@@ -2155,6 +2164,47 @@ TEST_CASE("net: bullet hits on the local player are predicted") {
 
     /* Settled: confirmed hits were not applied twice */
     f.run_for(2500ms);
+    CHECK(f.local().get_position().x == Catch::Approx(f.server_side().get_position().x).margin(1.f));
+}
+
+TEST_CASE("net: hits on the falling local player are predicted where the server has them (100 ms ping)") {
+    using namespace std::chrono_literals;
+    hit_fixture f{25, 25};
+
+    auto weapon = GENERATE(as<std::string>{}, "wpn_ak9", "wpn_glk17");
+    auto drop_y = GENERATE(905.f, 950.f); /* under pl1 (y 900), the stream flies at ~950..1050 */
+    /* A shooter with lag compensation (like a network one): rewound sweeps instead of physical collisions */
+    auto lag_compensated = GENERATE(false, true);
+    CAPTURE(weapon, drop_y, lag_compensated);
+
+    if (lag_compensated)
+        f.bot->lag_compensation({.lag = 0.05f, .rewind = 0.08f});
+
+    /* The client player stands behind the bot (it faces left) while the bot fires a stream */
+    f.bot->setup_pistol(weapon);
+    f.server_side().teleport({1400.f, 1040.f});
+    f.run_for(1000ms);
+    f.bot->shot();
+    f.run_for(500ms);
+
+    /* Dropped across the stream: count the corrections from the client's teleport on */
+    f.server_side().teleport({700.f, drop_y});
+    for (int i = 0; i < 400 && f.local().get_position().x > 800.f; ++i)
+        f.frame();
+    REQUIRE(f.local().get_position().y < 1040.f);
+    f.cli->reset_correction_stats();
+
+    size_t server_hits = 0;
+    f.run_for(1500ms, [&] { server_hits = std::max(server_hits, f.server_side().recent_hit_ids().size()); });
+    f.bot->relax();
+    REQUIRE(server_hits > 0);
+
+    /* Every hit was predicted on the server's tick */
+    UNSCOPED_INFO("server hits " << server_hits << ", corrections " << f.cli->corrections() << ", max correction "
+                                 << f.cli->max_correction());
+    CHECK(f.cli->corrections() == 0);
+
+    f.run_for(1500ms);
     CHECK(f.local().get_position().x == Catch::Approx(f.server_side().get_position().x).margin(1.f));
 }
 

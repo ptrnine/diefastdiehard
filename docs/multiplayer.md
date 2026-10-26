@@ -54,7 +54,7 @@ Every datagram has a header `u16 type, u16 payload_size`, then an
 `ss::serializer` payload: little endian, with **u16** string and vector
 length prefixes (`net::wire_size_type`; the serializer default is u64).
 **Bump `net::protocol_version`** on any wire change: a HELLO with another
-version is answered with ERROR. The current version is 7.
+version is answered with ERROR. The current version is 13.
 
 | id | dir | payload |
 |----|-----|---------|
@@ -82,7 +82,7 @@ STATE contains:
   - teleport counter;
   - score (`i16`, `player::score`): the server scores kills and suicides (`game_state::player_on_dead`), clients only show it;
   - `hits`: ids of the bullets that hit the player in the last second.
-- **`shot_info`, per shot spawned since the last broadcast:** owner id, first bullet id, shot key (`pull_seq`, `shot_index`, first pellet), muzzle start, forward time (u16, 1/32768 s), hit_mass, gravity flag, and the muzzle velocity of each pellet. Pellet `i` has the id `first_id + i` and the pellet number `first_pellet + i`; pellets of one shot share everything but the velocity. The server keeps spawned bullets in a pending list until the next broadcast.
+- **`shot_info`, per shot spawned since the last broadcast:** owner id, first bullet id, shot key (`pull_seq`, `shot_index`, first pellet), muzzle start, forward time and rewind (u16, 1/32768 s; rewind 0: the bullet collides physically), hit_mass, gravity flag, and the muzzle velocity of each pellet. Pellet `i` has the id `first_id + i` and the pellet number `first_pellet + i`; pellets of one shot share everything but the velocity. The server keeps spawned bullets in a pending list until the next broadcast.
 - **Other world state:** crates (id, pos, vel, landed); dropped guns (id, section, pos, vel, angle, on_left, long_shot, owner: the id of the player who threw it, age: flight time in ms); `alive_set`: the ids of all bullets alive on the server, as a bitmap from the smallest one.
 
 Typical sizes: the example in `tests/net_test.cpp` (4 players, a 7 pellet shot, 30 live bullets, 2 crates, 1 dropped gun) is 367 bytes (1131 in version 6). In a loopback fight with two players and a shotgun, a state averages ~150 bytes and an input ~28 bytes (`udp_channel::bytes_sent`). Keep a STATE well below the ~1470 byte MTU.
@@ -290,17 +290,53 @@ tick N: X px`, `weapon correction ...`).
   one. The victim and third-party clients see the rewrite as a smoothed
   correction.
 
-**Server bullets on clients** (`spawn_server_bullet`):
-- A received bullet is forwarded from the muzzle by the server's forward
-  time plus its state's age: `rtt_min/2` plus this datagram's excess delay
-  over the fastest recent state. It thus appears at
-  `start + vel·(shooter lag + own lag)`, i.e. in present time, through the
-  same `game_state::ballistic_forward` the server used. Its tracer color is
-  the owner's (from the config).
-- The skipped segment is hit-scanned against the client's view, for hit
-  feedback only.
+**Server bullets on clients** (`spawn_server_bullet`): simulated in the
+frame of the predicted local player (`bullet::frame_on_client`), so the
+client sees, and its prediction hits, the bullet the server will collide
+with its player.
+- **Why:** the local player runs ahead of the server (the input's trip
+  plus its wait in the queue), and the server tests a lag-compensated
+  bullet against the players `rewind` in the past. Shown in server present
+  time, a bullet was `lead + rewind` behind the one the server tested
+  against the local player, so every hit on a moving (falling) player was
+  mispredicted: a hit the server did not have, or a missed one.
+- **Tick time:** the server applies one input tick per tick, so the server
+  time of input tick `k` is `offset + k·dt`, with `offset` from the newest
+  states' `server_time − ack_seq·dt` (smoothed, `update_tick_time`).
+  `local_frame_time()` is the server time of the local player's current
+  tick.
+- **Spawn:** at the flight time `forward + (local_frame_time − state time) +
+  rewind_ticks·dt`, through the same `game_state::ballistic_forward` the
+  server used. The rewind is rounded up to the server's tick grid
+  (`hit_test_t`). Its tracer color is the owner's (from the config).
+- **Hits on the local player** (`tick_hit`), tested like the server does:
+  - lag-compensated (`rewind > 0`): the path flown in a tick against the
+    player's state `rewind_lead` of a tick before the tick's end (the
+    server's interpolated position trace). The hit goes before the move of
+    the tick after the last one finished by then (`apply_hit_at`);
+  - physical (`rewind == 0`, the host's player and bots): the simulation's
+    continuous test (`physical_hit`: the path crossing a side of the box
+    moving with the tick's start velocity). The hit goes before the move of
+    the tick itself.
+  A hit on an already simulated tick goes into its `input_history` entry,
+  and the following ticks are re-simulated (`apply_tick_hit`).
+- **Past ticks:** a bullet arrives `lead + rewind + state trip` into its
+  flight. Its path through the unacknowledged ticks is tested against
+  their predicted states at once (`predict_past_hit`), the next ticks are
+  swept at every tick begin (`sweep_framed_bullets`). Hits on already
+  acknowledged ticks can't be predicted: reconciliation corrects them.
+- **Rewound hits are late on the server:** it registers a lag-compensated
+  hit `rewind_ticks` after the hit tick. Until then, reconciliation skips
+  the states acknowledging a predicted rewound hit (`_rewound_hits`).
+- **Remote players** are shown in the past: the bullet path delayed by
+  `local_frame_time − render time` (`shown_delay`) is swept against them.
+  The path from the muzzle up to there is hit-scanned on spawn.
+- Before the first acknowledged input there is no tick time: the bullet is
+  forwarded by its state's age (present time) and collides physically.
 - Bullets the server already consumed are not spawned, and bullets missing
   from the alive set are removed.
+- **Cost:** a remote bullet appears further from the muzzle, about
+  `(shooter lag + own RTT and queue wait + shooter rewind)·speed`.
 
 **Own bullet prediction** (client's predicted player):
 - The bullets spawn at once, without an id. Shots are deterministic:
@@ -427,6 +463,13 @@ across a teleport.
 
 - **Remote weapons:** their ammo and reload state run locally (cosmetic) and
   can differ from the server's.
+- **Unpredictable hits on the local player:** a bullet that hits within
+  about `shooter lag + rewind + own RTT` of its flight hits an already
+  acknowledged tick: it is corrected by reconciliation.
+- **Remote players vs. framed bullets:** they are swept by the bullet path
+  delayed along the muzzle trajectory; that stops when the shown bullet
+  dies, so a hit in the last `shown_delay` of its flight is not predicted
+  (the snapshots correct it).
 - **Unpredicted hits on remote players:** if the client simulation missed a
   hit that the server's lag compensation registered, it shows up as a
   smoothed correction about one view delay later. With fast-falling or

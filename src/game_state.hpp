@@ -564,6 +564,7 @@ public:
         vec2f         velocity;     // spawn velocity (lag-forwarded)
         vec2f         muzzle_velocity;
         float         forward;      // seconds it was forwarded by (position, velocity = ballistic_forward(start, muzzle_velocity, forward))
+        float         rewind;       // seconds the players it is tested against are rewound by (lag compensation)
         float         hit_mass;
         sf::Color     tracer_color;
         bool          gravity; // gravity flag the bullet was spawned with
@@ -622,36 +623,50 @@ public:
 
     /* Owner may be gone (nullptr): only its group is skipped then */
     std::optional<hitscan_hit_t> hitscan(const vec2f& a, const vec2f& b, float rewind_s, const player* owner, int group) {
+        return hitscan_if(a, b, rewind_s, owner, group, [](const player&) { return true; });
+    }
+
+    /* Like hitscan, the players target(player) rejects are skipped too */
+    template <typename F>
+    std::optional<hitscan_hit_t>
+    hitscan_if(const vec2f& a, const vec2f& b, float rewind_s, const player* owner, int group, F&& target) {
         std::optional<hitscan_hit_t> res;
         float                        best_t = std::numeric_limits<float>::max();
         auto                         d      = b - a;
 
         for (auto& [_, pl] : players) {
-            if (pl.get() == owner)
+            if (pl.get() == owner || !target(*pl))
                 continue;
             if (group != -1 && pl->get_group() != -1 && pl->get_group() == group)
                 continue;
 
-            auto bb = rewound_bb(*pl, rewind_s);
-
-            /* Segment vs AABB (slabs) */
-            float t0 = 0.f, t1 = 1.f;
-            auto  slab = [&](float origin, float dir, float min, float max) {
-                if (std::abs(dir) < 1e-6f)
-                    return origin >= min && origin <= max;
-                auto ta = (min - origin) / dir;
-                auto tb = (max - origin) / dir;
-                t0      = std::max(t0, std::min(ta, tb));
-                t1      = std::min(t1, std::max(ta, tb));
-                return t0 <= t1;
-            };
-            if (slab(a.x, d.x, bb.left, bb.left + bb.width) && slab(a.y, d.y, bb.top, bb.top + bb.height) &&
-                t0 < best_t) {
-                best_t = t0;
-                res    = hitscan_hit_t{pl.get(), a + d * t0};
+            if (auto t0 = segment_hit(a, b, rewound_bb(*pl, rewind_s)); t0 && *t0 < best_t) {
+                best_t = *t0;
+                res    = hitscan_hit_t{pl.get(), a + d * *t0};
             }
         }
         return res;
+    }
+
+    /* Where the segment a -> b enters the box: a + (b - a) * t, t in [0, 1] */
+    [[nodiscard]]
+    static std::optional<float> segment_hit(const vec2f& a, const vec2f& b, const sf::FloatRect& bb) {
+        auto d = b - a;
+
+        /* Segment vs AABB (slabs) */
+        float t0 = 0.f, t1 = 1.f;
+        auto  slab = [&](float origin, float dir, float min, float max) {
+            if (std::abs(dir) < 1e-6f)
+                return origin >= min && origin <= max;
+            auto ta = (min - origin) / dir;
+            auto tb = (max - origin) / dir;
+            t0      = std::max(t0, std::min(ta, tb));
+            t1      = std::min(t1, std::max(ta, tb));
+            return t0 <= t1;
+        };
+        if (slab(a.x, d.x, bb.left, bb.left + bb.width) && slab(a.y, d.y, bb.top, bb.top + bb.height))
+            return t0;
+        return {};
     }
 
     /**
@@ -672,7 +687,7 @@ public:
                                      player::player_group_getter, player::owner_checker(&owner));
             blt.predicted_key(key);
             cur_frame_bullets.push_back(
-                {owner.name(), 0, key, start, start, velocity, velocity, 0.f, mass, owner.tracer_color(), gravity, true, blt.physic()});
+                {owner.name(), 0, key, start, start, velocity, velocity, 0.f, 0.f, mass, owner.tracer_color(), gravity, true, blt.physic()});
             return;
         }
 
@@ -685,7 +700,7 @@ public:
                 apply_hit_at(*hit->target, velocity * mass, hit->position, bullet_ref{id, {}, owner.name()},
                              sim.current_update_time() - to_duration(rewind));
                 cur_frame_bullets.push_back(
-                    {owner.name(), id, key, start, start, velocity, velocity, 0.f, mass, owner.tracer_color(), gravity, false, {}});
+                    {owner.name(), id, key, start, start, velocity, velocity, 0.f, 0.f, mass, owner.tracer_color(), gravity, false, {}});
                 return;
             }
         }
@@ -697,7 +712,7 @@ public:
         if (lag > 0.f)
             blt.lag_compensate(owner.name(), rewind);
         cur_frame_bullets.push_back(
-            {owner.name(), id, key, start, pos, vel, velocity, lag, mass, owner.tracer_color(), gravity, false, {}});
+            {owner.name(), id, key, start, pos, vel, velocity, lag, lag > 0.f ? rewind : 0.f, mass, owner.tracer_color(), gravity, false, {}});
     }
 
     /**

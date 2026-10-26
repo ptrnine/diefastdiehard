@@ -80,7 +80,9 @@ instead of sleeping. Use it for any new gameplay/network timer.
   sends a per-client state every tick; clients send per-tick input
   windows, predict the local player with rollback and interpolate remote
   players (`net_sync.hpp`); server-side lag compensation in
-  `game_state::spawn_bullet`. Details in `docs/multiplayer.md`. Server
+  `game_state::spawn_bullet`. Clients simulate server bullets in the local
+  player's (future) frame and test hits on it exactly like the server
+  (`net_client::tick_hit`). Details in `docs/multiplayer.md`. Server
   players of clients are `player::net_controlled()`, client mirrors of
   server players are `player::server_driven()`. Simulated latency:
   `udp_channel::set_simulated_latency` / `--define=DFDH_DEBUG_PING`.
