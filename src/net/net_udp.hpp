@@ -77,6 +77,9 @@ public:
         if (!_open || data.empty())
             return false;
 
+        ++_datagrams_sent;
+        _bytes_sent += data.size();
+
         if (simulated_latency()) {
             /* Simulated latency: queue the datagram and let it go out only after
              * its one-way delay has elapsed */
@@ -158,8 +161,22 @@ public:
         return _delay_max_ms > 0.0;
     }
 
+    /* Traffic sent so far (payloads with the protocol header, without UDP/IP headers) */
+    [[nodiscard]]
+    u64 datagrams_sent() const {
+        return _datagrams_sent;
+    }
+
+    [[nodiscard]]
+    u64 bytes_sent() const {
+        return _bytes_sent;
+    }
+
 private:
     static constexpr size_t max_datagram_size = 65536;
+
+    u64 _datagrams_sent = 0;
+    u64 _bytes_sent     = 0;
 
 #if defined(DFDH_DEBUG_PING)
     double _delay_min_ms = 24.0;

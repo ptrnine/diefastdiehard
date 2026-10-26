@@ -262,13 +262,14 @@ public:
     }
 
     /**
-     * Remove network-synced bullets (net_id != 0) whose id is not in
-     * keep_ids. The client uses this to drop bullets the server already
-     * removed (e.g. they hit a player whose local position diverged)
+     * Remove network-synced bullets (net_id != 0) whose id keep(id) rejects.
+     * The client uses this to drop bullets the server already removed (e.g.
+     * they hit a player whose local position diverged)
      */
-    void remove_not_in(const std::vector<u32>& keep_ids) {
+    template <typename F>
+    void remove_not_in(F&& keep) {
         _bullets.remove_if([&](const bullet& b) {
-            if (b.net_id() == 0 || std::ranges::find(keep_ids, b.net_id()) != keep_ids.end())
+            if (b.net_id() == 0 || keep(b.net_id()))
                 return false;
             b.physic()->delete_later();
             return true;

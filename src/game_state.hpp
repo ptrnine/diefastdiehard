@@ -403,7 +403,9 @@ public:
         shot_key_t    key;          // deterministic shot key (network players)
         vec2f         start;        // muzzle position
         vec2f         position;     // spawn position (lag-forwarded)
-        vec2f         velocity;
+        vec2f         velocity;     // spawn velocity (lag-forwarded)
+        vec2f         muzzle_velocity;
+        float         forward;      // seconds it was forwarded by (position, velocity = ballistic_forward(start, muzzle_velocity, forward))
         float         hit_mass;
         sf::Color     tracer_color;
         bool          gravity; // gravity flag the bullet was spawned with
@@ -505,7 +507,7 @@ public:
                                      player::player_group_getter, player::owner_checker(&owner));
             blt.predicted_key(key);
             cur_frame_bullets.push_back(
-                {owner.name(), 0, key, start, start, velocity, mass, owner.tracer_color(), gravity, true, blt.physic()});
+                {owner.name(), 0, key, start, start, velocity, velocity, 0.f, mass, owner.tracer_color(), gravity, true, blt.physic()});
             return;
         }
 
@@ -517,7 +519,8 @@ public:
             if (auto hit = hitscan(start, pos, rewind, owner)) {
                 apply_hit_at(*hit->target, velocity * mass, hit->position, bullet_ref{id, {}},
                              sim.current_update_time() - to_duration(rewind));
-                cur_frame_bullets.push_back({owner.name(), id, key, start, start, velocity, mass, owner.tracer_color(), gravity, false, {}});
+                cur_frame_bullets.push_back(
+                    {owner.name(), id, key, start, start, velocity, velocity, 0.f, mass, owner.tracer_color(), gravity, false, {}});
                 return;
             }
         }
@@ -527,7 +530,8 @@ public:
         blt.net_id(id);
         if (lag > 0.f)
             blt.lag_compensate(owner.name(), rewind);
-        cur_frame_bullets.push_back({owner.name(), id, key, start, pos, vel, mass, owner.tracer_color(), gravity, false, {}});
+        cur_frame_bullets.push_back(
+            {owner.name(), id, key, start, pos, vel, velocity, lag, mass, owner.tracer_color(), gravity, false, {}});
     }
 
     /**

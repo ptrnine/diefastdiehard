@@ -65,7 +65,7 @@ instead of sleeping. Use it for any new gameplay/network timer.
   `GS.gravity_for_bullets`).
 - `src/net/` — multiplayer: authoritative UDP server. Protocol in
   `net_protocol.hpp` (bump `protocol_version` on wire changes); the server
-  sends a per-client state every frame; clients send per-tick input
+  sends a per-client state every tick; clients send per-tick input
   windows, predict the local player with rollback and interpolate remote
   players (`net_sync.hpp`); server-side lag compensation in
   `game_state::spawn_bullet`. Details in `docs/multiplayer.md`. Server

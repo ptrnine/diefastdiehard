@@ -43,12 +43,22 @@ public:
     static constexpr size_t max_queued_inputs = 8;
     /* Without inputs for this long the client's player gets a neutral input */
     static constexpr auto input_timeout = std::chrono::milliseconds(500);
+    /*
+     * Player configs are sent to a client during this long after it joined
+     * or after the config changed, and to everyone every config_refresh
+     * broadcasts (lost datagrams cost nothing)
+     */
+    static constexpr auto config_resend  = std::chrono::seconds(1);
+    static constexpr u32  config_refresh = 30;
+    /* A state is broadcast once per simulation tick, or this often without ticks (paused game) */
+    static constexpr auto idle_broadcast = std::chrono::milliseconds(100);
 
     struct client_t {
         sf::IpAddress    address;
         u16              port         = 0;
         player_name_t    player_name;
         bool             joined       = false;
+        game_clock::time_point joined_time;
 
         /* Received, not yet applied input ticks (seq -> bits), applied one per tick in seq order */
         std::map<u32, u16> inputs;
@@ -126,119 +136,198 @@ public:
         for (auto& datagram : _sock.recv(std::chrono::milliseconds(2)))
             handle_msg(gs, datagram);
 
-        /* Broadcast the state once per frame */
-        if (!_clients.empty()) {
-            net::state st;
-            st.tick           = ++_broadcast_seq;
-            /* Time of the simulated state (the last tick), not of the broadcast */
-            st.server_time_ms = u32(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                        gs.sim.current_update_time() - _start_time)
-                                        .count());
-            for (auto& [name, pl] : gs.players)
-                st.players.push_back(make_state_player(*pl));
-
-            /*
-             * Broadcast all bullets spawned this frame (network players, the
-             * host's local player and bots). The client disables local bullet
-             * spawning for every server-known player, so there are no
-             * duplicates.
-             */
-            for (auto& be : gs.cur_frame_bullets)
-                st.bullets.push_back(bullet_info{std::string(be.owner),
-                                                 be.id,
-                                                 be.key.pull_seq,
-                                                 u16(be.key.shot_index),
-                                                 u8(be.key.pellet),
-                                                 be.start.x,
-                                                 be.start.y,
-                                                 be.position.x,
-                                                 be.position.y,
-                                                 be.velocity.x,
-                                                 be.velocity.y,
-                                                 be.hit_mass,
-                                                 pack_color(be.tracer_color),
-                                                 be.gravity});
-
-            /*
-             * The set of all live bullet ids: clients drop their local bullets
-             * that no longer exist on the server (e.g. hit a player whose
-             * position diverged locally)
-             */
-            for (auto& b : gs.blt_mgr.bullets())
-                if (b.net_id() != 0)
-                    st.alive_bullet_ids.push_back(b.net_id());
-
-            for (auto& c : gs.crates) {
-                auto pos = c->get_position();
-                auto vel = c->get_velocity();
-                st.crates.push_back(crate_info{c->id(), pos.x, pos.y, vel.x, vel.y,
-                                               c->landed() ? 1 : 0});
+        /* Bullets spawned since the last broadcast (ids grow: each one is taken once) */
+        for (auto& be : gs.cur_frame_bullets)
+            if (be.id > _last_pending_bullet_id) {
+                _pending_bullets.push_back(be);
+                _last_pending_bullet_id = be.id;
             }
 
-            /* Broadcast dropped guns (server-authoritative physics) */
-            for (auto& g : gs.dropped_guns.guns()) {
-                auto pos = g->get_position();
-                auto vel = g->get_velocity();
-                st.guns.push_back(gun_info{g->id(),
-                                           g->section(),
-                                           pos.x,
-                                           pos.y,
-                                           vel.x,
-                                           vel.y,
-                                           g->angle(),
-                                           static_cast<u8>(g->on_left()),
-                                           static_cast<u8>(g->long_shot())});
-            }
-
-            for (auto& [key, client] : _clients) {
-                if (!client.joined)
-                    continue;
-
-                st.ack_seq             = client.ack_seq;
-                st.echo_client_time_ms = client.echo_client_time_ms;
-                st.echo_hold_ms        = u16(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                          clock::now() - client.echo_recv_time).count());
-                _sock.send_to(client.address, client.port, encode_msg(msg_type::state, st));
-            }
+        if (_clients.empty()) {
+            _pending_bullets.clear();
+            return;
         }
+
+        /* Once per simulation tick: the state does not change in between */
+        auto now = clock::now();
+        if (gs.sim.tick() == _last_broadcast_tick && now - _last_broadcast_time < idle_broadcast)
+            return;
+        _last_broadcast_tick = gs.sim.tick();
+        _last_broadcast_time = now;
+
+        broadcast(gs, now);
     }
 
 private:
-    static state_player make_state_player(player& pl) {
-        state_player sp;
-        sp.name         = pl.name();
-        sp.pistol       = pl.pistol_section();
-        sp.face_id      = player_configurator::texture_path_to_index(pl.face_texture_path());
-        sp.body_id      = player_configurator::texture_path_to_index(pl.body_texture_path());
-        sp.body_color   = pack_color(pl.body_color());
-        sp.tracer_color = pack_color(pl.tracer_color());
-        auto pos        = pl.get_position();
-        auto vel        = pl.get_velocity();
-        sp.pos_x        = pos.x;
-        sp.pos_y        = pos.y;
-        sp.vel_x        = vel.x;
-        sp.vel_y        = vel.y;
-        auto ph         = pl.get_physic_state();
-        sp.jumps_left   = u8(ph.jumps_left);
-        sp.lock_y       = ph.lock_y ? 1 : 0;
-        sp.accel_lf     = ph.accel_left_f;
-        sp.accel_rf     = ph.accel_right_f;
-        sp.on_left      = pl.get_on_left() ? 1 : 0;
-        sp.shooting     = pl.shotting() ? 1 : 0;
-        sp.group        = pl.get_group();
-        sp.teleports    = pl.teleports();
-        sp.hits         = pl.recent_hit_ids();
-        if (auto& gun = pl.get_gun()) {
-            auto ws           = gun.get_sync_state();
-            sp.ammo           = ws.ammo;
-            sp.wpn_anim       = ws.anim;
-            sp.wpn_anim_time  = ws.anim_time;
-            sp.wpn_since_shot = ws.since_shot;
-            sp.wpn_flags      = u8((ws.on_reload ? 1 : 0) | (ws.on_shot ? 2 : 0));
-            sp.shot_index     = ws.shot_index;
-            sp.seed_base      = ws.seed_base;
+    /* Ids of the players on the wire (never reused) */
+    u16 player_id(const player_name_t& name) {
+        auto [it, inserted] = _player_ids.try_emplace(name, 0);
+        if (inserted)
+            it->second = ++_next_player_id;
+        return it->second;
+    }
+
+    static player_config make_player_config(u16 id, player& pl) {
+        return {id,
+                pl.name(),
+                pl.pistol_section(),
+                u16(player_configurator::texture_path_to_index(pl.face_texture_path())),
+                u16(player_configurator::texture_path_to_index(pl.body_texture_path())),
+                pack_color(pl.body_color()),
+                pack_color(pl.tracer_color()),
+                i16(pl.get_group())};
+    }
+
+    static state_player make_state_player(u16 id, player& pl) {
+        auto ph  = pl.get_physic_state();
+        /* The shown velocity (the vertical part is hidden on a platform), compared and restored by the client */
+        auto vel = pl.get_velocity();
+        u8   flags = 0;
+        if (ph.lock_y)
+            flags |= state_player::flag_lock_y;
+        if (pl.get_on_left())
+            flags |= state_player::flag_on_left;
+        if (pl.shotting())
+            flags |= state_player::flag_shooting;
+
+        return {id,
+                ph.pos.x,
+                ph.pos.y,
+                vel.x,
+                vel.y,
+                flags,
+                u8(ph.jumps_left),
+                pack_unit(ph.accel_left_f),
+                pack_unit(ph.accel_right_f),
+                pl.teleports(),
+                pl.recent_hit_ids()};
+    }
+
+    static std::optional<weapon_sync> make_weapon_sync(player& pl) {
+        auto& gun = pl.get_gun();
+        if (!gun)
+            return {};
+        auto ws = gun.get_sync_state();
+        return weapon_sync{u16(ws.ammo),
+                           ws.anim,
+                           ws.anim_time,
+                           ws.since_shot,
+                           u8((ws.on_reload ? weapon_sync::flag_reloading : 0) | (ws.on_shot ? weapon_sync::flag_trigger : 0)),
+                           u16(ws.shot_index),
+                           ws.seed_base};
+    }
+
+    /* Group the pending bullets by shot: the pellets of a shot share everything but the velocity */
+    void add_shots(state& st) {
+        for (auto& be : _pending_bullets) {
+            auto owner   = player_id(be.owner);
+            auto forward = shot_info::pack_forward(be.forward);
+            auto flags   = u8(be.gravity ? shot_info::flag_gravity : 0);
+
+            auto* last = st.shots.empty() ? nullptr : &st.shots.back();
+            bool  same = last && last->owner == owner && last->pull_seq == be.key.pull_seq &&
+                        last->shot_index == u16(be.key.shot_index) &&
+                        last->first_id + u32(last->pellets.size()) == be.id &&
+                        last->first_pellet + last->pellets.size() == be.key.pellet && last->start_x == be.start.x &&
+                        last->start_y == be.start.y && last->forward == forward && last->hit_mass == be.hit_mass &&
+                        last->flags == flags;
+            if (!same)
+                st.shots.push_back(shot_info{owner,
+                                             be.id,
+                                             be.key.pull_seq,
+                                             u16(be.key.shot_index),
+                                             u8(be.key.pellet),
+                                             be.start.x,
+                                             be.start.y,
+                                             forward,
+                                             be.hit_mass,
+                                             flags,
+                                             {}});
+            st.shots.back().pellets.push_back({be.muzzle_velocity.x, be.muzzle_velocity.y});
         }
-        return sp;
+        _pending_bullets.clear();
+    }
+
+    void broadcast(game_state& gs, clock::time_point now) {
+        net::state st;
+        st.tick           = ++_broadcast_seq;
+        /* Time of the simulated state (the last tick), not of the broadcast */
+        st.server_time_ms = u32(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    gs.sim.current_update_time() - _start_time)
+                                    .count());
+
+        /* Players and their configs (remembering when a config changed) */
+        std::map<u16, known_config> configs;
+        for (auto& [name, pl] : gs.players) {
+            auto id  = player_id(name);
+            auto cfg = make_player_config(id, *pl);
+            auto old = _configs.find(id);
+            configs[id] = old != _configs.end() && old->second.cfg == cfg ? old->second : known_config{cfg, now};
+            st.players.push_back(make_state_player(id, *pl));
+        }
+        _configs = std::move(configs);
+
+        /*
+         * Every bullet spawned since the last broadcast (network players, the
+         * host's local player and bots). The client disables local bullet
+         * spawning for every server-known player, so there are no duplicates
+         */
+        add_shots(st);
+
+        /*
+         * The set of all live bullet ids: clients drop their local bullets
+         * that no longer exist on the server (e.g. hit a player whose
+         * position diverged locally)
+         */
+        std::vector<u32> alive;
+        for (auto& b : gs.blt_mgr.bullets())
+            if (b.net_id() != 0)
+                alive.push_back(b.net_id());
+        st.alive_bullets = alive_set::from_ids(alive);
+
+        for (auto& c : gs.crates) {
+            auto pos = c->get_position();
+            auto vel = c->get_velocity();
+            st.crates.push_back(crate_info{c->id(), pos.x, pos.y, vel.x, vel.y, c->landed() ? u8(1) : u8(0)});
+        }
+
+        /* Dropped guns (server-authoritative physics) */
+        for (auto& g : gs.dropped_guns.guns()) {
+            auto pos = g->get_position();
+            auto vel = g->get_velocity();
+            st.guns.push_back(gun_info{g->id(),
+                                       g->section(),
+                                       pos.x,
+                                       pos.y,
+                                       vel.x,
+                                       vel.y,
+                                       g->angle(),
+                                       static_cast<u8>(g->on_left()),
+                                       static_cast<u8>(g->long_shot())});
+        }
+
+        bool refresh = st.tick % config_refresh == 0;
+        for (auto& [key, client] : _clients) {
+            if (!client.joined)
+                continue;
+
+            st.ack_seq             = client.ack_seq;
+            st.echo_client_time_ms = client.echo_client_time_ms;
+            st.echo_hold_ms        = u16(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      clock::now() - client.echo_recv_time).count());
+
+            auto own      = gs.players.find(client.player_name);
+            st.own_weapon = own != gs.players.end() ? make_weapon_sync(*own->second) : std::nullopt;
+
+            /* The configs the client may not know */
+            bool new_client = now - client.joined_time < config_resend;
+            st.configs.clear();
+            for (auto& [_, kc] : _configs)
+                if (refresh || new_client || now - kc.changed < config_resend)
+                    st.configs.push_back(kc.cfg);
+
+            _sock.send_to(client.address, client.port, encode_msg(msg_type::state, st));
+        }
     }
 
     /**
@@ -362,6 +451,7 @@ private:
         client.port        = port;
         client.player_name = h.name;
         client.joined      = true;
+        client.joined_time = clock::now();
         client.inputs.clear();
         client.next_seq      = 0;
         client.held_bits     = 0;
@@ -468,6 +558,19 @@ private:
     u32                          _broadcast_seq  = 0;
     clock::time_point            _start_time     = clock::now();
     std::map<std::string, client_t> _clients;
+
+    u64                                     _last_broadcast_tick = 0;
+    clock::time_point                       _last_broadcast_time;
+    std::vector<game_state::bullet_event_t> _pending_bullets;
+    u32                                     _last_pending_bullet_id = 0;
+
+    struct known_config {
+        player_config     cfg;
+        clock::time_point changed; // since when the config is like this
+    };
+    std::map<player_name_t, u16> _player_ids;
+    u16                          _next_player_id = 0;
+    std::map<u16, known_config>  _configs;
 };
 
 } // namespace dfdh::net

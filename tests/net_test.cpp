@@ -98,14 +98,16 @@ TEST_CASE("protocol: message round-trips") {
         st.ack_seq             = 77;
         st.echo_client_time_ms = 900;
         st.echo_hold_ms        = 16;
-        st.players.push_back(state_player{.name = "p1", .pos_x = 10.f, .pos_y = 20.f,
-                                          .vel_x = -3.f, .vel_y = 4.f, .jumps_left = 1, .lock_y = 1,
-                                          .accel_lf = 0.5f, .on_left = 1, .shooting = 1, .ammo = 5,
-                                          .wpn_anim = 2, .wpn_anim_time = 0.25f, .wpn_flags = 1, .shot_index = 3});
-        st.players.push_back(state_player{.name = "p2", .pistol = "wpn_m40", .face_id = 3});
-        st.bullets.push_back(bullet_info{.owner = "p1", .pos_x = 11.f, .pos_y = 21.f,
-                                         .vel_x = 900.f, .vel_y = -10.f, .hit_mass = 2.f,
-                                         .tracer_color = 0xFF00FF00});
+        st.own_weapon          = weapon_sync{.ammo = 5, .anim = 2, .anim_time = 0.25f, .since_shot = 1.5f,
+                                             .flags = weapon_sync::flag_reloading, .shot_index = 3, .seed_base = 99};
+        st.configs.push_back(player_config{.id = 2, .name = "p2", .pistol = "wpn_m40", .face_id = 3,
+                                           .tracer_color = 0xFF00FF00, .group = -1});
+        st.players.push_back(state_player{.id = 1, .pos_x = 10.f, .pos_y = 20.f, .vel_x = -3.f, .vel_y = 4.f,
+                                          .flags = state_player::flag_lock_y | state_player::flag_on_left |
+                                                   state_player::flag_shooting,
+                                          .jumps_left = 1, .accel_lf = pack_unit(0.5f), .teleports = 9,
+                                          .hits = {4, 5}});
+        st.players.push_back(state_player{.id = 2});
 
         auto data = encode_msg(msg_type::state, st);
         auto msg  = decode_msg({data.data(), data.size()});
@@ -117,54 +119,88 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(r.ack_seq == 77);
         CHECK(r.echo_client_time_ms == 900);
         CHECK(r.echo_hold_ms == 16);
+
+        REQUIRE(r.own_weapon);
+        CHECK(r.own_weapon->ammo == 5);
+        CHECK(r.own_weapon->anim == 2);
+        CHECK(r.own_weapon->anim_time == 0.25f);
+        CHECK(r.own_weapon->since_shot == 1.5f);
+        CHECK(r.own_weapon->flags == weapon_sync::flag_reloading);
+        CHECK(r.own_weapon->shot_index == 3);
+        CHECK(r.own_weapon->seed_base == 99);
+
+        REQUIRE(r.configs.size() == 1);
+        CHECK(r.configs[0] == st.configs[0]);
+
         REQUIRE(r.players.size() == 2);
-        CHECK(r.players[0].lock_y == 1);
-        CHECK(r.players[0].accel_lf == Catch::Approx(0.5f));
-        CHECK(r.players[0].accel_rf == Catch::Approx(1.f));
-        CHECK(std::string(r.players[0].name) == "p1");
-        CHECK(r.players[0].pos_x == Catch::Approx(10.f));
-        CHECK(r.players[0].pos_y == Catch::Approx(20.f));
-        CHECK(r.players[0].vel_x == Catch::Approx(-3.f));
-        CHECK(r.players[0].vel_y == Catch::Approx(4.f));
+        CHECK(r.players[0].id == 1);
+        CHECK(r.players[0].pos_x == 10.f); /* full precision: the client reconciles with it */
+        CHECK(r.players[0].pos_y == 20.f);
+        CHECK(r.players[0].vel_x == -3.f);
+        CHECK(r.players[0].vel_y == 4.f);
+        CHECK(r.players[0].flags == (state_player::flag_lock_y | state_player::flag_on_left | state_player::flag_shooting));
         CHECK(r.players[0].jumps_left == 1);
-        CHECK(r.players[0].on_left == 1);
-        CHECK(r.players[0].shooting == 1);
-        CHECK(r.players[0].ammo == 5);
-        CHECK(r.players[0].wpn_anim == 2);
-        CHECK(r.players[0].wpn_anim_time == Catch::Approx(0.25f));
-        CHECK(r.players[0].wpn_flags == 1);
-        CHECK(r.players[0].shot_index == 3);
-        CHECK(std::string(r.players[1].name) == "p2");
-        CHECK(r.players[1].pistol == "wpn_m40");
-        CHECK(r.players[1].face_id == 3);
-        REQUIRE(r.bullets.size() == 1);
-        CHECK(r.bullets[0].owner == "p1");
-        CHECK(r.bullets[0].pos_x == Catch::Approx(11.f));
-        CHECK(r.bullets[0].pos_y == Catch::Approx(21.f));
-        CHECK(r.bullets[0].vel_x == Catch::Approx(900.f));
-        CHECK(r.bullets[0].vel_y == Catch::Approx(-10.f));
-        CHECK(r.bullets[0].hit_mass == Catch::Approx(2.f));
-        CHECK(r.bullets[0].tracer_color == 0xFF00FF00);
+        CHECK(unpack_unit(r.players[0].accel_lf) == Catch::Approx(0.5f).margin(1e-4));
+        CHECK(unpack_unit(r.players[0].accel_rf) == 1.f);
+        CHECK(r.players[0].teleports == 9);
+        CHECK(r.players[0].hits == std::vector<u32>{4, 5});
+        CHECK(r.players[1].id == 2);
+        CHECK_FALSE(r.players[1].flags);
     }
 
-    SECTION("state with bullet ids") {
+    SECTION("state with shots and the alive bullets") {
         state st;
         st.tick = 5;
-        st.bullets.push_back(bullet_info{.owner = "p1", .id = 1, .start_x = -1.f, .start_y = 2.f,
-                                         .pos_x = 1.f, .pos_y = 2.f, .vel_x = 100.f, .vel_y = 0.f,
-                                         .hit_mass = 1.f, .tracer_color = 0x11223344});
-        st.alive_bullet_ids.push_back(1);
-        st.alive_bullet_ids.push_back(2);
+        st.shots.push_back(shot_info{.owner = 1, .first_id = 10, .pull_seq = 30, .shot_index = 2, .first_pellet = 0,
+                                     .start_x = -1.f, .start_y = 2.f, .forward = shot_info::pack_forward(0.125f),
+                                     .hit_mass = 1.5f, .flags = shot_info::flag_gravity,
+                                     .pellets = {{100.f, 0.f}, {90.f, 10.f}}});
+        st.alive_bullets = alive_set::from_ids(std::vector<u32>{11, 3, 20});
 
         auto data = encode_msg(msg_type::state, st);
         auto msg  = decode_msg({data.data(), data.size()});
         auto r    = read_msg<state>(msg.payload);
         CHECK(r.tick == 5);
-        REQUIRE(r.bullets.size() == 1);
-        CHECK(r.bullets[0].id == 1);
-        CHECK(r.bullets[0].start_x == Catch::Approx(-1.f));
-        REQUIRE(r.alive_bullet_ids.size() == 2);
-        CHECK(r.alive_bullet_ids[1] == 2);
+        REQUIRE(r.shots.size() == 1);
+        CHECK(r.shots[0].owner == 1);
+        CHECK(r.shots[0].first_id == 10);
+        CHECK(r.shots[0].pull_seq == 30);
+        CHECK(r.shots[0].shot_index == 2);
+        CHECK(r.shots[0].start_x == -1.f);
+        CHECK(r.shots[0].forward_s() == Catch::Approx(0.125f).margin(1e-4));
+        CHECK(r.shots[0].hit_mass == 1.5f);
+        CHECK(r.shots[0].flags == shot_info::flag_gravity);
+        REQUIRE(r.shots[0].pellets.size() == 2);
+        CHECK(r.shots[0].pellets[1].vel_x == 90.f);
+        CHECK(r.shots[0].pellets[1].vel_y == 10.f);
+
+        for (u32 id = 0; id < 30; ++id)
+            CHECK(r.alive_bullets.contains(id) == (id == 3 || id == 11 || id == 20));
+        CHECK_FALSE(alive_set{}.contains(0));
+    }
+
+    SECTION("a typical state fits in a few hundred bytes") {
+        /* 4 players, a 7 pellet shot, 30 bullets alive, 2 crates, 1 dropped gun (1131 bytes in protocol v6) */
+        state st;
+        st.own_weapon = weapon_sync{};
+        for (u16 id = 1; id <= 4; ++id)
+            st.players.push_back(state_player{.id = id, .hits = {101}});
+        st.shots.push_back(shot_info{.owner = 2, .first_id = 200, .pellets = std::vector<pellet_info>(7)});
+        st.crates.resize(2);
+        st.guns.push_back(gun_info{.section = "wpn_ak9"});
+        std::vector<u32> alive;
+        for (u32 id = 170; id < 200; ++id)
+            alive.push_back(id);
+        st.alive_bullets = alive_set::from_ids(alive);
+
+        auto size = encode_msg(msg_type::state, st).size();
+        UNSCOPED_INFO("state datagram: " << size << " bytes");
+        CHECK(size <= 360);
+
+        /* Configs ride along only when a client may not know them */
+        for (u16 id = 1; id <= 4; ++id)
+            st.configs.push_back(player_config{.id = id, .name = "client" + std::to_string(id), .pistol = "wpn_1887"});
+        CHECK(encode_msg(msg_type::state, st).size() <= 360 + 4 * 40);
     }
 
     SECTION("leave") {
@@ -672,7 +708,7 @@ TEST_CASE("net_server: handshake, rename and leave") {
         cli.recv(std::chrono::milliseconds(50));
         auto& pl = *gs.players.at("test1");
 
-        auto window = [](u32 last_seq, std::vector<u16> bits) {
+        auto window = [](u32 last_seq, std::vector<u8> bits) {
             return net::encode_msg(net::msg_type::input, net::input{.last_seq = last_seq, .bits = std::move(bits)});
         };
         auto S = net::in_bit_shot;
@@ -738,7 +774,7 @@ TEST_CASE("net_server: handshake, rename and leave") {
         pl.velocity({0.f, 0.f});
 
         /* 10 ticks queued at once, a jump edge in the oldest one */
-        std::vector<u16> bits(10, 0);
+        std::vector<u8> bits(10, 0);
         bits[0] = net::in_bit_jump;
         REQUIRE(cli.send(net::encode_msg(net::msg_type::input, net::input{.last_seq = 10, .bits = bits})));
         srv.update(gs);
@@ -813,6 +849,12 @@ TEST_CASE("net_client: join and state application") {
     net::player_input_state cli_input;
     cli.input_source([&] { return cli_input; });
 
+    /* The server broadcasts once per tick: without ticking (players would move), wait for the idle broadcast */
+    auto broadcast = [&] {
+        game_clock::advance(net::net_server::idle_broadcast);
+        srv.update(gs_srv);
+    };
+
     /* Sample the client input on a client tick, send it and apply it on a server tick */
     auto send_input = [&](const net::player_input_state& in) {
         cli_input = in;
@@ -845,7 +887,7 @@ TEST_CASE("net_client: join and state application") {
         /* Local prediction moved the local player — it must snap to the server state */
         local->position({999.f, 999.f});
 
-        srv.update(gs_srv); /* broadcast state */
+        broadcast(); /* broadcast state */
         cli.update(gs_cli);
 
         /* Remote player was created on the client with the server position */
@@ -885,7 +927,7 @@ TEST_CASE("net_client: join and state application") {
         REQUIRE(!gs_srv.cur_frame_bullets.empty());
         CHECK(std::string(gs_srv.cur_frame_bullets.front().owner) == "me");
 
-        srv.update(gs_srv); /* broadcast state with the bullet */
+        broadcast(); /* broadcast state with the bullet */
         cli.update(gs_cli);
 
         /* The client spawned the broadcast bullet in its own simulation */
@@ -920,7 +962,7 @@ TEST_CASE("net_client: join and state application") {
         REQUIRE(!gs_srv.cur_frame_bullets.empty());
         CHECK(std::string(gs_srv.cur_frame_bullets.front().owner) == "hostp");
 
-        srv.update(gs_srv); /* broadcast state with the bullet */
+        broadcast(); /* broadcast state with the bullet */
         cli.update(gs_cli);
 
         /*
@@ -947,7 +989,7 @@ TEST_CASE("net_client: join and state application") {
         }
         REQUIRE(!gs_srv.cur_frame_bullets.empty());
 
-        srv.update(gs_srv); /* broadcast the bullet with its id */
+        broadcast(); /* broadcast the bullet with its id */
         cli.update(gs_cli);
 
         /* The client spawned the bullet and tagged it with the server id */
@@ -968,7 +1010,7 @@ TEST_CASE("net_client: join and state application") {
          * cur_frame_bullets, then the net update broadcasts)
          */
         gs_srv.game_update();
-        srv.update(gs_srv);
+        broadcast();
         cli.update(gs_cli);
 
         CHECK(gs_cli.blt_mgr.bullets().empty());
@@ -2030,6 +2072,45 @@ TEST_CASE("net: remote knockback under sustained fire stays on the server's path
         UNSCOPED_INFO("max move against the hits " << max_back);
         CHECK(max_back < 5.f);
     }
+}
+
+TEST_CASE("net: traffic in a fight") {
+    using namespace std::chrono_literals;
+    hit_fixture f{20, 30};
+    f.frame_period = 4ms; /* more frames than ticks */
+    f.server_side().setup_pistol("wpn_1887");
+    f.run_for(1000ms);
+
+    auto& srv_ch    = f.srv.channel();
+    auto& cli_ch    = f.cli->channel();
+    auto  srv_sent  = srv_ch.datagrams_sent();
+    auto  srv_bytes = srv_ch.bytes_sent();
+    auto  cli_sent  = cli_ch.datagrams_sent();
+    auto  cli_bytes = cli_ch.bytes_sent();
+    auto  ticks     = f.gs_srv.sim.tick();
+
+    /* Both shoot (the shotgun: several pellets per shot) */
+    REQUIRE(f.bot->shot());
+    f.input = {.shot = true};
+    f.run_for(2000ms);
+    f.bot->relax();
+    f.input = {};
+
+    ticks          = f.gs_srv.sim.tick() - ticks;
+    auto states    = srv_ch.datagrams_sent() - srv_sent;
+    auto inputs    = cli_ch.datagrams_sent() - cli_sent;
+    auto state_avg = double(srv_ch.bytes_sent() - srv_bytes) / double(states);
+    auto input_avg = double(cli_ch.bytes_sent() - cli_bytes) / double(inputs);
+    UNSCOPED_INFO(states << " states, " << state_avg << " bytes avg; " << inputs << " inputs, " << input_avg
+                         << " bytes avg; " << ticks << " ticks");
+
+    /* One state per tick (one client), not per frame */
+    CHECK(states <= ticks);
+    CHECK(states >= ticks * 9 / 10);
+    CHECK(state_avg < 200.0);
+    /* Inputs carry the unacknowledged ticks only (~100 ms ping: a handful) */
+    CHECK(inputs <= ticks);
+    CHECK(input_avg < 40.0);
 }
 
 TEST_CASE("net: predicted hits the server did not register fade out") {

@@ -44,12 +44,23 @@ inline bool counter_newer(u16 a, u16 b) {
 }
 
 inline player::physic_state to_physic_state(const state_player& sp) {
-    return {{sp.pos_x, sp.pos_y}, {sp.vel_x, sp.vel_y}, sp.lock_y != 0, sp.jumps_left, sp.accel_lf, sp.accel_rf};
+    return {{sp.pos_x, sp.pos_y},
+            {sp.vel_x, sp.vel_y},
+            (sp.flags & state_player::flag_lock_y) != 0,
+            sp.jumps_left,
+            unpack_unit(sp.accel_lf),
+            unpack_unit(sp.accel_rf)};
 }
 
-inline weapon_instance::sync_state to_weapon_state(const state_player& sp) {
-    return {sp.ammo,       sp.wpn_anim,    sp.wpn_anim_time, sp.wpn_since_shot, (sp.wpn_flags & 1) != 0,
-            (sp.wpn_flags & 2) != 0, sp.shot_index, sp.seed_base};
+inline weapon_instance::sync_state to_weapon_state(const weapon_sync& ws) {
+    return {ws.ammo,
+            ws.anim,
+            ws.anim_time,
+            ws.since_shot,
+            (ws.flags & weapon_sync::flag_reloading) != 0,
+            (ws.flags & weapon_sync::flag_trigger) != 0,
+            ws.shot_index,
+            ws.seed_base};
 }
 
 /**
@@ -427,18 +438,23 @@ private:
      * hits are decided by the server). Bullets already dead on the server
      * (consumed by the server hit-scan) are not spawned
      */
-    void spawn_server_bullet(game_state& gs, const bullet_info& b, bool alive, float lag) {
-        auto found_owner = gs.players.find(player_name_t(b.owner));
-        auto start       = vec2f{b.start_x, b.start_y};
-        auto vel         = vec2f{b.vel_x, b.vel_y};
-        auto [pos, fwd_vel] = gs.ballistic_forward({b.pos_x, b.pos_y}, vel, b.gravity, lag);
+    void spawn_server_bullet(game_state& gs, const shot_info& shot, size_t pellet, bool alive, float lag) {
+        auto owner_cfg = _configs.find(shot.owner);
+        auto owner     = owner_cfg != _configs.end() ? gs.players.find(owner_cfg->second.name) : gs.players.end();
+        auto id        = shot.first_id + u32(pellet);
+        auto key       = shot_key_t{shot.pull_seq, shot.shot_index, u32(shot.first_pellet + pellet)};
+        auto gravity   = (shot.flags & shot_info::flag_gravity) != 0;
+        auto start     = vec2f{shot.start_x, shot.start_y};
+        auto vel       = vec2f{shot.pellets[pellet].vel_x, shot.pellets[pellet].vel_y};
+        auto [pos, fwd_vel] = gs.ballistic_forward(start, vel, gravity, shot.forward_s() + lag);
 
-        if (_joined && player_name_t(b.owner) == _name && confirm_predicted_bullet(gs, b, alive))
+        if (_joined && owner_cfg != _configs.end() && owner_cfg->second.name == _name &&
+            confirm_predicted_bullet(gs, key, id, start, vel, gravity, alive))
             return;
 
-        if (found_owner != gs.players.end()) {
-            if (auto hit = gs.hitscan(start, pos, 0.f, *found_owner->second)) {
-                hit->target->on_bullet_hit(vel * b.hit_mass, hit->position, bullet_ref{b.id, {}});
+        if (owner != gs.players.end()) {
+            if (auto hit = gs.hitscan(start, pos, 0.f, *owner->second)) {
+                hit->target->on_bullet_hit(vel * shot.hit_mass, hit->position, bullet_ref{id, {}});
                 return;
             }
         }
@@ -447,12 +463,12 @@ private:
             return;
 
         /* Like on the server: never hits its owner nor the owner's group */
-        auto& blt = found_owner != gs.players.end()
-                        ? gs.blt_mgr.shot(gs.sim, pos, b.hit_mass, fwd_vel, unpack_color(b.tracer_color), b.gravity,
-                                          found_owner->second->get_group(), player::player_group_getter,
-                                          player::owner_checker(found_owner->second.get()))
-                        : gs.blt_mgr.shot(gs.sim, pos, b.hit_mass, fwd_vel, unpack_color(b.tracer_color), b.gravity);
-        blt.net_id(b.id);
+        auto& blt = owner != gs.players.end()
+                        ? gs.blt_mgr.shot(gs.sim, pos, shot.hit_mass, fwd_vel, owner->second->tracer_color(), gravity,
+                                          owner->second->get_group(), player::player_group_getter,
+                                          player::owner_checker(owner->second.get()))
+                        : gs.blt_mgr.shot(gs.sim, pos, shot.hit_mass, fwd_vel, sf::Color::White, gravity);
+        blt.net_id(id);
     }
 
     struct predicted_bullet_t {
@@ -475,8 +491,8 @@ private:
      * than the server's lag estimate), or disappears if the bullet is already
      * dead on the server. Returns false if nothing was predicted for the key
      */
-    bool confirm_predicted_bullet(game_state& gs, const bullet_info& b, bool alive) {
-        auto key   = shot_key_t{b.pull_seq, b.shot_index, b.pellet};
+    bool confirm_predicted_bullet(game_state& gs, const shot_key_t& key, u32 id, const vec2f& start, const vec2f& vel,
+                                  bool gravity, bool alive) {
         auto found = std::ranges::find_if(_predicted, [&](const predicted_bullet_t& p) { return p.key == key; });
         if (found == _predicted.end())
             return false;
@@ -485,16 +501,16 @@ private:
             if (alive) {
                 /* Simulated flight time of the prediction (its travelled distance over its speed) */
                 auto elapsed    = ph->get_distance() / std::max(ph->scalar_velocity(), 1.f);
-                auto [pos, vel] = gs.ballistic_forward({b.start_x, b.start_y}, {b.vel_x, b.vel_y}, b.gravity, elapsed);
+                auto [pos, fwd_vel]    = gs.ballistic_forward(start, vel, gravity, elapsed);
                 auto correction        = magnitude(pos - ph->get_position());
                 _max_bullet_correction = std::max(_max_bullet_correction, correction);
                 if (correction > 1.f)
                     glog().detail("net client: predicted bullet corrected by {} px", correction);
                 ph->position(pos);
-                ph->velocity(vel);
+                ph->velocity(fwd_vel);
                 for (auto& blt : gs.blt_mgr.bullets())
                     if (blt.physic() == ph)
-                        blt.net_id(b.id);
+                        blt.net_id(id);
             }
             else
                 ph->delete_later(); /* it hit something on the server */
@@ -504,7 +520,7 @@ private:
         for (auto& [_, kb] : _knockbacks)
             kb.for_each_hit([&](auto& hit) {
                 if (hit.ref.key && *hit.ref.key == key)
-                    hit.ref.id = b.id;
+                    hit.ref.id = id;
             });
 
         _predicted.erase(found);
@@ -667,7 +683,9 @@ private:
         msg.client_time_ms = time_ms();
         msg.rtt_ms         = u16(std::min(_rtt_s * 1000.f, 65535.f));
         msg.interp_ms      = u16(std::min(_clock.interp_delay() * 1000.0, 65535.0));
-        msg.bits.assign(_sent_inputs.begin(), _sent_inputs.end());
+        /* The ticks the server did not acknowledge yet */
+        auto count = std::clamp<size_t>(_input_seq - std::min(_last_ack, _input_seq), 1, _sent_inputs.size());
+        msg.bits.assign(_sent_inputs.end() - std::ptrdiff_t(count), _sent_inputs.end());
         _sock.send(encode_msg(msg_type::input, msg));
         _last_sent_seq = _input_seq;
     }
@@ -732,23 +750,32 @@ private:
         if (newest)
             _last_state_tick = st.tick;
 
+        /*
+         * Player configs: only the newest state changes a known one (an older
+         * one could bring back a stale config); unknown ones from any state
+         */
+        for (auto& cfg : st.configs) {
+            auto known = _configs.find(cfg.id);
+            if (known != _configs.end() && (known->second == cfg || !newest))
+                continue;
+            _configs[cfg.id] = cfg;
+            apply_player_config(gs, cfg);
+        }
+
         for (auto& sp : st.players) {
-            auto is_local = _joined && sp.name == _name;
+            /* Not known yet: its config arrives within config_resend after the join */
+            auto cfg = _configs.find(sp.id);
+            if (cfg == _configs.end())
+                continue;
+            auto& name     = cfg->second.name;
+            auto  is_local = _joined && name == _name;
 
-            auto found = gs.players.find(sp.name);
-            if (found == gs.players.end()) {
-                auto pl = gs.player_create(sp.name);
-                if (!pl)
-                    continue;
-                apply_player_config(*pl, sp);
-            }
-            else if (newest) {
-                apply_player_config_if_changed(*found->second, sp);
-            }
-
-            auto pl = gs.players.at(sp.name).get();
-            if (newest)
-                pl->group(sp.group);
+            if (!gs.players.contains(name))
+                apply_player_config(gs, cfg->second);
+            auto found = gs.players.find(name);
+            if (found == gs.players.end())
+                continue;
+            auto pl = found->second.get();
 
             /*
              * Every server-known player is authoritative: bullets for it come
@@ -759,16 +786,22 @@ private:
 
             if (is_local)
                 reconcile(gs, *pl, to_physic_state(sp), st.ack_seq, sp.hits, sp.teleports,
-                          sp.pistol == pl->pistol_section() ? std::optional{to_weapon_state(sp)} : std::nullopt);
+                          st.own_weapon && cfg->second.pistol == pl->pistol_section()
+                              ? std::optional{to_weapon_state(*st.own_weapon)}
+                              : std::nullopt);
             else
-                _remote[sp.name].push(double(st.server_time_ms) / 1000.0,
-                                      remote_player_snapshot{to_physic_state(sp), sp.on_left != 0, sp.shooting != 0,
-                                                             sp.hits, sp.teleports});
+                _remote[name].push(double(st.server_time_ms) / 1000.0,
+                                   remote_player_snapshot{to_physic_state(sp),
+                                                          (sp.flags & state_player::flag_on_left) != 0,
+                                                          (sp.flags & state_player::flag_shooting) != 0,
+                                                          sp.hits,
+                                                          sp.teleports});
         }
 
         auto age = std::min(state_age(st), game_state::max_lag_compensation);
-        for (auto& b : st.bullets)
-            spawn_server_bullet(gs, b, std::ranges::find(st.alive_bullet_ids, b.id) != st.alive_bullet_ids.end(), age);
+        for (auto& shot : st.shots)
+            for (size_t i = 0; i < shot.pellets.size(); ++i)
+                spawn_server_bullet(gs, shot, i, st.alive_bullets.contains(shot.first_id + u32(i)), age);
 
         if (!newest)
             return;
@@ -778,7 +811,7 @@ private:
          * something on the server but may have missed locally because the
          * local simulation diverged slightly
          */
-        gs.blt_mgr.remove_not_in(st.alive_bullet_ids);
+        gs.blt_mgr.remove_not_in([&](u32 id) { return st.alive_bullets.contains(id); });
 
         /* Sync server crates: create ghost crates for new ids, drive their
          * position/velocity, remove crates picked up (or gone) on the server */
@@ -838,27 +871,29 @@ private:
         }
     }
 
-    static void apply_player_config(player& pl, const state_player& sp) {
-        pl.set_body("player/body" + std::to_string(sp.body_id) + ".png", unpack_color(sp.body_color));
-        pl.set_face("player/face" + std::to_string(sp.face_id) + ".png");
-        /* An empty pistol section means the server-side player has no gun
-         * (e.g. dropped it), so clear it locally as well */
-        if (sp.pistol.empty())
-            pl.clear_pistol();
-        else
-            pl.setup_pistol(sp.pistol);
-        pl.tracer_color(unpack_color(sp.tracer_color));
-    }
-
-    void apply_player_config_if_changed(player& pl, const state_player& sp) {
-        if (pl.pistol_section() == sp.pistol &&
-            pl.face_texture_path() == ("player/face" + std::to_string(sp.face_id) + ".png") &&
-            pl.body_texture_path() == ("player/body" + std::to_string(sp.body_id) + ".png") &&
-            pl.body_color() == unpack_color(sp.body_color) &&
-            pl.tracer_color() == unpack_color(sp.tracer_color))
+    /* Create the player of a config or update it (only what differs: a new pistol resets the weapon) */
+    static void apply_player_config(game_state& gs, const player_config& cfg) {
+        auto found = gs.players.find(cfg.name);
+        auto pl    = found != gs.players.end() ? found->second.get() : gs.player_create(cfg.name);
+        if (!pl)
             return;
 
-        apply_player_config(pl, sp);
+        auto face = "player/face" + std::to_string(cfg.face_id) + ".png";
+        auto body = "player/body" + std::to_string(cfg.body_id) + ".png";
+        if (pl->body_texture_path() != body || pl->body_color() != unpack_color(cfg.body_color))
+            pl->set_body(body, unpack_color(cfg.body_color));
+        if (pl->face_texture_path() != face)
+            pl->set_face(face);
+        /* An empty pistol section means the server-side player has no gun
+         * (e.g. dropped it), so clear it locally as well */
+        if (pl->pistol_section() != cfg.pistol) {
+            if (cfg.pistol.empty())
+                pl->clear_pistol();
+            else
+                pl->setup_pistol(cfg.pistol);
+        }
+        pl->tracer_color(unpack_color(cfg.tracer_color));
+        pl->group(cfg.group);
     }
 
     udp_channel     _sock;
@@ -871,7 +906,7 @@ private:
     game_state*       _gs = nullptr;
     clock::time_point _start_time = clock::now();
     input_source_t    _input_source;
-    std::deque<u16>   _sent_inputs;       // the last input::max_window input ticks
+    std::deque<u8>    _sent_inputs;       // the last input::max_window input ticks
     u32               _input_seq     = 0; // seq of the newest input tick
     u32               _last_sent_seq = 0;
     float             _rtt_s         = 0.f;
@@ -881,6 +916,7 @@ private:
 
     history_t    _history;
     u32          _last_ack        = 0;
+    std::map<u16, player_config> _configs; // the players' configs by id
     u32          _last_state_tick = 0;
     u64          _corrections     = 0;
     float        _max_correction  = 0.f;

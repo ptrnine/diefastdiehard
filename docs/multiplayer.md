@@ -51,29 +51,37 @@ local controller's player, and for the client's predicted player.
 ## Protocol
 
 Every datagram has a header `u16 type, u16 payload_size`, then an
-`ss::serializer` payload (little endian, max message 1024 bytes).
+`ss::serializer` payload: little endian, with **u16** string and vector
+length prefixes (`net::wire_size_type`; the serializer default is u64).
 **Bump `net::protocol_version`** on any wire change: a HELLO with another
-version is answered with ERROR. The current version is 6.
+version is answered with ERROR. The current version is 7.
 
 | id | dir | payload |
 |----|-----|---------|
 | 1 HELLO | C → S | `u16 version`, name, pistol section, face_id, body_id, body color, tracer color |
 | 2 WELCOME | S → C | player name |
-| 3 INPUT | C → S | `u32 last_seq`, `u32 client_time_ms`, `u16 rtt_ms`, `u16 interp_ms`, `vector<u16> bits`: the last up to 32 input ticks, where `bits[i]` belongs to tick `last_seq - size + 1 + i` |
-| 4 STATE | S → C | see below; encoded per client, sent every server frame |
+| 3 INPUT | C → S | `u32 last_seq`, `u32 client_time_ms`, `u16 rtt_ms`, `u16 interp_ms`, `vector<u8> bits`: the input ticks not acknowledged yet (up to 32), where `bits[i]` belongs to tick `last_seq - size + 1 + i` |
+| 4 STATE | S → C | see below; encoded per client, sent once per server tick (every 100 ms while paused) |
 | 5 LEAVE | C → S | player name |
 | 6 ERROR | S → C | message (duplicate name, version mismatch, ...) |
 
 STATE contains:
 - **Header:** `tick` (broadcast sequence number), `server_time_ms` (time of the simulated tick), `ack_seq` (the last input tick applied to this client's player), and `echo_client_time_ms` + `echo_hold_ms` (RTT echo of the newest input).
+- **`own_weapon`:** the client's own player's weapon logic state (`weapon_sync`: ammo, logic animation id and time, time since the last shot, reloading/trigger flags, shot index and seed), if it holds a gun. Only the recipient's player is reconciled, so other players' weapons are not sent.
+- **`player_config`, only the ones the client may not know:**
+  - fields: player id, name, pistol, face/body ids, body color, tracer, group;
+  - players are referenced by their `u16` id everywhere else; ids are assigned by the server and never reused;
+  - a config is sent to a client during 1 s after it joined, during 1 s after the config changed, and every 30th broadcast, so lost datagrams cost nothing;
+  - the client keeps them by id: a known config is changed only by the newest STATE, and a player whose config is unknown yet is skipped.
 - **`state_player`, per player:**
-  - appearance: name, pistol, face/body ids and colors, tracer
-  - physic state: pos, raw velocity, jumps_left, lock_y, accel factors
-  - on_left, shooting (trigger held), group, teleport counter
-  - `hits`: ids of the bullets that hit the player in the last second
-  - weapon logic state: ammo, logic animation id and time, time since the last shot, reloading/trigger flags, shot index and seed
-- **`bullet_info`, per bullet spawned this frame:** owner, id, shot key (`pull_seq`, `shot_index`, `pellet`), muzzle start, spawn pos, velocity, hit_mass, tracer, gravity.
-- **Other world state:** crates (id, pos, vel, landed); dropped guns (id, section, pos, vel, angle, on_left, long_shot); the ids of all bullets alive on the server.
+  - id;
+  - physic state: pos and **shown** velocity as full floats (the client reconciles with them; the vertical part a grounded player's `get_velocity()` hides is not sent, it differs between the server and the prediction), flags (lock_y, on_left, shooting), jumps_left, accel factors (u16 fixed point);
+  - teleport counter;
+  - `hits`: ids of the bullets that hit the player in the last second.
+- **`shot_info`, per shot spawned since the last broadcast:** owner id, first bullet id, shot key (`pull_seq`, `shot_index`, first pellet), muzzle start, forward time (u16, 1/32768 s), hit_mass, gravity flag, and the muzzle velocity of each pellet. Pellet `i` has the id `first_id + i` and the pellet number `first_pellet + i`; pellets of one shot share everything but the velocity. The server keeps spawned bullets in a pending list until the next broadcast.
+- **Other world state:** crates (id, pos, vel, landed); dropped guns (id, section, pos, vel, angle, on_left, long_shot); `alive_set`: the ids of all bullets alive on the server, as a bitmap from the smallest one.
+
+Typical sizes: the example in `tests/net_test.cpp` (4 players, a 7 pellet shot, 30 live bullets, 2 crates, 1 dropped gun) is 352 bytes (1131 in version 6). In a loopback fight with two players and a shotgun, a state averages ~150 bytes and an input ~28 bytes (`udp_channel::bytes_sent`). Keep a STATE well below the ~1470 byte MTU.
 
 Input bits are held states, except edges (`in_edge_bits`), which are set only on the tick of the press:
 
@@ -114,9 +122,10 @@ the client: the old player is deleted.
 ## Input
 
 - **Client:** samples the input once per tick, applies it to the local
-  player and stores it in `input_history`. Every frame, it sends the window
-  of the last 32 ticks. A lost or reordered datagram costs nothing, because
-  each newer one repeats the recent history.
+  player and stores it in `input_history`. After each new tick, it sends the
+  ticks the server has not acknowledged yet (after the newest `ack_seq`, up
+  to 32). A lost or reordered datagram costs nothing, because each newer one
+  repeats every unacknowledged tick.
 - **Server** (`net_server::apply_inputs`, tick begin): queues ticks by seq
   and drops ticks it already applied, so a late or duplicated datagram never
   brings back an old input. Each server tick:
@@ -193,7 +202,7 @@ tick N: X px`, `weapon correction ...`).
 - **Applied every frame** (`apply_remote_snapshots`): sampled snapshot +
   predicted knockback offset → `restore_physic_state`, `place_legs`,
   `on_left`, and `shot` / `relax` for the visual weapon. Only the newest
-  STATE updates player configs, groups, crates, dropped guns and the alive
+  STATE changes known player configs, crates, dropped guns and the alive
   bullet set.
 - **Jump smoothing:** a jump of the shown position goes into the render
   offset. That covers a confirmed prediction handing over, or the server's
@@ -249,14 +258,16 @@ tick N: X px`, `weapon correction ...`).
   correction.
 
 **Server bullets on clients** (`spawn_server_bullet`):
-- A received bullet is forwarded once more by its state's age:
-  `rtt_min/2` plus this datagram's excess delay over the fastest recent
-  state. It thus appears at `start + vel·(shooter lag + own lag)`, i.e. in
-  present time.
+- A received bullet is forwarded from the muzzle by the server's forward
+  time plus its state's age: `rtt_min/2` plus this datagram's excess delay
+  over the fastest recent state. It thus appears at
+  `start + vel·(shooter lag + own lag)`, i.e. in present time, through the
+  same `game_state::ballistic_forward` the server used. Its tracer color is
+  the owner's (from the config).
 - The skipped segment is hit-scanned against the client's view, for hit
   feedback only.
 - Bullets the server already consumed are not spawned, and bullets missing
-  from `alive_bullet_ids` are removed.
+  from the alive set are removed.
 
 **Own bullet prediction** (client's predicted player):
 - The bullets spawn at once, without an id. Shots are deterministic:
@@ -335,8 +346,9 @@ across a teleport.
 
 ## Other synced state
 
-- **Appearance and gun:** sent in HELLO and in every `state_player`. The
-  newest state re-applies them on change. An empty pistol means no gun.
+- **Appearance, gun and group:** sent in HELLO, then as `player_config`
+  (see Protocol). A changed config is applied part by part (a new pistol
+  resets the weapon). An empty pistol means no gun.
   Guns are dropped on the server only: a client sends the DROP edge, and
   the dropped gun arrives in STATE.
 - **Crates and dropped guns:** server-authoritative physics. Clients keep
