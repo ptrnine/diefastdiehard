@@ -100,4 +100,4 @@ Notes:
   zero in dynamic mode.
 * Smoke test: `xvfb-run -a ./easybuild-debug/dfdh` (singleplayer) and
   `--server --port 10450` / `--client 127.0.0.1:10450 --name smoketest`
-  (see multiplayer.md).
+  (see docs/multiplayer.md).
