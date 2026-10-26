@@ -4,6 +4,7 @@
 #include <chrono>
 #include <deque>
 #include <functional>
+#include <random>
 #include <set>
 #include <string>
 
@@ -127,14 +128,39 @@ public:
         glog().info("net client: DFDH_DEBUG_PING is enabled, delaying every sent and received datagram by 80..170ms (~500ms ping between two such ends)");
 #endif
 
+        send_hello(pistol, face_id, body_id, body_color, tracer_color);
+    }
+
+    /* Join, or change the player's appearance and gun after the join */
+    void send_hello(const std::string& pistol,
+                    u32                face_id,
+                    u32                body_id,
+                    const sf::Color&   body_color,
+                    const sf::Color&   tracer_color) {
         hello h;
-        h.name         = name;
+        h.name         = _name;
         h.pistol       = pistol;
         h.face_id      = face_id;
         h.body_id      = body_id;
         h.body_color   = pack_color(body_color);
         h.tracer_color = pack_color(tracer_color);
         _sock.send(encode_msg(msg_type::hello, h));
+    }
+
+    /* The local player config changed (player configurator): send it to the server */
+    void resend_config(const player_configurator& pc) {
+        send_hello(pc.pistol, pc.face_id, pc.body_id, pc.body_color, pc.tracer_color);
+    }
+
+    /* The local player's lobby choice: sent right away, then resent until the lobby closes */
+    void lobby_request(i16 group, bool ready) {
+        _lobby_req = net::lobby_request{_lobby_session, _lobby_req.seq + 1, group, u8(ready ? 1 : 0)};
+        _lobby_req_sent.reset();
+    }
+
+    [[nodiscard]]
+    const net::lobby_request& last_lobby_request() const {
+        return _lobby_req;
     }
 
     net_client(const net_client&) = delete;
@@ -255,6 +281,7 @@ public:
         expire_predicted_bullets(gs);
         apply_remote_snapshots(gs);
         send_input_window();
+        send_lobby_request(gs);
     }
 
     /** Largest distance between a predicted own bullet and its confirmed trajectory so far, px */
@@ -1205,6 +1232,48 @@ private:
             *_tick_time_offset += (sample - *_tick_time_offset) * 0.1;
     }
 
+    /* Lobby requests are resent this often while the lobby is active (lost datagrams cost nothing) */
+    static constexpr auto lobby_resend = std::chrono::milliseconds(100);
+
+    void send_lobby_request(game_state& gs) {
+        if (!_joined || !gs.lobby.active || _lobby_req.seq == 0)
+            return;
+        auto now = clock::now();
+        if (_lobby_req_sent && now - *_lobby_req_sent < lobby_resend)
+            return;
+        _lobby_req_sent = now;
+        _sock.send(encode_msg(msg_type::lobby, _lobby_req));
+    }
+
+    /* The server's lobby phase: the game starts, or everyone is back in the lobby */
+    void apply_lobby(game_state& gs, const lobby_info& lobby) {
+        gs.lobby_networked = true;
+        bool active        = lobby.active != 0;
+        auto was_active    = gs.lobby.active;
+
+        if (active && !was_active) {
+            gs.lobby_open();
+            /* Not ready in the new lobby */
+            auto group = _lobby_req.seq ? _lobby_req.group : i16(-1);
+            if (auto own = gs.players.find(_name); own != gs.players.end())
+                group = i16(own->second->get_group());
+            lobby_request(group, false);
+        }
+
+        gs.lobby.level = lobby.level;
+        gs.lobby.mode  = lobby.mode;
+
+        if (!active) {
+            gs.lobby.active = false;
+            gs.lobby.ready.clear();
+            if (!lobby.level.empty() && (!gs.cur_level || gs.cur_level->section_name() != lobby.level))
+                gs.level_current(lobby.level);
+            /* The game starts when the client leaves its lobby (a client without one runs the game itself) */
+            if (was_active)
+                gs.game_run(true);
+        }
+    }
+
     void handle_welcome(const net_msg& msg) {
         welcome w;
         if (!try_read_msg(msg.payload, w))
@@ -1249,6 +1318,9 @@ private:
                 gs.game_mode_set(gm);
         }
 
+        if (newest && st.lobby)
+            apply_lobby(gs, *st.lobby);
+
         /*
          * Player configs: only the newest state changes a known one (an older
          * one could bring back a stale config); unknown ones from any state
@@ -1282,8 +1354,11 @@ private:
              * also covers locally simulated bots that exist on both sides)
              */
             pl->set_server_driven(true);
-            if (newest)
+            if (newest) {
                 pl->score(sp.score);
+                if (gs.lobby.active)
+                    gs.lobby.ready[name] = (sp.flags & state_player::flag_ready) != 0;
+            }
 
             /* A mispredicted switch to the secondary gun (the server kept the gun): take the server's gun back */
             if (is_local && newest && pl->pistol_section() != cfg->second.pistol && !pl->throwing() &&
@@ -1527,6 +1602,10 @@ private:
     std::set<u32>           _own_bullet_ids; // confirmed own bullets
     float                   _own_lag_s    = 0.f; // the server's lag compensation of the local player's shots
     float                   _own_rewind_s = 0.f;
+
+    u32                              _lobby_session = std::random_device{}();
+    net::lobby_request               _lobby_req; // seq 0: nothing to request
+    std::optional<clock::time_point> _lobby_req_sent;
 };
 
 } // namespace dfdh::net

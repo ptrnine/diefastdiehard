@@ -167,6 +167,13 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(r.mode->magazines_count == 3);
         CHECK(r.mode->score_system == u8(game_mode::score_system_t::lives));
         CHECK(r.mode->start_lives == 5);
+        CHECK_FALSE(r.lobby);
+
+        st.lobby = lobby_info{1, "lvl_aes2", "gm_lives"};
+        data     = encode_msg(msg_type::state, st);
+        r        = read_msg<state>(decode_msg({data.data(), data.size()}).payload);
+        REQUIRE(r.lobby);
+        CHECK(*r.lobby == lobby_info{1, "lvl_aes2", "gm_lives"});
 
         st.mode.reset();
         data = encode_msg(msg_type::state, st);
@@ -221,7 +228,7 @@ TEST_CASE("protocol: message round-trips") {
 
         auto size = encode_msg(msg_type::state, st).size();
         UNSCOPED_INFO("state datagram: " << size << " bytes");
-        CHECK(size <= 374);
+        CHECK(size <= 375); /* (+1: the absent lobby_info) */
 
         /* Configs ride along only when a client may not know them */
         for (u16 id = 1; id <= 4; ++id)
@@ -3050,4 +3057,137 @@ TEST_CASE("net: lives and the elimination are synced") {
     CHECK_FALSE(f.local().eliminated());
     CHECK(f.local().score() == 0);
     CHECK(f.local().get_position().x != game_state::eliminated_park_pos.x);
+}
+
+TEST_CASE("protocol: lobby request and the ready flag") {
+    using namespace net;
+    auto data = encode_msg(msg_type::lobby, lobby_request{42, 7, 3, 1});
+    auto msg  = decode_msg({data.data(), data.size()});
+    CHECK(msg.type == msg_type::lobby);
+    auto r = read_msg<lobby_request>(msg.payload);
+    CHECK(r.session == 42);
+    CHECK(r.seq == 7);
+    CHECK(r.group == 3);
+    CHECK(r.ready == 1);
+
+    state st;
+    st.players.push_back(state_player{.id = 1, .flags = state_player::flag_ready});
+    data    = encode_msg(msg_type::state, st);
+    auto rs = read_msg<state>(decode_msg({data.data(), data.size()}).payload);
+    CHECK((rs.players.at(0).flags & state_player::flag_ready) != 0);
+}
+
+TEST_CASE("game_state: lobby") {
+    game_state gs;
+    REQUIRE(gs.level_current("lvl_aes"));
+    auto a = gs.player_create("a");
+    REQUIRE(a);
+    gs.game_run(true);
+
+    gs.lobby_open();
+    CHECK(gs.lobby.active);
+    CHECK(gs.lobby.level == "lvl_aes"); /* the current ones by default */
+    CHECK(gs.lobby.mode == "gm_default");
+
+    /* Nothing is simulated in the lobby */
+    auto tick = gs.sim.tick();
+    for (int i = 0; i < 10; ++i) {
+        game_clock::advance(std::chrono::milliseconds(20));
+        gs.game_update();
+    }
+    CHECK(gs.sim.tick() == tick);
+
+    a->add_score(5);
+    a->teleport({-5000.f, -5000.f});
+    gs.lobby.level = "lvl_aes2";
+    gs.lobby.mode  = "gm_lives";
+    gs.lobby_player_group("a", 2);
+    CHECK(a->get_group() == 2);
+
+    REQUIRE(gs.lobby_start());
+    CHECK_FALSE(gs.lobby.active);
+    CHECK(gs.on_game);
+    CHECK(gs.cur_level->section_name() == "lvl_aes2");
+    CHECK(gs.cur_game_mode.section == "gm_lives");
+    CHECK(a->score() == gs.cur_game_mode.start_lives);
+    CHECK(a->get_position().x != -5000.f); /* spawned */
+
+    SECTION("a restart of the same game mode resets the scores too") {
+        a->add_score(-1);
+        gs.lobby_open();
+        REQUIRE(gs.lobby_start());
+        CHECK(a->score() == gs.cur_game_mode.start_lives);
+    }
+
+    SECTION("no level: no start") {
+        gs.lobby_open();
+        gs.lobby.level = "lvl_no_such_level";
+        CHECK_FALSE(gs.lobby_start());
+        CHECK(gs.lobby.active);
+    }
+}
+
+TEST_CASE("net: lobby") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{20, 30};
+
+    f.gs_srv.lobby_open();
+    f.gs_srv.lobby.level = "lvl_aes2";
+    f.gs_srv.lobby.mode  = "gm_lives";
+    f.run_for(500ms);
+    REQUIRE(f.gs_cli.lobby.active);
+    CHECK(f.gs_cli.lobby_networked);
+    CHECK(f.gs_cli.lobby.level == "lvl_aes2");
+    CHECK(f.gs_cli.lobby.mode == "gm_lives");
+    CHECK(f.gs_cli.cur_level->section_name() == "lvl_aes"); /* not loaded before the start */
+    CHECK_FALSE(f.gs_srv.lobby.is_ready("me"));
+
+    /* The client's own group and ready flag */
+    f.cli->lobby_request(3, true);
+    f.run_for(500ms);
+    CHECK(f.server_side().get_group() == 3);
+    CHECK(f.gs_srv.lobby.is_ready("me"));
+    CHECK(f.gs_cli.lobby.is_ready("me"));
+    CHECK(f.local().get_group() == 3);
+
+    /* The owner changes it: the client's resends do not bring the old one back */
+    f.gs_srv.lobby_player_group("me", 5);
+    f.run_for(1000ms);
+    CHECK(f.server_side().get_group() == 5);
+    CHECK(f.local().get_group() == 5);
+
+    /*
+     * A restarted client (a new session) starts its seqs over (sent every
+     * frame: the running client's resends switch the session back)
+     */
+    bool restarted = false;
+    f.run_for(300ms, [&] {
+        f.cli->channel().send(net::encode_msg(
+            net::msg_type::lobby, net::lobby_request{f.cli->last_lobby_request().session + 1, 1, 4, 1}));
+        restarted = restarted || f.server_side().get_group() == 4;
+    });
+    CHECK(restarted);
+    f.gs_srv.lobby_player_group("me", 5);
+
+    /* Start: the client loads the level and plays */
+    REQUIRE(f.gs_srv.lobby_start());
+    f.run_for(1500ms);
+    CHECK_FALSE(f.gs_cli.lobby.active);
+    CHECK(f.gs_cli.on_game);
+    CHECK(f.gs_cli.cur_level->section_name() == "lvl_aes2");
+    CHECK(f.gs_cli.cur_game_mode.section == "gm_lives");
+    CHECK(f.local().score() == f.gs_cli.cur_game_mode.start_lives);
+
+    /* The requests are ignored in the game */
+    f.cli->lobby_request(1, true);
+    f.run_for(300ms);
+    CHECK(f.server_side().get_group() == 5);
+
+    /* Back to the lobby: nobody is ready */
+    f.gs_srv.lobby_open();
+    f.run_for(500ms);
+    CHECK(f.gs_cli.lobby.active);
+    CHECK_FALSE(f.gs_srv.lobby.is_ready("me"));
+    CHECK_FALSE(f.cli->last_lobby_request().ready);
+    CHECK(f.server_side().get_group() == 5);
 }

@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 15;
+inline constexpr u16 protocol_version = 16;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -37,6 +37,7 @@ enum class msg_type : u16 {
     state   = 4,
     leave   = 5,
     error   = 6,
+    lobby   = 7,
 };
 
 /* Input bits */
@@ -206,6 +207,7 @@ struct state_player {
     static constexpr u8 flag_on_left  = 1 << 1;
     static constexpr u8 flag_shooting = 1 << 2; // trigger held
     static constexpr u8 flag_throwing = 1 << 3; // throwing the gun away (player::throwing)
+    static constexpr u8 flag_ready    = 1 << 4; // ready in the lobby (lobby_state::ready)
 
     u16 id = 0;
 
@@ -423,6 +425,47 @@ struct game_mode_info {
     }
 };
 
+/**
+ * The lobby (see dfdh::lobby_state). While active: the server owner's
+ * choices, in game: the played level and game mode
+ */
+struct lobby_info {
+    u8          active = 0;
+    std::string level;
+    std::string mode;
+
+    bool operator==(const lobby_info&) const = default;
+
+    void serialize(auto& s) const {
+        s.write(active, level, mode);
+    }
+
+    void deserialize(auto& d) {
+        d.read(active, level, mode);
+    }
+};
+
+/**
+ * Client lobby request: its group and ready flag. Resent until the lobby
+ * closes; the server applies a seq once, so a resend never overrides a
+ * group the server owner changed in between. The seqs restart with a new
+ * session (a restarted client)
+ */
+struct lobby_request {
+    u32 session = 0; // random per client
+    u32 seq     = 0;
+    i16 group   = -1;
+    u8  ready   = 0;
+
+    void serialize(auto& s) const {
+        s.write(session, seq, group, ready);
+    }
+
+    void deserialize(auto& d) {
+        d.read(session, seq, group, ready);
+    }
+};
+
 struct state {
     u32 tick           = 0; // broadcast sequence number
     u32 server_time_ms = 0; // server clock at the simulation tick of this state
@@ -435,6 +478,7 @@ struct state {
     u16 own_lag    = 0; // the client's lag compensation: its shots are forwarded by lag (shot_info::forward units)
     u16 own_rewind = 0; // ... and hit the players rewind ago (same units)
     std::optional<game_mode_info> mode;    // only when the client may not know it (see net_server)
+    std::optional<lobby_info>     lobby;   // same policy as mode
 
     std::vector<player_config> configs; // only those the client may not know (see net_server)
     std::vector<state_player>  players;
@@ -450,12 +494,12 @@ struct state {
 
     void serialize(auto& s) const {
         s.write(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, own_lag, own_rewind, mode,
-                configs, players, shots, crates, guns, alive_bullets);
+                lobby, configs, players, shots, crates, guns, alive_bullets);
     }
 
     void deserialize(auto& d) {
         d.read(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, own_lag, own_rewind, mode,
-               configs, players, shots, crates, guns, alive_bullets);
+               lobby, configs, players, shots, crates, guns, alive_bullets);
     }
 };
 

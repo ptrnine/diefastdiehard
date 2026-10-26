@@ -85,6 +85,9 @@ public:
         float             rtt_s    = 0.f;
         float             interp_s = 0.f;
 
+        u32 lobby_session = 0; // lobby_request::session
+        u32 lobby_seq     = 0; // last applied lobby_request of the session
+
         [[nodiscard]]
         static std::string key(const sf::IpAddress& addr) {
             return addr.toString();
@@ -187,7 +190,7 @@ private:
                 i16(pl.get_group())};
     }
 
-    static state_player make_state_player(u16 id, player& pl) {
+    static state_player make_state_player(u16 id, player& pl, bool ready) {
         /*
          * The raw velocity: on a platform its vertical part is hidden from the
          * physics but still drives the weapon bobbing, and the client's
@@ -204,6 +207,8 @@ private:
             flags |= state_player::flag_shooting;
         if (pl.throwing())
             flags |= state_player::flag_throwing;
+        if (ready)
+            flags |= state_player::flag_ready;
 
         return {id,
                 ph.pos.x,
@@ -283,13 +288,20 @@ private:
             auto cfg = make_player_config(id, *pl);
             auto old = _configs.find(id);
             configs[id] = old != _configs.end() && old->second.cfg == cfg ? old->second : known_config{cfg, now};
-            st.players.push_back(make_state_player(id, *pl));
+            st.players.push_back(make_state_player(id, *pl, !pl->net_controlled() || gs.lobby.is_ready(name)));
         }
         _configs = std::move(configs);
 
         /* The game mode (remembering when it changed) */
         if (_game_mode.mode != gs.cur_game_mode)
             _game_mode = known_game_mode{gs.cur_game_mode, now};
+
+        /* The lobby: the choices, or what is played (remembering when it changed) */
+        lobby_info lobby{u8(gs.lobby.active ? 1 : 0),
+                         gs.lobby.active || !gs.cur_level ? gs.lobby.level : gs.cur_level->section_name(),
+                         gs.lobby.active ? gs.lobby.mode : gs.cur_game_mode.section};
+        if (_lobby.info != lobby)
+            _lobby = known_lobby{lobby, now};
 
         /*
          * Every bullet spawned since the last broadcast (network players, the
@@ -360,6 +372,11 @@ private:
             st.mode.reset();
             if (refresh || new_client || now - _game_mode.changed < config_resend)
                 st.mode = to_game_mode_info(_game_mode.mode);
+
+            /* The lobby, the same way */
+            st.lobby.reset();
+            if (refresh || new_client || now - _lobby.changed < config_resend)
+                st.lobby = _lobby.info;
 
             _sock.send_to(client.address, client.port, encode_msg(msg_type::state, st));
         }
@@ -448,6 +465,7 @@ private:
         case msg_type::hello: handle_hello(gs, datagram.address, datagram.port, msg); break;
         case msg_type::input: handle_input(datagram.address, msg); break;
         case msg_type::leave: handle_leave(gs, datagram.address); break;
+        case msg_type::lobby: handle_lobby(gs, datagram.address, msg); break;
         default: break;
         }
     }
@@ -520,6 +538,7 @@ private:
 
         if (renamed && !old_name.empty()) {
             auto old = gs.players.find(old_name);
+            gs.lobby.ready.erase(old_name);
             if (old != gs.players.end()) {
                 gs.players.erase(old);
                 glog().info("net server: player {} deleted (renamed to {})", old_name, h.name);
@@ -568,10 +587,32 @@ private:
         }
     }
 
+    void handle_lobby(game_state& gs, const sf::IpAddress& addr, const net_msg& msg) {
+        auto client = find_client(addr);
+        if (!client || !client->joined || !gs.lobby.active)
+            return;
+
+        lobby_request req;
+        if (!try_read_msg(msg.payload, req))
+            return;
+        if (req.session != client->lobby_session) {
+            client->lobby_session = req.session;
+            client->lobby_seq     = 0;
+        }
+        if (req.seq <= client->lobby_seq)
+            return;
+        client->lobby_seq = req.seq;
+
+        gs.lobby_player_group(client->player_name, std::clamp(int(req.group), -1, lobby_state::max_group));
+        gs.lobby.ready[client->player_name] = req.ready != 0;
+    }
+
     void handle_leave(game_state& gs, const sf::IpAddress& addr) {
         auto client = find_client(addr);
         if (!client)
             return;
+
+        gs.lobby.ready.erase(client->player_name);
 
         if (gs.players.contains(client->player_name)) {
             gs.players.erase(gs.players.find(client->player_name));
@@ -625,6 +666,12 @@ private:
         clock::time_point changed; // since when the game mode is like this
     };
     known_game_mode _game_mode;
+
+    struct known_lobby {
+        lobby_info        info;
+        clock::time_point changed;
+    };
+    known_lobby _lobby;
 };
 
 } // namespace dfdh::net

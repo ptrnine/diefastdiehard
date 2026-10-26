@@ -15,6 +15,7 @@
 #include "ai.hpp"
 #include "crate.hpp"
 #include "game_mode.hpp"
+#include "lobby.hpp"
 #include "dropped_gun.hpp"
 
 namespace dfdh {
@@ -287,6 +288,59 @@ public:
         players_elimination_update();
     }
 
+    /* Lobby */
+
+    /* The lobby phase: the game stops until lobby_start (the current level and game mode are the default choice) */
+    void lobby_open() {
+        lobby.active = true;
+        lobby.ready.clear();
+        lobby_default_choice();
+        glog().info("lobby opened");
+    }
+
+    /* No choice yet: the current level and game mode (e.g. the level is loaded by the script after the lobby opened) */
+    void lobby_default_choice() {
+        if (lobby_networked)
+            return;
+        if (lobby.level.empty() && cur_level)
+            lobby.level = cur_level->section_name();
+        if (lobby.mode.empty())
+            lobby.mode = cur_game_mode.section;
+    }
+
+    /* Load the chosen level, apply the chosen game mode and spawn everyone with the start score */
+    bool lobby_start() {
+        bool same_level = cur_level && cur_level->section_name() == lobby.level;
+        if (lobby.level.empty() || !level_current(lobby.level)) {
+            glog().error("lobby: can't start: no level");
+            return false;
+        }
+        /* The same level: restart its state anyway */
+        if (same_level)
+            level_setup(lobby.level);
+
+        if (!lobby.mode.empty())
+            game_mode_apply(lobby.mode);
+        players_score_reset();
+
+        dropped_guns.guns().clear();
+        for (auto& b : blt_mgr.bullets())
+            b.physic()->delete_later();
+
+        player_spawn();
+
+        lobby.active = false;
+        lobby.ready.clear();
+        game_run(true);
+        glog().info("lobby: game started on {} ({})", lobby.level, cur_game_mode.section);
+        return true;
+    }
+
+    void lobby_player_group(const player_name_t& name, int group) {
+        if (auto found = players.find(name); found != players.end())
+            found->second->group(group);
+    }
+
     bool level_cache(const std::string& level_name) {
         try {
             auto [_, was_insert] = levels.emplace(level_name, level::create(level_name));
@@ -529,7 +583,7 @@ public:
     }
 
     void ui_update(ui_ctx& ui, const vec2f& window_size) {
-        if (on_game) {
+        if (on_game && !lobby.active) {
             ammo_hud_draw(ui, window_size);
             score_hud_draw(ui, window_size);
         }
@@ -960,7 +1014,11 @@ public:
         for (auto& section_name : cfg::mutable_global().replace_changed_sections())
             reload_section(section_name);
 
-        if (on_game) {
+        if (lobby.active)
+            lobby_default_choice();
+
+        /* Nothing is simulated in the lobby */
+        if (on_game && !lobby.active) {
             if (cur_level)
                 dropped_guns.set_level_size(cur_level->level_size());
 
@@ -1264,6 +1322,8 @@ public:
     /* true on the multiplayer client: crates are driven by the server state */
     bool crates_networked    = false;
     bool game_mode_networked = false; /* network client: the server sets the game mode */
+    bool lobby_networked     = false; /* network client: the server drives the lobby */
+    lobby_state lobby;
     /* References the global dfdh::bullet_gravity_enabled flag */
     bool& gravity_for_bullets;
     bool lua_cmd_enabled     = true;

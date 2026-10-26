@@ -7,6 +7,7 @@
 #include <SFML/Graphics/Sprite.hpp>
 #include <SFML/Graphics/RenderTexture.hpp>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -210,6 +211,8 @@ public:
         else {
             pconf.write();
             wnd_show = false;
+            if (on_close)
+                on_close();
         }
         ui.end();
 
@@ -225,6 +228,14 @@ public:
     void toggle() {
         show(!wnd_show);
     }
+
+    [[nodiscard]]
+    bool shown() const {
+        return wnd_show;
+    }
+
+    /* Called when the window is closed (the config is written) */
+    std::function<void()> on_close;
 
 private:
     player_configurator pconf;

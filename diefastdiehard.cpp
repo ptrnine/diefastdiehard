@@ -2,6 +2,7 @@
 
 #include "base/serialization.hpp"
 #include "ui/player_configurator_ui.hpp"
+#include "ui/lobby_ui.hpp"
 
 #include "engine.hpp"
 #include "command_buffer.hpp"
@@ -137,6 +138,9 @@ public:
     void ui_update() final {
         engine::ui_update();
         gs.ui_update(ui, window_size_float());
+        /* The player configurator is drawn instead of the lobby while it is open */
+        if (lobby_wnd && gs.lobby.active && !(gs.pconf_ui && gs.pconf_ui->shown()))
+            lobby_wnd->update(ui, gs, window_size_float());
         //mainmenu().update(ui);
     }
 
@@ -274,6 +278,57 @@ private:
     std::shared_ptr<net::net_client>        net_cli;
     std::shared_ptr<net_player_controller>  net_ctrl;
     player_name_t                            my_player_name;
+    std::optional<lobby_ui>                  lobby_wnd;
+
+    /* Open the player configurator of a local player, on_close: the config was written */
+    void customize_player(const player_name_t& name, std::function<void()> on_close) {
+        gs.pconf_ui           = std::make_unique<player_configurator_ui>(name);
+        gs.pconf_ui->on_close = std::move(on_close);
+        gs.pconf_ui->show(true);
+    }
+
+    void init_server_lobby() {
+        lobby_ui::actions_t act;
+        act.set_level = [this](const std::string& level) { gs.lobby.level = level; };
+        act.set_mode  = [this](const std::string& mode) { gs.lobby.mode = mode; };
+        act.set_group = [this](const player_name_t& name, int group) { gs.lobby_player_group(name, group); };
+        act.customize = [this](const player_name_t& name) {
+            customize_player(name, [this, name] { gs.player_conf_reload(name); });
+        };
+        act.start         = [this] { gs.lobby_start(); };
+        act.local_players = [this] {
+            std::vector<player_name_t> res;
+            for (auto& [name, _] : gs.controlled_players)
+                res.push_back(name);
+            return res;
+        };
+        lobby_wnd.emplace(lobby_ui::role_t::owner, std::move(act));
+        gs.lobby_open();
+    }
+
+    void init_client_lobby() {
+        lobby_ui::actions_t act;
+        act.set_group = [this](const player_name_t&, int group) {
+            net_cli->lobby_request(i16(group), net_cli->last_lobby_request().ready != 0);
+        };
+        act.set_ready = [this](bool ready) {
+            auto own   = gs.players.find(my_player_name);
+            auto group = own != gs.players.end() ? own->second->get_group() : -1;
+            net_cli->lobby_request(i16(group), ready);
+        };
+        act.own_ready = [this] { return net_cli->last_lobby_request().ready != 0; };
+        act.customize = [this](const player_name_t& name) {
+            customize_player(name, [this, name] {
+                player_configurator pc{name};
+                pc.write_on_delete = false;
+                net_cli->resend_config(pc);
+            });
+        };
+        act.local_players = [this] { return std::vector<player_name_t>{my_player_name}; };
+        lobby_wnd.emplace(lobby_ui::role_t::client, std::move(act));
+        gs.lobby_networked = true;
+        gs.lobby_open();
+    }
 
     void init_server(args_view& args) {
         u16 port = 10443;
@@ -286,6 +341,8 @@ private:
             glog().error("multiplayer: can't start the server on port {}", port);
         else
             glog().info("multiplayer: server started on port {}", port);
+
+        init_server_lobby();
     }
 
     void init_client(args_view& args) {
@@ -345,13 +402,14 @@ private:
             net_ctrl = std::make_shared<net_player_controller>(1000);
             net_ctrl->player_name = pname;
             net_cli->input_source([ctrl = net_ctrl] { return ctrl->take_input_state(); });
-            /* No local spawn: the server spawns the player, the first state places it */
-            gs.game_run(true);
+            /* No local spawn: the server spawns the player, the first state places it. The server's lobby starts the game */
             glog().info("multiplayer: controlling player {}", pname);
 
             /* Crates are server-authoritative: no local spawn, physics or pickup */
             gs.crates_networked = true;
         });
+
+        init_client_lobby();
 
         net_cli->sig_error.attach_function("mp_error", [](const std::string& msg) {
             glog().error("multiplayer: join failed: {}", msg);

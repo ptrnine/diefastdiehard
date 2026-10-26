@@ -20,6 +20,30 @@ recreates on every level load. The keyboard instead feeds a
 (`net_client::input_source`). The client does not spawn its player
 locally: the first server state places it.
 
+## Lobby
+
+Both sides open the lobby on launch (`game_state::lobby_open`, state in
+`src/lobby.hpp`, window in `src/ui/lobby_ui.hpp`). Nothing is simulated
+while `lobby_state::active`.
+
+- **Server owner:** chooses the map and the game mode (default: the
+  current ones), every player's group, and presses Start
+  (`game_state::lobby_start`: loads the level, applies the game mode,
+  resets the scores, spawns everyone). The console `lobby` command sends
+  everyone back to the lobby, and `lobby start` starts the game.
+- **Client:** sees the choices and the ready flags. It chooses its own group
+  and ready flag (LOBBY request), and "customize" opens the player
+  configurator. Closing the configurator resends HELLO, which reconfigures
+  the joined player.
+- **Requests:** the client resends its latest LOBBY request every 100 ms
+  while the lobby is active. The server applies each `seq` once, so a resend
+  never overrides a group the owner changed in between. It ignores requests
+  outside of the lobby.
+- **Phases:** the client follows the lobby phase from STATE (`lobby_info`):
+  - it starts the game when it leaves its lobby, loading the level first;
+  - in game, it loads the server's level whenever that differs;
+  - back in the lobby, it resets its ready flag.
+
 ## Code map
 
 | file | contents |
@@ -54,7 +78,7 @@ Every datagram has a header `u16 type, u16 payload_size`, then an
 `ss::serializer` payload: little endian, with **u16** string and vector
 length prefixes (`net::wire_size_type`; the serializer default is u64).
 **Bump `net::protocol_version`** on any wire change: a HELLO with another
-version is answered with ERROR. The current version is 14.
+version is answered with ERROR. The current version is 16.
 
 | id | dir | payload |
 |----|-----|---------|
@@ -64,12 +88,14 @@ version is answered with ERROR. The current version is 14.
 | 4 STATE | S → C | see below; encoded per client, sent once per server tick (every 100 ms while paused) |
 | 5 LEAVE | C → S | player name |
 | 6 ERROR | S → C | message (duplicate name, version mismatch, ...) |
+| 7 LOBBY | C → S | `u32 session`, `u32 seq`, `i16 group`, `u8 ready`: the client's lobby choice (see Lobby; seqs restart with a new random session) |
 
 STATE contains:
 - **Header:** `tick` (broadcast sequence number), `server_time_ms` (time of the simulated tick), `ack_seq` (the last input tick applied to this client's player), and `echo_client_time_ms` + `echo_hold_ms` (RTT echo of the newest input).
 - **`own_lag`, `own_rewind`:** the lag compensation of the client's shots (u16, 1/32768 s, see Input), for its hit prediction.
 - **`own_weapon`:** the client's own player's weapon logic state (`weapon_sync`: ammo, logic animation id and time, time since the last shot, reloading/trigger flags, shot index and seed), if it holds a gun. Only the recipient's player is reconciled, so other players' weapons are not sent.
 - **`mode`, the game mode, only when the client may not know it:** section name, bullet gravity, crate drop period (see `src/game_mode.hpp`). It is sent with the same policy as the player configs (1 s after the join or a change, every 30th broadcast); the client applies the newest one with `game_state::game_mode_set` and sets `game_mode_networked`, so its console cannot change the game mode.
+- **`lobby`, only when the client may not know it (the same policy as `mode`):** `u8 active`, level and game mode sections. While active, these are the owner's choices; in game, what is played.
 - **`player_config`, only the ones the client may not know:**
   - fields: player id, name, pistol, face/body ids, body color, tracer, group;
   - players are referenced by their `u16` id everywhere else; ids are assigned by the server and never reused;
@@ -77,7 +103,7 @@ STATE contains:
   - the client keeps them by id: a known config is changed only by the newest STATE, and a player whose config is unknown yet is skipped.
 - **`state_player`, per player:**
   - id;
-  - physic state: pos and **raw** velocity as full floats (the client reconciles with them), flags (lock_y, on_left, shooting), jumps_left, accel factors (u16 fixed point);
+  - physic state: pos and **raw** velocity as full floats (the client reconciles with them), flags (lock_y, on_left, shooting, throwing, ready in the lobby), jumps_left, accel factors (u16 fixed point);
   - `throwing`: the player throws its gun away (`player::drop_gun` plays a 0.25-0.45 s wind-up and throw, the server drops the gun at its end). Clients show the throw of remote players from this flag and the local one from the predicted drop input; the server's drop (the secondary gun in the player config, or an empty pistol: no gun) replaces the gun at the release of the shown throw (`player::setup_pistol_on_release`). The local player's thrown gun is predicted: it spawns at the local release with local physics and takes over the id of the first new server gun owned by the local player (`net_client::confirm_predicted_gun`). From then on every STATE corrects it to the server's gun forwarded by the difference of their flight times (`age`) along the ballistic path, smoothed by a decaying render offset; a prediction the server never confirms disappears after max(1 s, 2 RTT + 0.5 s);
   - gun hits: the predicted gun collides with the other players where they are shown and its hits are predicted like own bullet hits (knockback offset, confirmed by `hits`). A gun hit id is the gun id tagged with `dropped_gun::hit_ref_tag` (never a bullet id; an unconfirmed prediction has its own tag and is re-keyed when the server's gun takes it over). The server tests the gun of a network thrower against the players rewound by lag + rewind (its gun is released lag after the thrower's, which saw the others rewind in the past) and applies the hit with `apply_hit_at` at the tick end, so both agree. A server state from before the prediction's last bounce does not correct it (it can't be forwarded past the bounce);
   - teleport counter;

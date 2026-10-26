@@ -26,6 +26,7 @@ public:
         command_buffer().add_handler("game", &game_commands::cmd_game, this);
         command_buffer().add_handler("game speed", &game_commands::cmd_game_speed, this);
         command_buffer().add_handler("game mode", &game_commands::cmd_game_mode, this);
+        command_buffer().add_handler("lobby", &game_commands::cmd_lobby, this);
         command_buffer().add_handler("level", &game_commands::cmd_level, this);
         command_buffer().add_handler("spawn", &game_commands::cmd_spawn, this);
         command_buffer().add_handler("ai", &game_commands::cmd_ai, this);
@@ -95,6 +96,12 @@ public:
                    "  level current                 - prints section name of the current level\n"
                    "  level current [level_section] - setup current level\n"
                    "  level current none            - reset current level";
+        }
+        else if (cmd == "lobby") {
+            help = "multiplayer lobby\n"
+                   "available commands:\n"
+                   "  lobby       - stop the game and open the lobby (server)\n"
+                   "  lobby start - start the game with the lobby's map and game mode";
         }
         else if (cmd == "game") {
             help = "game settings\n"
@@ -493,6 +500,23 @@ public:
         else {
             gs.game_mode_apply(*value);
         }
+    }
+
+    void cmd_lobby(const std::optional<std::string>& value) {
+        if (value && *value == "help") {
+            cmd_help("lobby");
+            return;
+        }
+        if (gs.lobby_networked) {
+            glog().error("lobby: the lobby is driven by the server");
+            return;
+        }
+        if (!value)
+            gs.lobby_open();
+        else if (*value == "start")
+            gs.lobby_start();
+        else
+            glog().error("lobby: unknown subcommand '{}'", *value);
     }
 
     void cmd_game(const std::optional<std::string>& value) {
