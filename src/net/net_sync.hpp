@@ -375,18 +375,24 @@ public:
     /* Total offset, limited: a hit the server may not register never takes the player far */
     [[nodiscard]]
     vec2f offset() const {
-        vec2f o = {0.f, 0.f};
-        for (auto& ep : _episodes)
-            o += ep.offset() + ep.velocity() * _accumulated; /* in between the fixed steps */
+        auto o   = raw_offset();
         auto len = magnitude(o);
         return len > max_offset ? o * (max_offset / len) : o;
     }
 
+    /* Rate of change of offset(): at the limit, it does not grow any further */
     [[nodiscard]]
     vec2f velocity() const {
         vec2f v = {0.f, 0.f};
         for (auto& ep : _episodes)
             v += ep.velocity();
+
+        auto o   = raw_offset();
+        auto len = magnitude(o);
+        if (len > max_offset) {
+            auto n = o / len;
+            v -= n * std::max(v.x * n.x + v.y * n.y, 0.f);
+        }
         return v;
     }
 
@@ -412,6 +418,14 @@ public:
     }
 
 private:
+    [[nodiscard]]
+    vec2f raw_offset() const {
+        vec2f o = {0.f, 0.f};
+        for (auto& ep : _episodes)
+            o += ep.offset() + ep.velocity() * _accumulated; /* in between the fixed steps */
+        return o;
+    }
+
     std::vector<episode_t> _episodes;
     float                  _accumulated = 0.f;
 };

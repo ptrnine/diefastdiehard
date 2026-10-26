@@ -239,7 +239,7 @@ public:
     }
 
 private:
-    using clock = std::chrono::steady_clock;
+    using clock = game_clock;
 
     /*
      * Per predicted tick, besides the input: predicted bullet hits (before the
@@ -620,11 +620,27 @@ private:
 
             /*
              * A jump of the shown position (a confirmed prediction handing over,
-             * the server's rewritten history of a retroactive hit) is smoothed
+             * the server's rewritten history of a retroactive hit) is smoothed.
+             * Measured against the previous frame's position moved on by the
+             * frame's velocity, not against the locally simulated one (frames
+             * shorter than a tick would see the local tick's movement as a
+             * jump). The velocity may have changed at any time in the frame
+             * (a hit, a landing): that much is motion, not a jump
              */
             constexpr float max_continuous_step = 8.f;
-            if (continuous && magnitude(shown.pos - ph.pos) > max_continuous_step)
-                pl.add_render_offset(shown.pos - ph.pos);
+            auto&           prev                = _remote_applied[name];
+            if (continuous && prev) {
+                auto shown_vel = [](const player::physic_state& st) {
+                    return st.lock_y ? vec2f{st.vel.x, 0.f} : st.vel;
+                };
+                auto v0        = shown_vel(*prev);
+                auto v1        = shown_vel(ph);
+                auto expected  = prev->pos + (v0 + v1) * (0.5f * dt);
+                auto tolerance = max_continuous_step + 0.5f * magnitude(v1 - v0) * dt;
+                if (magnitude(expected - ph.pos) > tolerance)
+                    pl.add_render_offset(expected - ph.pos);
+            }
+            prev = ph;
 
             pl.restore_physic_state(ph);
             pl.place_legs();
@@ -875,6 +891,7 @@ private:
     std::shared_ptr<player>                                          _ghost;
     std::map<player_name_t, knockback_t>                             _knockbacks;
     std::map<player_name_t, std::optional<u16>>                      _remote_teleports;
+    std::map<player_name_t, std::optional<player::physic_state>>     _remote_applied; // the last state shown
     std::optional<u16>                                               _local_teleports;
     double                                                           _last_remote_apply_s = 0.0;
     std::deque<predicted_bullet_t>                                   _predicted;
