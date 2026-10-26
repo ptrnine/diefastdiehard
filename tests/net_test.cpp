@@ -1227,6 +1227,42 @@ TEST_CASE("net: remote players are interpolated smoothly") {
     CHECK(remote.get_position().x < bot->get_position().x);
 }
 
+TEST_CASE("net: weapon recoil is predicted") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{80, 170};
+
+    f.server_side().setup_pistol("wpn_ss50"); /* strongest recoil */
+    f.server_side().teleport({1300.f, 1040.f}); /* middle of the floor platform */
+    f.run_for(3000ms);
+    REQUIRE(f.local().pistol_section() == "wpn_ss50");
+    REQUIRE(f.local().collision_box()->is_lock_y());
+
+    using clock = std::chrono::steady_clock;
+    std::optional<clock::time_point> srv_recoil, cli_recoil;
+
+    f.cli->reset_correction_stats();
+    f.input = {.shot = true};
+    f.run_for(2500ms, [&] {
+        if (!srv_recoil && std::abs(f.server_side().get_velocity().x) > 100.f)
+            srv_recoil = clock::now();
+        if (!cli_recoil && std::abs(f.local().get_velocity().x) > 100.f)
+            cli_recoil = clock::now();
+    });
+    f.input = {};
+
+    /* The recoil moves the local player right away, not a round trip later */
+    REQUIRE(srv_recoil);
+    REQUIRE(cli_recoil);
+    CHECK(*cli_recoil < *srv_recoil);
+
+    /* ...exactly like on the server: no corrections while shooting */
+    UNSCOPED_INFO("corrections: " << f.cli->corrections() << ", max " << f.cli->max_correction() << " px");
+    CHECK(f.cli->max_correction() < 2.f);
+
+    f.run_for(1500ms);
+    CHECK(f.local().get_position().x == Catch::Approx(f.server_side().get_position().x).margin(1.f));
+}
+
 TEST_CASE("net: server-only knockback is reconciled on the client") {
     using namespace std::chrono_literals;
     net_game_fixture f{80, 170};

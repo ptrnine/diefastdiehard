@@ -560,8 +560,20 @@ public:
             return {};
         }
 
-        if (_on_shot && _ammo_elapsed &&
-            _shot_timer.elapsed(sim.last_speed()) > 60.f / _wpn->_fire_rate) {
+        /*
+         * Fire rate in simulation time, updated once per tick. A network player's
+         * weapon counts its applied input ticks instead (the server can tick
+         * without a new input while waiting for one), so the shots land on the
+         * same input ticks on the server and in the client's prediction
+         */
+        if (_input_tick) {
+            auto ticks       = _counted_input_tick ? *_input_tick - *_counted_input_tick : 1u;
+            _counted_input_tick = _input_tick;
+            _since_shot += sim.last_timestep() * float(ticks);
+        }
+        else
+            _since_shot += sim.last_timestep();
+        if (_on_shot && _ammo_elapsed && _since_shot > 60.f / _wpn->_fire_rate) {
             shot(position,
                  cam_position,
                  direction,
@@ -576,7 +588,7 @@ public:
                  std::move(player_group_getter),
                  rand_pool);
             _on_reload = false;
-            _shot_timer.restart();
+            _since_shot = 0.f;
             return _wpn->_recoil;
         }
 
@@ -620,6 +632,11 @@ public:
     [[nodiscard]]
     const std::optional<u32>& seed_base() const {
         return _seed_base;
+    }
+
+    /* Network input tick currently applied to the owner (its fire rate counts input ticks) */
+    void input_tick(u32 seq) {
+        _input_tick = seq;
     }
 
     /* Index of the shot being fired (inside the bullet spawn callback) or of the next one */
@@ -958,7 +975,10 @@ private:
 
     bool  _on_shot   = false;
     bool  _on_reload = false;
-    timer _shot_timer;
+    float _since_shot = std::numeric_limits<float>::max(); /* simulation seconds since the last shot */
+
+    std::optional<u32> _input_tick;
+    std::optional<u32> _counted_input_tick;
 
     std::optional<u32> _seed_base;
     u32                _shot_index = 0;

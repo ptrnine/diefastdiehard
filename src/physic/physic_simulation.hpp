@@ -318,24 +318,29 @@ public:
         return _platforms_callbacks.erase(name) > 0;
     }
 
-    /* Called at the beginning of every simulation tick, before any movement */
+    /*
+     * Called at the beginning of every simulation tick, before any movement.
+     * Callbacks run by ascending order, then by name
+     */
     template <typename F>
-    void add_tick_begin_callback(const std::string& name, F&& callback) {
-        _tick_begin_callbacks[name] = std::function{callback};
+    void add_tick_begin_callback(const std::string& name, F&& callback, int order = 0) {
+        remove_tick_begin_callback(name);
+        _tick_begin_callbacks[{order, name}] = std::function{callback};
     }
 
     bool remove_tick_begin_callback(const std::string& name) {
-        return _tick_begin_callbacks.erase(name) > 0;
+        return std::erase_if(_tick_begin_callbacks, [&](const auto& c) { return c.first.second == name; }) > 0;
     }
 
-    /* Called at the end of every simulation tick (tick() is already incremented) */
+    /* Called at the end of every simulation tick (tick() is already incremented), ordered like the begin ones */
     template <typename F>
-    void add_tick_end_callback(const std::string& name, F&& callback) {
-        _tick_end_callbacks[name] = std::function{callback};
+    void add_tick_end_callback(const std::string& name, F&& callback, int order = 0) {
+        remove_tick_end_callback(name);
+        _tick_end_callbacks[{order, name}] = std::function{callback};
     }
 
     bool remove_tick_end_callback(const std::string& name) {
-        return _tick_end_callbacks.erase(name) > 0;
+        return std::erase_if(_tick_end_callbacks, [&](const auto& c) { return c.first.second == name; }) > 0;
     }
 
     /**
@@ -528,8 +533,9 @@ private:
     std::map<std::string, collide_callback_generic_t> _collide_callbacks;
     std::map<std::string, std::function<void(const physic_simulation&, float)>> _update_callbacks;
     std::map<std::string, std::function<void(physic_point*)>> _platforms_callbacks;
-    std::map<std::string, std::function<void(const physic_simulation&, float)>> _tick_begin_callbacks;
-    std::map<std::string, std::function<void(const physic_simulation&, float)>> _tick_end_callbacks;
+    using tick_callbacks_t = std::map<std::pair<int, std::string>, std::function<void(const physic_simulation&, float)>>;
+    tick_callbacks_t _tick_begin_callbacks;
+    tick_callbacks_t _tick_end_callbacks;
     u64 _tick = 0;
 };
 

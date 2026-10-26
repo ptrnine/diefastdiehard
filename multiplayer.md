@@ -124,6 +124,19 @@ tick begin/end callbacks that the network layer hooks into.
   decided by the server). Bullets the server already consumed are not
   spawned.
 
+### Shots and recoil
+
+Players (weapons, shots, recoil, death) are updated at the end of every
+simulation tick (`game_state::players_tick_update`), not once per frame,
+and the weapon fire rate counts simulation time. A network player's
+weapon counts its applied input ticks (`weapon_instance::input_tick`):
+the server may tick without a new input while its input queue refills,
+so this keeps every shot, and its recoil, on the same input tick on the
+server and in the client's prediction. The prediction records the recoil
+as an after-movement impulse of the tick that fired it and re-simulations
+apply it there (the client's tick end callback runs after the game's,
+`add_tick_end_callback(..., order)`).
+
 ### Own bullet prediction
 
 * The client's local player (`player::predicts_bullets`) spawns its own

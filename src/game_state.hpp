@@ -31,6 +31,12 @@ public:
                 p->physic_update(sim, timestep);
         });
 
+        /* Players (weapons, shots, recoil, death) are updated on every simulation tick */
+        sim.add_tick_end_callback("players", [this](const physic_simulation&, float) {
+            if (on_game)
+                players_tick_update();
+        });
+
         sim.add_platform_callback("player", [this](physic_point* pnt) {
             for (auto& [_, p] : players)
                 if (pnt == p->collision_box())
@@ -534,26 +540,8 @@ public:
             if (cur_level)
                 dropped_guns.set_level_size(cur_level->level_size());
 
-            sim.update(60, game_speed);
-
             cur_frame_bullets.clear();
-
-            for (auto& [_, pl] : players) {
-                if (controlled_players.contains(pl->name()) || ai_operators.contains(pl->name()) || pl->net_controlled() ||
-                    pl->predicted())
-                    pl->game_update(sim,
-                                    blt_mgr,
-                                    cam_pos,
-                                    gravity_for_bullets,
-                                    false, /* bullets are spawned by the callback */
-                                    bullet_spawn_callback{this, pl.get(), gravity_for_bullets});
-                else
-                    pl->game_update(sim, blt_mgr, cam_pos, gravity_for_bullets, false, {});
-
-                /* Server-driven players die and respawn on the server */
-                if (!pl->server_driven() && pl->collision_box()->get_position().y > 2100.f)
-                    player_on_dead(pl.get());
-            }
+            sim.update(60, game_speed); /* players_tick_update() on every tick */
 
             kick_mgr.update();
             adj_box_mgr.update(sim);
@@ -571,6 +559,31 @@ public:
         else {
             sim.update_pass();
         }
+    }
+
+    /*
+     * Players update at the end of a simulation tick: weapons fire on ticks,
+     * so a network player's shots (and recoil) land on the same input ticks
+     * on the server and in the client's prediction
+     */
+    void players_tick_update() {
+        for (auto& [_, pl] : players) {
+            if (controlled_players.contains(pl->name()) || ai_operators.contains(pl->name()) || pl->net_controlled() ||
+                pl->predicted())
+                pl->game_update(sim,
+                                blt_mgr,
+                                cam_pos,
+                                gravity_for_bullets,
+                                false, /* bullets are spawned by the callback */
+                                bullet_spawn_callback{this, pl.get(), gravity_for_bullets});
+            else
+                pl->game_update(sim, blt_mgr, cam_pos, gravity_for_bullets, false, {});
+        }
+
+        /* Server-driven players die and respawn on the server */
+        for (auto& [_, pl] : players)
+            if (!pl->server_driven() && pl->collision_box()->get_position().y > 2100.f)
+                player_on_dead(pl.get());
     }
 
     /* Crates */

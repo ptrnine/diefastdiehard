@@ -170,7 +170,9 @@ public:
             gs.sim.add_tick_begin_callback("net_client", [this](const physic_simulation&, float timestep) {
                 sample_input(*_gs, timestep);
             });
-            gs.sim.add_tick_end_callback("net_client", [this](const physic_simulation&, float) { record_prediction(*_gs); });
+            /* After the game's tick end callbacks (player updates: shots, recoil) */
+            gs.sim.add_tick_end_callback(
+                "net_client", [this](const physic_simulation&, float) { record_prediction(*_gs); }, 100);
         }
 
         register_predicted_bullets(gs);
@@ -227,7 +229,7 @@ public:
 private:
     using clock = std::chrono::steady_clock;
 
-    /* Per predicted tick, besides the input: recoil impulse, predicted bullet hits */
+    /* Per predicted tick, besides the input: predicted bullet hits (before the movement), shot recoil (after it) */
     struct tick_extra {
         vec2f                                        impulse;
         std::vector<std::pair<bullet_ref, vec2f>>    hits;
@@ -273,17 +275,21 @@ private:
         if (_sent_inputs.size() > input::max_window)
             _sent_inputs.pop_front();
 
-        /* The impulses applied since the previous tick (recoil) belong to this tick */
-        _history.push({_input_seq, in, {pl->take_pending_impulse(), {}}, timestep});
+        _history.push({_input_seq, in, {}, timestep});
     }
 
-    /* Simulation tick end: remember the predicted state and the bullet hits predicted on the tick */
+    /*
+     * Simulation tick end (after the player update): remember the predicted
+     * state, the bullet hits predicted since the previous tick (applied before
+     * the tick's movement) and the recoil of the tick's shots (after it)
+     */
     void record_prediction(game_state& gs) {
         auto entry = _history.back();
         auto pl    = local_player(gs);
         if (!entry || !pl || entry->seq != _input_seq)
             return;
 
+        entry->extra.impulse = pl->take_pending_impulse();
         for (auto& hit : pl->take_predicted_hits())
             entry->extra.hits.emplace_back(hit.ref, hit.impulse);
         entry->state = pl->get_physic_state();
@@ -334,10 +340,10 @@ private:
                 if (e.seq <= ack_seq)
                     continue;
                 pl.apply_movement_input(e.input);
-                pl.apply_impulse(e.extra.impulse);
                 for (auto& [_, impulse] : e.extra.hits)
                     pl.apply_hit_physics(impulse);
                 gs.sim.step_isolated(pl.collision_box(), e.timestep, [&](float dt) { pl.physic_update(gs.sim, dt); });
+                pl.apply_impulse(e.extra.impulse);
                 e.state = pl.get_physic_state();
             }
             pl.replaying(false);

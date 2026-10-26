@@ -477,6 +477,8 @@ public:
 
         /* Update weapon */
         if (_pistol) {
+            if (_last_input_seq != 0)
+                _pistol.input_tick(_last_input_seq);
             auto dir = facing_dir();
             if (auto recoil = _pistol.update(arm_position(get_position()),
                                              cam_position,
