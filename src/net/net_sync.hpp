@@ -231,7 +231,12 @@ public:
 
     /** Forget the acknowledged ticks (seq <= ack) */
     void drop_up_to(u32 ack) {
-        while (!_entries.empty() && _entries.front().seq <= ack)
+        drop_before(ack + 1);
+    }
+
+    /** Forget the ticks before seq */
+    void drop_before(u32 seq) {
+        while (!_entries.empty() && _entries.front().seq < seq)
             _entries.pop_front();
     }
 

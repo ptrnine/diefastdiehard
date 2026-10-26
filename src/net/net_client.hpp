@@ -506,9 +506,20 @@ private:
             glog().detail("net client: prediction correction at tick {}: {} px", ack_seq, magnitude(correction));
         }
 
-        _history.drop_up_to(ack_seq);
+        /*
+         * Acknowledged ticks are kept for a lag compensation: the server sweeps
+         * a lag-compensated bullet against them up to its rewind later, so a
+         * bullet that arrives now may still hit them (predict_past_hit). Not
+         * across a teleport (the server's position trace is cleared)
+         */
+        if (auto acked = _history.find(ack_seq))
+            acked->state = server_st;
+        _history.drop_before(teleported ? ack_seq + 1 : ack_seq - std::min(ack_seq, acked_ticks_kept));
         _ack_state = {ack_seq, server_st};
     }
+
+    /* Acknowledged ticks kept in the history: more than the longest rewind (max_lag_compensation) */
+    static constexpr u32 acked_ticks_kept = 64;
 
     /**
      * Re-simulate the local player from its current state over the history
@@ -568,18 +579,25 @@ private:
          * A bullet tested against the players rewind seconds ago: on the
          * server's tick grid, so it is a whole number of ticks (rewind_ticks)
          * ahead of the tested players, which are rewind_lead of a tick
-         * before a tick's end
+         * before a tick's end. The whole ticks are rounded down: rounded up,
+         * the players are the fraction after a tick's end (in the next tick)
          */
         static hit_test_t of(float rewind, float dt) {
             if (rewind <= 0.f)
                 return {};
-            auto ticks = std::ceil(rewind / dt - 1e-3f);
-            return {false, std::max(ticks - rewind / dt, 0.f), u32(ticks)};
+            auto ticks = std::floor(rewind / dt + 1e-3f);
+            return {false, std::max(rewind / dt - ticks, 0.f), u32(ticks)};
         }
 
         [[nodiscard]]
         float ahead_s(float dt) const {
             return float(rewind_ticks) * dt;
+        }
+
+        /* How far behind the bullet the server tests the players, s */
+        [[nodiscard]]
+        float rewind_s(float dt) const {
+            return (float(rewind_ticks) + rewind_lead) * dt;
         }
     };
 
@@ -720,13 +738,22 @@ private:
      * At the end of tick j it is flight - (current tick - j) * dt into its
      * flight. A hit there (before the flight max_flight) is applied where
      * the server applies it (tick_hit, apply_tick_hit). The current tick is
-     * left to sweep_framed_bullets
+     * left to sweep_framed_bullets.
+     * An acknowledged tick can be hit too, if the server has not swept the
+     * bullet's path in it yet: a lag-compensated bullet of a lagging shooter
+     * (lag + rewind into its flight on arrival) is swept rewind_ticks after
+     * the tick it flew in, so the server registers the hit later.
+     * A bullet dead on the server (alive) already hit: never again here
      */
     bool predict_past_hit(game_state& gs, player& pl, const vec2f& start, const vec2f& vel, bool gravity, float flight,
-                          float mass, float max_flight, const hit_test_t& test, const bullet_ref& ref) {
+                          float mass, float max_flight, const hit_test_t& test, const bullet_ref& ref, bool alive) {
+        if (!alive)
+            return false;
         for (auto& e : _history) {
             if (e.seq >= _input_seq)
                 break;
+            if (e.seq <= _last_ack && (test.physical || ref.id == 0 || e.seq + test.rewind_ticks <= _last_ack))
+                continue;
             auto f = flight - float(_input_seq - e.seq) * _tick_dt;
             if (f <= 0.f)
                 continue;
@@ -778,7 +805,7 @@ private:
             return;
 
         auto local        = frame_ahead ? local_player(gs) : nullptr;
-        auto shown_flight = std::max(flight - test.rewind_lead * _tick_dt - shown_delay(), 0.f);
+        auto shown_flight = std::max(flight - test.ahead_s(_tick_dt) + test.rewind_s(_tick_dt) - shown_delay(), 0.f);
         std::optional<game_state::hitscan_hit_t> shown_hit;
         auto shown_hit_flight = std::numeric_limits<float>::max();
         if (owner != gs.players.end()) {
@@ -794,7 +821,7 @@ private:
         auto owner_pl = owner != gs.players.end() ? owner->second.get() : nullptr;
         if (local && may_hit(*local, owner_pl, owner_pl ? owner_pl->get_group() : -1) &&
             predict_past_hit(gs, *local, start, vel, gravity, flight, shot.hit_mass, shown_hit_flight, test,
-                             bullet_ref{id, {}, owner_pl ? owner_pl->name() : player_name_t{}}))
+                             bullet_ref{id, {}, owner_pl ? owner_pl->name() : player_name_t{}}, alive))
             return;
 
         if (shown_hit) {
@@ -921,8 +948,8 @@ private:
                 continue;
             }
 
+            auto test = hit_test_t::of(fr->rewind, _tick_dt);
             if (local && may_hit(*local, owner, blt.group())) {
-                auto test = hit_test_t::of(fr->rewind, _tick_dt);
                 if (auto hit = tick_hit(*local, _input_seq, from, to, test)) {
                     apply_tick_hit(gs, *local, *hit, ph->impulse(), bullet_ref::of(ph.get()), test);
                     ph->delete_later();
@@ -930,7 +957,7 @@ private:
                 }
             }
 
-            auto shown = std::max(flight - hit_test_t::of(fr->rewind, _tick_dt).rewind_lead * _tick_dt - delay, 0.f);
+            auto shown = std::max(flight - test.ahead_s(_tick_dt) + test.rewind_s(_tick_dt) - delay, 0.f);
             if (shown <= fr->shown_flight)
                 continue;
             auto a = gs.ballistic_forward(fr->start, fr->velocity, fr->gravity, fr->shown_flight).first;

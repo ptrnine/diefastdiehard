@@ -337,8 +337,14 @@ with its player.
   tick.
 - **Spawn:** at the flight time `forward + (local_frame_time − state time) +
   rewind_ticks·dt`, through the same `game_state::ballistic_forward` the
-  server used. The rewind is rounded up to the server's tick grid
-  (`hit_test_t`). Its tracer color is the owner's (from the config).
+  server used. The rewind is split on the server's tick grid
+  (`hit_test_t`) into whole ticks (`rewind_ticks`, rounded **down**) and a
+  fraction (`rewind_lead`): the server tests the path flown in tick
+  `k + rewind_ticks` against the player `rewind_lead` of a tick before the
+  end of tick `k` and applies the hit in tick `k`. Rounded up, the hit was
+  a tick early and tested a tick off (a few px correction on every hit
+  whose rewind is not a whole number of ticks). Its tracer color is the
+  owner's (from the config).
 - **Hits on the local player** (`tick_hit`), tested like the server does:
   - lag-compensated (`rewind > 0`): the path flown in a tick against the
     player's state `rewind_lead` of a tick before the tick's end (the
@@ -351,10 +357,21 @@ with its player.
   A hit on an already simulated tick goes into its `input_history` entry,
   and the following ticks are re-simulated (`apply_tick_hit`).
 - **Past ticks:** a bullet arrives `lead + rewind + state trip` into its
-  flight. Its path through the unacknowledged ticks is tested against
-  their predicted states at once (`predict_past_hit`), the next ticks are
-  swept at every tick begin (`sweep_framed_bullets`). Hits on already
-  acknowledged ticks can't be predicted: reconciliation corrects them.
+  flight. Its path through the ticks it already crossed is tested against
+  their states at once (`predict_past_hit`), the next ticks are swept at
+  every tick begin (`sweep_framed_bullets`).
+  - The history keeps 64 acknowledged ticks (`acked_ticks_kept`, more than
+    the longest rewind); the acknowledged tick holds the server's state.
+    A teleport drops them.
+  - An acknowledged tick `k` can still be hit by a lag-compensated bullet:
+    the server sweeps it at `k + rewind_ticks`, which is in the future
+    while `k + rewind_ticks > ack`. A shooter with ping (a client) puts most
+    close-range hits there. Before, they were not predicted: the bullet was
+    shown already past the player, and the hit came later as a correction.
+  - Never predicted: hits the server already swept (`k + rewind_ticks <=
+    ack`), physical hits on acknowledged ticks, and bullets dead on the
+    server. A bullet consumed by the server's forward hit-scan arrives
+    dead, with its hit already in the state.
 - **Rewound hits are late on the server:** it registers a lag-compensated
   hit `rewind_ticks` after the hit tick. Until then, reconciliation skips
   the states acknowledging a predicted rewound hit (`_rewound_hits`).
@@ -509,8 +526,10 @@ across a teleport.
 - **Remote weapons:** their ammo and reload state run locally (cosmetic) and
   can differ from the server's.
 - **Unpredictable hits on the local player:** a bullet that hits within
-  about `shooter lag + rewind + own RTT` of its flight hits an already
-  acknowledged tick: it is corrected by reconciliation.
+  about `shooter lag` of its flight is consumed by the server's forward
+  hit-scan. A physical one (`rewind == 0`) that hits within about
+  `own RTT + queue wait` hits an acknowledged tick the server already
+  tested. Both are corrected by reconciliation.
 - **Remote players vs. framed bullets:** they are swept by the bullet path
   delayed along the muzzle trajectory; that stops when the shown bullet
   dies, so a hit in the last `shown_delay` of its flight is not predicted

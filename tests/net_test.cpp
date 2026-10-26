@@ -2224,6 +2224,45 @@ TEST_CASE("net: hits on the falling local player are predicted where the server 
     CHECK(f.local().get_position().x == Catch::Approx(f.server_side().get_position().x).margin(1.f));
 }
 
+TEST_CASE("net: hits of a lagging shooter on the local player are predicted (100 ms ping)") {
+    using namespace std::chrono_literals;
+    hit_fixture f{25, 25};
+
+    /*
+     * A network shooter with ~100 ms ping: its bullets spawn far into their
+     * flight, rewound far back. At 950 the server's hit-scan of the
+     * forwarded path consumes the bullet: the state carrying the shot has the
+     * hit already (unpredictable, but never applied twice)
+     */
+    auto x = GENERATE(950.f, 800.f, 600.f, 400.f);
+    CAPTURE(x);
+    f.bot->lag_compensation({.lag = 0.1f, .rewind = 0.11f});
+    f.server_side().teleport({x, 1040.f});
+    f.run_for(1000ms);
+    f.cli->reset_correction_stats();
+
+    using clock = game_clock;
+    std::optional<clock::time_point> srv_hit, cli_hit;
+    REQUIRE(f.bot->shot());
+    f.run_for(1000ms, [&] {
+        f.bot->relax();
+        if (!srv_hit && f.server_side().get_velocity().x < -50.f)
+            srv_hit = clock::now();
+        if (!cli_hit && f.local().get_velocity().x < -50.f)
+            cli_hit = clock::now();
+    });
+    REQUIRE(srv_hit);
+    REQUIRE(cli_hit);
+
+    /* Predicted where the server has it: no correction, the knockback shows up before the server's state does */
+    UNSCOPED_INFO("corrections " << f.cli->corrections() << ", max correction " << f.cli->max_correction());
+    CHECK(f.cli->corrections() == (x == 950.f ? 1 : 0));
+    CHECK(*cli_hit - *srv_hit < 100ms);
+
+    f.run_for(1500ms);
+    CHECK(f.local().get_position().x == Catch::Approx(f.server_side().get_position().x).margin(1.f));
+}
+
 TEST_CASE("net: own bullet hits on remote players are predicted") {
     using namespace std::chrono_literals;
     hit_fixture f;
