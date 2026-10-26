@@ -1427,6 +1427,39 @@ struct hit_fixture : net_game_fixture {
     }
 };
 
+TEST_CASE("game_state: local key events drive controlled players only") {
+    game_state gs;
+    gs.game_run(true);
+    auto pl = gs.player_create("lol");
+    REQUIRE(pl);
+    REQUIRE(gs.controller_bind(0, "lol"));
+    gs.rebuild_controlled_players();
+
+    sf::Event press;
+    press.type     = sf::Event::KeyPressed;
+    press.key.code = sf::Keyboard::Key(gs.controllers.at(0)->shot);
+    sf::Event release = press;
+    release.type      = sf::Event::KeyReleased;
+
+    gs.handle_event(press);
+    CHECK(pl->shotting());
+    gs.handle_event(release);
+    CHECK_FALSE(pl->shotting());
+
+    SECTION("a server-driven player ignores local keys (its input comes from the server)") {
+        pl->set_server_driven(true);
+        gs.handle_event(press);
+        CHECK_FALSE(pl->shotting());
+    }
+
+    SECTION("a deleted controller drives nothing") {
+        REQUIRE(gs.controller_delete(0));
+        CHECK_FALSE(gs.controlled_players.contains("lol"));
+        gs.handle_event(press);
+        CHECK_FALSE(pl->shotting());
+    }
+}
+
 TEST_CASE("player: teleport") {
     game_state gs;
     auto pl = gs.player_create("tp");

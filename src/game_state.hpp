@@ -86,6 +86,9 @@ public:
             return false;
         }
 
+        /* The player it drove is no longer controlled */
+        std::erase_if(controlled_players,
+                      [&](const auto& entry) { return entry.second.controller == found_controller->second; });
         controllers.erase(found_controller);
         glog().info("player controller{} deleted", controller_id);
 
@@ -277,7 +280,9 @@ public:
 
         for (auto& [_, control_data] : controlled_players) {
             auto& [controller, this_player] = control_data;
-            this_player->update_input(*controller, evt);
+            /* A server-driven player (network client) gets its input from the server only */
+            if (!this_player->server_driven())
+                this_player->update_input(*controller, evt);
         }
 
         if (cfgval_ctrl) {
