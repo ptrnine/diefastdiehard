@@ -2231,3 +2231,35 @@ TEST_CASE("udp_channel simulates latency") {
     REQUIRE(arrived);
     CHECK(game_clock::now() - t0 >= std::chrono::milliseconds(160));
 }
+
+TEST_CASE("net: the hands of standing players keep still on the client") {
+    using namespace std::chrono_literals;
+    auto frame_ms = GENERATE(4, 7, 16);
+    CAPTURE(frame_ms);
+    net_game_fixture f{2, 3};
+    f.frame_period = std::chrono::milliseconds(frame_ms);
+
+    auto bot = f.gs_srv.player_create("bot");
+    REQUIRE(bot);
+    bot->teleport({1600.f, 1040.f});
+    f.server_side().teleport({1300.f, 1040.f});
+    f.run_for(2000ms);
+    REQUIRE(f.gs_cli.players.contains("bot"));
+    auto& remote = *f.gs_cli.players.at("bot");
+    REQUIRE(remote.collision_box()->is_lock_y());
+    REQUIRE(f.local().collision_box()->is_lock_y());
+
+    /* The weapon arm joint relative to the body: moved only by the weapon bobbing */
+    auto arm = [](const player& pl) { return pl.arm_position(pl.get_position()) - pl.get_position(); };
+    auto remote_arm0 = arm(remote), local_arm0 = arm(f.local());
+    f.cli->reset_correction_stats();
+    float remote_jiggle = 0.f, local_jiggle = 0.f;
+    f.run_for(1000ms, [&] {
+        remote_jiggle = std::max(remote_jiggle, magnitude(arm(remote) - remote_arm0));
+        local_jiggle  = std::max(local_jiggle, magnitude(arm(f.local()) - local_arm0));
+    });
+    CHECK(remote_jiggle < 0.01f);
+    CHECK(local_jiggle < 0.01f);
+    /* Standing still is predicted exactly (the hidden vertical velocity included) */
+    CHECK(f.cli->corrections() == 0);
+}

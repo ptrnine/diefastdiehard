@@ -179,9 +179,13 @@ private:
     }
 
     static state_player make_state_player(u16 id, player& pl) {
+        /*
+         * The raw velocity: on a platform its vertical part is hidden from the
+         * physics but still drives the weapon bobbing, and the client's
+         * prediction keeps it the same way (one gravity step at a tick end)
+         */
         auto ph  = pl.get_physic_state();
-        /* The shown velocity (the vertical part is hidden on a platform), compared and restored by the client */
-        auto vel = pl.get_velocity();
+        auto vel = ph.vel;
         u8   flags = 0;
         if (ph.lock_y)
             flags |= state_player::flag_lock_y;

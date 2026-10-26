@@ -410,7 +410,9 @@ private:
                     e.extra.impulse  = recoil ? -recoil_dir(pl, e) * *recoil : vec2f{0.f, 0.f};
                     e.extra.weapon   = gun.get_sync_state();
                 }
-                pl.apply_impulse(e.extra.impulse);
+                /* Only a real impulse, like the live tick: applying one rebuilds the velocity without its hidden part */
+                if (e.extra.impulse.x != 0.f || e.extra.impulse.y != 0.f)
+                    pl.apply_impulse(e.extra.impulse);
                 e.state = pl.get_physic_state();
             }
             pl.last_input_seq(_input_seq);

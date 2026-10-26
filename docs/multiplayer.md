@@ -75,7 +75,7 @@ STATE contains:
   - the client keeps them by id: a known config is changed only by the newest STATE, and a player whose config is unknown yet is skipped.
 - **`state_player`, per player:**
   - id;
-  - physic state: pos and **shown** velocity as full floats (the client reconciles with them; the vertical part a grounded player's `get_velocity()` hides is not sent, it differs between the server and the prediction), flags (lock_y, on_left, shooting), jumps_left, accel factors (u16 fixed point);
+  - physic state: pos and **raw** velocity as full floats (the client reconciles with them), flags (lock_y, on_left, shooting), jumps_left, accel factors (u16 fixed point);
   - teleport counter;
   - `hits`: ids of the bullets that hit the player in the last second.
 - **`shot_info`, per shot spawned since the last broadcast:** owner id, first bullet id, shot key (`pull_seq`, `shot_index`, first pellet), muzzle start, forward time (u16, 1/32768 s), hit_mass, gravity flag, and the muzzle velocity of each pellet. Pellet `i` has the id `first_id + i` and the pellet number `first_pellet + i`; pellets of one shot share everything but the velocity. The server keeps spawned bullets in a pending list until the next broadcast.
@@ -179,10 +179,21 @@ Entries are recorded at tick end, at order 100, after the game's tick end callba
    50 ms half-life; an accumulated offset over 400 px snaps, and a teleport
    resets it.
 
-`physic_state` stores the raw velocity (`physic_point::get_raw_velocity`).
-While lock_y is set, `get_velocity()` hides the vertical part, but the
-physics still integrates it. Without the raw velocity, restored states
-drift by a gravity step.
+`physic_state` and STATE carry the raw velocity
+(`physic_point::get_raw_velocity`). While lock_y is set, `get_velocity()`
+hides the vertical part, but it still exists. Gravity is applied after the
+player's update, so a standing player ends every tick with one gravity step
+of it (`g·dt`, 19.2 px/s), on the server and in the prediction alike.
+- It matters at a platform edge (the first tick in the air), and it drives
+  the weapon bobbing (`physic_point::g_force`, the hands).
+- Anything that rebuilds the velocity from `get_velocity()` drops it:
+  `apply_impulse`, `velocity(get_velocity() + ...)`. Re-simulations apply
+  the recorded impulses only when nonzero, exactly like the live tick.
+  Otherwise every replayed tick diverges from the server by 19.2 px/s,
+  causing endless 0 px corrections and jiggling hands.
+- Remote players are restored from snapshots every frame with the same raw
+  velocity. Restoring them with the shown one made the bobbing flip
+  whenever a frame boundary fell between ticks.
 
 The stats are `corrections()`, `max_correction()` and `weapon_corrections()`.
 Each correction logs at detail level (`net client: prediction correction at
