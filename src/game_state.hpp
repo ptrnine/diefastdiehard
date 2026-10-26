@@ -438,9 +438,50 @@ public:
         }
     }
 
-    void ui_update(ui_ctx& ui) {
+    void ui_update(ui_ctx& ui, const vec2f& window_size) {
+        if (on_game)
+            ammo_hud_draw(ui, window_size);
         if (pconf_ui)
             pconf_ui->update(ui);
+    }
+
+    /* Ammo of the locally controlled players' guns at the bottom right corner: magazine/reserve */
+    void ammo_hud_draw(ui_ctx& ui, const vec2f& window_size) {
+        std::vector<std::pair<std::string, std::string>> ammo; /* player name, magazine/reserve */
+        for (auto& [name, pl] : players) {
+            auto& gun = pl->get_gun();
+            if (!gun || !locally_controlled(*pl))
+                continue;
+            auto reserve = gun.ammo_reserve() == weapon_instance::unlimited_ammo ? std::string("\u221E")
+                                                                                 : std::to_string(gun.ammo_reserve());
+            ammo.emplace_back(std::string(name), std::to_string(gun.ammo_elapsed()) + "/" + reserve);
+        }
+        if (ammo.empty())
+            return;
+
+        /* Several local players: tell them apart by name */
+        std::vector<std::string> lines;
+        for (auto& [name, text] : ammo)
+            lines.push_back(ammo.size() > 1 ? name + ": " + text : text);
+
+        constexpr float row_height = 22.f;
+        constexpr float width      = 260.f;
+        auto            height     = row_height * float(lines.size()) + 12.f;
+
+        auto style = &ui.nk_ctx()->style;
+        ui.style_push_style_item(&style->window.fixed_background, nk_style_item_color(nk_rgba(0, 0, 0, 0)));
+
+        /* Nuklear takes the bounds of a new window only: keep it in the corner (window resize, more lines) */
+        auto bounds = nk_rect(window_size.x - width - 4.f, window_size.y - height - 4.f, width, height);
+        ui.window_set_bounds("ammo_hud", bounds);
+        if (ui.begin("ammo_hud", bounds, NK_WINDOW_NO_INPUT | NK_WINDOW_NO_SCROLLBAR)) {
+            ui.layout_row_dynamic(row_height - 2.f, 1);
+            for (auto& line : lines)
+                ui.label_colored(line.data(), NK_TEXT_RIGHT, sf::Color(255, 255, 255));
+        }
+        ui.end();
+
+        ui.style_pop_style_item();
     }
 
     /**

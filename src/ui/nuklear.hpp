@@ -36,7 +36,15 @@ public:
         nk_sfml_font_stash_begin(&_sfml);
 
         auto cfg = nk_font_config(17);
-        cfg.range = nk_font_cyrillic_glyph_ranges();
+        /*
+         * The infinity sign (unlimited ammo) and the cyrillic ranges (see
+         * nk_font_cyrillic_glyph_ranges). The infinity goes first: the glyph
+         * lookup indexes the ranges as if they had no gaps, but the baker
+         * skips the codepoints missing in the font
+         */
+        static const nk_rune glyph_ranges[] = {
+            0x221E, 0x221E, 0x0020, 0x00FF, 0x0400, 0x052F, 0x2DE0, 0x2DFF, 0xA640, 0xA69F, 0};
+        cfg.range = glyph_ranges;
         fonts.pt17 = nk_font_atlas_add_from_file(&_sfml.atlas, "data/font/RobotoMono-Regular.ttf", 17.f, &cfg);
 
         nk_sfml_font_stash_end(&_sfml);

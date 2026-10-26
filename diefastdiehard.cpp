@@ -136,7 +136,7 @@ public:
 
     void ui_update() final {
         engine::ui_update();
-        gs.ui_update(ui);
+        gs.ui_update(ui, window_size_float());
         //mainmenu().update(ui);
     }
 
