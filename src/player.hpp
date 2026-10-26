@@ -439,6 +439,11 @@ public:
         return std::any_cast<player*>(p->get_user_any())->get_group();
     }
 
+    /* Collide allower helper: whether the player physic point p belongs to owner */
+    static auto owner_checker(const player* owner) {
+        return [owner](const physic_point* p) { return std::any_cast<player*>(p->get_user_any()) == owner; };
+    }
+
     template <typename F = void (*)(const vec2f&, const vec2f&, float)>
     void game_update(physic_simulation& sim,
                      bullet_mgr&        bm,

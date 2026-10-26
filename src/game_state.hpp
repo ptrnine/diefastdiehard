@@ -498,7 +498,7 @@ public:
 
         if (owner.server_driven()) {
             auto& blt = blt_mgr.shot(sim, start, mass, velocity, owner.tracer_color(), gravity, owner.get_group(),
-                                     player::player_group_getter);
+                                     player::player_group_getter, player::owner_checker(&owner));
             blt.predicted_key(key);
             cur_frame_bullets.push_back(
                 {owner.name(), 0, key, start, start, velocity, mass, owner.tracer_color(), gravity, true, blt.physic()});
@@ -517,7 +517,8 @@ public:
             }
         }
 
-        auto& blt = blt_mgr.shot(sim, pos, mass, vel, owner.tracer_color(), gravity, owner.get_group(), player::player_group_getter);
+        auto& blt = blt_mgr.shot(sim, pos, mass, vel, owner.tracer_color(), gravity, owner.get_group(),
+                                 player::player_group_getter, player::owner_checker(&owner));
         blt.net_id(id);
         if (lag > 0.f)
             blt.lag_compensate(owner.name(), rewind);

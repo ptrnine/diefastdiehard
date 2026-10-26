@@ -216,7 +216,11 @@ public:
         sim.add_collide_callback(_name, std::move(hit_callback));
     }
 
-    template <typename F>
+    /**
+     * A bullet of a player: never hits its owner (is_owner(physic point)),
+     * nor the players of the owner's group. A grouped bullet hits players only
+     */
+    template <typename F, typename FOwner = std::nullptr_t>
     bullet& shot(physic_simulation& sim,
                const vec2f&       position,
                float              mass,
@@ -224,15 +228,18 @@ public:
                sf::Color          color,
                bool               enabled_gravity,
                int                group,
-               F                  player_group_getter) {
+               F                  player_group_getter,
+               FOwner             is_owner = nullptr) {
         auto& res = shot(sim, position, mass, velocity, color, enabled_gravity, group);
-        if (group != -1)
+        if (group != -1 || !std::is_same_v<FOwner, std::nullptr_t>)
             res.physic()->set_collide_allower([=](const physic_point* p) {
-                if (p->get_user_data() == user_data_type::player) {
-                    int grp = player_group_getter(p);
-                    return grp == -1 || grp != group;
-                }
-                return false;
+                if (p->get_user_data() != user_data_type::player)
+                    return group == -1;
+                if constexpr (!std::is_same_v<FOwner, std::nullptr_t>)
+                    if (is_owner(p))
+                        return false;
+                int grp = player_group_getter(p);
+                return group == -1 || grp == -1 || grp != group;
             });
         return res;
     }

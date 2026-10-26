@@ -1,5 +1,6 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <chrono>
 #include <string>
@@ -1383,6 +1384,51 @@ TEST_CASE("game_state: lag-compensated bullets") {
         REQUIRE(gs.blt_mgr.bullets().size() == 1);
         CHECK(gs.blt_mgr.bullets().front().physic()->get_position().x == Catch::Approx(0.f));
     }
+}
+
+TEST_CASE("bullets never hit their owner nor the owner's group") {
+    game_state gs;
+    auto owner = gs.player_create("owner");
+    auto mate  = gs.player_create("mate");
+    auto enemy = gs.player_create("enemy");
+    REQUIRE(owner);
+    REQUIRE(mate);
+    REQUIRE(enemy);
+    for (auto pl : {owner, mate, enemy})
+        pl->collision_box()->enable_gravity(false);
+
+    /* All on one line, the bullet starts inside the owner */
+    owner->position({0.f, 100.f});
+    mate->position({200.f, 100.f});
+    enemy->position({400.f, 100.f});
+
+    auto group = GENERATE(-1, 1);
+    CAPTURE(group);
+    owner->group(group);
+    mate->group(group);
+    enemy->group(2);
+
+    auto t = std::chrono::steady_clock::now();
+    auto run = [&] {
+        for (int i = 0; i < 30; ++i) {
+            t += std::chrono::microseconds(16667);
+            gs.sim.update_immediate(1.f / 60.f, t);
+        }
+    };
+
+    SECTION("server/game spawn") {
+        gs.spawn_bullet(*owner, {25.f, 55.f}, {1500.f, 0.f}, 1.f, false);
+    }
+    SECTION("client spawn of a server bullet") {
+        gs.blt_mgr.shot(gs.sim, {25.f, 55.f}, 1.f, {1500.f, 0.f}, sf::Color::White, false, owner->get_group(),
+                        player::player_group_getter, player::owner_checker(owner));
+    }
+    run();
+
+    CHECK_FALSE(owner->pop_on_hit_event());
+    if (group != -1)
+        CHECK_FALSE(mate->pop_on_hit_event()); /* same group */
+    CHECK((group == -1 ? mate->pop_on_hit_event() : enemy->pop_on_hit_event()));
 }
 
 TEST_CASE("game_state: lag-compensated bullets hit rewound players for their whole flight") {

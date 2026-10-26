@@ -387,7 +387,12 @@ private:
         if (!alive)
             return;
 
-        auto& blt = gs.blt_mgr.shot(gs.sim, pos, b.hit_mass, fwd_vel, unpack_color(b.tracer_color), b.gravity);
+        /* Like on the server: never hits its owner nor the owner's group */
+        auto& blt = found_owner != gs.players.end()
+                        ? gs.blt_mgr.shot(gs.sim, pos, b.hit_mass, fwd_vel, unpack_color(b.tracer_color), b.gravity,
+                                          found_owner->second->get_group(), player::player_group_getter,
+                                          player::owner_checker(found_owner->second.get()))
+                        : gs.blt_mgr.shot(gs.sim, pos, b.hit_mass, fwd_vel, unpack_color(b.tracer_color), b.gravity);
         blt.net_id(b.id);
     }
 
