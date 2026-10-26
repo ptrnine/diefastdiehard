@@ -1012,34 +1012,63 @@ TEST_CASE("net_sync: server clock and snapshot interpolation") {
     }
 
     SECTION("knockback offset") {
-        constexpr float slowdown = 700.f, gravity = 1200.f, dt = 1.f / 120.f;
-        auto run = [&](knockback_offset<int>& kb, float seconds) {
-            for (float t = 0.f; t < seconds; t += dt)
-                kb.step(dt, slowdown, gravity);
+        /* Toy physics: a platform x < 100 at y 0, friction on it, gravity off it */
+        struct st_t {
+            vec2f pos;
+            vec2f vel;
+            bool  lock_y;
         };
+        constexpr float dt = 1.f / 60.f;
+        auto stepper = [](st_t& st, float ts) {
+            st.pos += st.vel * ts;
+            st.lock_y = st.lock_y && st.pos.x < 100.f;
+            if (st.lock_y) {
+                auto dec = 700.f * ts;
+                st.vel.x = std::abs(st.vel.x) <= dec ? 0.f : st.vel.x - std::copysign(dec, st.vel.x);
+            }
+            else
+                st.vel.y += 1200.f * ts;
+        };
+        auto pair_at = [](const st_t& base, const vec2f& impulse) {
+            auto with = base;
+            with.vel += impulse;
+            return std::pair{base, with};
+        };
+        auto run = [&](knockback_offset<int, st_t>& kb, float seconds) {
+            for (float t = 0.f; t < seconds; t += dt)
+                kb.step(dt, dt, stepper);
+        };
+        auto standing = st_t{{0.f, 0.f}, {0.f, 0.f}, true};
 
-        /* A grounded push slides and stops: v^2 / (2 * slowdown) */
-        knockback_offset<int> push;
-        push.predict(1, {300.f, 0.f}, true);
+        /* A push slides on the platform and stops: v^2 / (2 * friction) */
+        knockback_offset<int, st_t> push;
+        auto [w0, h0] = pair_at(standing, {200.f, 0.f});
+        push.predict(1, {200.f, 0.f}, w0, h0);
         run(push, 1.f);
-        CHECK(push.offset().x == Catch::Approx(300.f * 300.f / (2.f * slowdown)).margin(3.f));
-        CHECK(push.velocity().x == Catch::Approx(0.f));
+        CHECK(push.offset().x == Catch::Approx(200.f * 200.f / 1400.f).margin(4.f));
+        CHECK(push.offset().y == Catch::Approx(0.f));
 
-        /* A lift arcs back to the ground */
-        knockback_offset<int> lift;
-        lift.predict(1, {0.f, -600.f}, true);
-        run(lift, 0.3f);
-        CHECK(lift.offset().y < -50.f);
-        run(lift, 1.f);
-        CHECK(lift.offset().y == Catch::Approx(0.f));
+        /* A hard push leaves the platform past its edge and falls: the geometry comes from the stepper */
+        knockback_offset<int, st_t> off_edge;
+        auto [w1, h1] = pair_at(standing, {600.f, 0.f});
+        off_edge.predict(1, {600.f, 0.f}, w1, h1);
+        run(off_edge, 0.5f);
+        CHECK(off_edge.offset().x > 100.f);
+        CHECK(off_edge.offset().y > 20.f);
+        CHECK(off_edge.grounded() == false);
 
-        /* Predicted + confirmed: the opposite motion cancels it out, nothing stays */
-        knockback_offset<int> confirmed;
-        confirmed.predict(7, {300.f, 0.f}, true);
+        /* Predicted + confirmed: the opposite pair cancels it out, nothing stays */
+        knockback_offset<int, st_t> confirmed;
+        auto [w2, h2] = pair_at(standing, {200.f, 0.f});
+        confirmed.predict(7, {200.f, 0.f}, w2, h2);
         run(confirmed, 0.2f);
         auto mid = confirmed.offset().x;
-        CHECK(mid > 30.f);
-        confirmed.confirm([](int ref) { return ref == 7; }, true);
+        CHECK(mid > 20.f);
+        confirmed.confirm([](int ref) { return ref == 7; },
+                          [&](const vec2f& impulse) {
+                              auto [w, h] = pair_at(standing, impulse);
+                              return knockback_offset<int, st_t>::pair_t{h, w};
+                          });
         run(confirmed, 0.02f);
         CHECK(confirmed.offset().x < mid); /* hands over continuously, no jump */
         CHECK(confirmed.offset().x > mid - 10.f);
@@ -1047,8 +1076,9 @@ TEST_CASE("net_sync: server clock and snapshot interpolation") {
         CHECK(confirmed.empty());
 
         /* Not confirmed in time: fades out */
-        knockback_offset<int> missed;
-        missed.predict(1, {300.f, 0.f}, true);
+        knockback_offset<int, st_t> missed;
+        auto [w3, h3] = pair_at(standing, {200.f, 0.f});
+        missed.predict(1, {200.f, 0.f}, w3, h3);
         run(missed, 0.3f);
         missed.miss_older_than(0.25f);
         run(missed, 1.f);
@@ -1637,6 +1667,67 @@ TEST_CASE("net: own bullet hits on remote players are predicted") {
     f.run_for(2500ms);
     CHECK(f.remote_bot().get_position().x == Catch::Approx(f.bot->get_position().x).margin(1.f));
     CHECK(f.remote_bot().get_position().y == Catch::Approx(f.bot->get_position().y).margin(1.f));
+}
+
+TEST_CASE("net: predicted knockback follows the level geometry") {
+    using namespace std::chrono_literals;
+    hit_fixture f;
+
+    /* "me" shoots the strongest weapon at the bot standing at the right edge of the floor (pl0: x 150..2450, y 1050) */
+    f.server_side().setup_pistol("wpn_ss50");
+    f.server_side().teleport({2100.f, 1040.f});
+    f.bot->teleport({2380.f, 1040.f});
+    f.run_for(2000ms);
+    REQUIRE(f.local().pistol_section() == "wpn_ss50");
+    REQUIRE(f.remote_bot().get_position().x == Catch::Approx(2380.f).margin(1.f));
+
+    bool               server_off_edge = false, client_off_edge = false;
+    int                inside_floor    = 0;
+    int                frames          = 0;
+    std::vector<vec2f> srv_path, cli_path;
+    f.input = {.shot = true};
+    f.run_for(1500ms, [&] {
+        if (++frames == 20)
+            f.input = {}; /* a single shot (ss50 fires every 0.86 s) */
+
+        auto srv = f.bot->get_position();
+        auto pos = f.remote_bot().get_position();
+        auto sz  = f.remote_bot().get_size();
+        server_off_edge = server_off_edge || srv.x > 2450.f;
+        client_off_edge = client_off_edge || pos.x > 2450.f;
+        srv_path.push_back(srv);
+        cli_path.push_back(pos);
+
+        /* The drawn bot can leave the floor past its edge, never through it */
+        if (pos.x + sz.x > 150.f && pos.x < 2450.f && pos.y > 1050.f + 2.f)
+            ++inside_floor;
+    });
+
+    REQUIRE(server_off_edge);
+    CHECK(client_off_edge);
+    CHECK(inside_floor == 0);
+
+    /*
+     * The predicted knockback is ahead in time (the client sees its hit before
+     * the server gets the shot), but it follows the server's trajectory: slides
+     * off the edge and falls, no floating, no sideways shift
+     */
+    float max_path_error = 0.f;
+    for (auto& p : cli_path) {
+        if (p.y > 1800.f)
+            continue; /* about to die and respawn */
+        /* Distance to the server's path (a polyline: its position changes once per tick) */
+        float d = std::numeric_limits<float>::max();
+        for (size_t i = 1; i < srv_path.size(); ++i) {
+            auto a = srv_path[i - 1], ab = srv_path[i] - a;
+            auto len2 = ab.x * ab.x + ab.y * ab.y;
+            auto k    = len2 > 0.f ? std::clamp(((p - a).x * ab.x + (p - a).y * ab.y) / len2, 0.f, 1.f) : 0.f;
+            d         = std::min(d, magnitude(p - (a + ab * k)));
+        }
+        max_path_error = std::max(max_path_error, d);
+    }
+    UNSCOPED_INFO("max path error " << max_path_error);
+    CHECK(max_path_error < 25.f);
 }
 
 TEST_CASE("net: predicted hits the server did not register fade out") {

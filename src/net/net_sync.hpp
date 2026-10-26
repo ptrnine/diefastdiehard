@@ -157,6 +157,19 @@ public:
         return _snaps.size();
     }
 
+    /**
+     * The newest snapshot before the first one matching pred (e.g. the state
+     * right before an event the snapshots report), with its time
+     */
+    template <typename F>
+    [[nodiscard]]
+    std::optional<std::pair<double, T>> last_before(F&& pred) const {
+        for (size_t i = 1; i < _snaps.size(); ++i)
+            if (pred(_snaps[i].value))
+                return std::pair{_snaps[i - 1].time_s, _snaps[i - 1].value};
+        return {};
+    }
+
 private:
     struct snap_t {
         double time_s;
@@ -234,96 +247,93 @@ private:
  * Visual knockback of a remote player, predicted on the client.
  *
  * Remote players are shown from server snapshots, so a hit predicted on the
- * client is shown as an offset on top of them, driven by a simple model of
- * the knockback motion (grounded: slides with the player's slowdown, lifts
- * fall back to the ground with gravity; in the air: decays). When the
- * snapshots start to show the real hit (confirm), the same motion is started
- * with the opposite sign: the sum converges to zero while the authoritative
- * motion takes over, without pushing twice. An unconfirmed hit (the server
- * did not register it) fades out
+ * client is shown as an offset on top of them. The offset is simulated with
+ * the game's own physics (the caller's stepper): two ghosts start from the
+ * player's state at the hit, one with the hit applied and one without, and
+ * the offset is their difference, so it follows the level geometry (slides
+ * off platform edges, falls, lands). When the snapshots start to show the
+ * real hit (confirm), a second pair starts from the snapshot state and is
+ * subtracted: the sum converges while the authoritative motion takes over,
+ * without pushing twice. An unconfirmed hit (the server did not register it)
+ * fades out.
+ *
+ * State needs pos, vel (vec2f) and lock_y (bool)
  */
-template <typename Ref>
+template <typename Ref, typename State>
 class knockback_offset {
 public:
-    static constexpr float air_decay_s  = 0.25f;
-    static constexpr float fade_s       = 0.1f;
-    static constexpr float remove_below = 0.1f;
+    static constexpr float fade_s         = 0.1f;
+    static constexpr float max_age_s      = 4.f;  /* e.g. knocked out of the level: never settles */
+    static constexpr float settled_vel    = 1.f;
+    static constexpr float remove_below   = 0.1f;
 
-    struct motion_t {
-        vec2f offset   = {0.f, 0.f};
-        vec2f vel      = {0.f, 0.f};
-        bool  grounded = false;
-        float sign     = 1.f;
+    /* Ghosts with and without the hit, started from the same state */
+    struct pair_t {
+        State with;
+        State without;
 
-        void step(float dt, float slowdown, float gravity) {
-            offset += vel * dt;
+        [[nodiscard]]
+        vec2f offset() const {
+            return with.pos - without.pos;
+        }
 
-            if (!grounded) {
-                vel *= std::exp(-dt / air_decay_s);
-                return;
-            }
-
-            /* Lifted off the ground: falls back to it, no friction in the air */
-            if (offset.y < 0.f || std::abs(vel.y) > 0.f) {
-                vel.y += gravity * dt;
-                if (offset.y >= 0.f && vel.y > 0.f) {
-                    offset.y = 0.f;
-                    vel.y    = 0.f;
-                }
-                return;
-            }
-
-            auto dec = slowdown * dt;
-            vel.x    = std::abs(vel.x) <= dec ? 0.f : vel.x - std::copysign(dec, vel.x);
+        [[nodiscard]]
+        vec2f velocity() const {
+            return with.vel - without.vel;
         }
 
         [[nodiscard]]
         bool settled() const {
-            return magnitude(vel) < 0.01f;
+            return magnitude(with.vel) < settled_vel && magnitude(without.vel) < settled_vel && with.lock_y &&
+                   without.lock_y;
         }
     };
 
     struct hit_t {
-        Ref                     ref;
-        vec2f                   dv;
-        motion_t                predicted;
-        std::optional<motion_t> authoritative;
-        float                   age  = 0.f;
-        float                   fade = 1.f; /* < 1: fading out */
-        bool                    missed = false;
+        Ref                   ref;
+        vec2f                 impulse;
+        pair_t                predicted;
+        std::optional<pair_t> authoritative;
+        float                 age    = 0.f;
+        float                 fade   = 1.f; /* < 1: fading out */
+        bool                  missed = false;
 
         [[nodiscard]]
         vec2f offset() const {
-            auto o = predicted.offset;
+            auto o = predicted.offset();
             if (authoritative)
-                o += authoritative->offset * authoritative->sign;
+                o -= authoritative->offset();
             return o * fade;
         }
 
         [[nodiscard]]
         vec2f velocity() const {
-            auto v = predicted.vel;
+            auto v = predicted.velocity();
             if (authoritative)
-                v += authoritative->vel * authoritative->sign;
+                v -= authoritative->velocity();
             return v * fade;
+        }
+
+        [[nodiscard]]
+        bool active() const {
+            return !missed && fade >= 1.f;
         }
     };
 
-    /* A hit predicted now: velocity change dv (zero y if the hit doesn't lift a grounded player) */
-    void predict(const Ref& ref, const vec2f& dv, bool grounded) {
-        _hits.push_back({ref, dv, motion_t{{0.f, 0.f}, dv, grounded, 1.f}, {}});
+    /* A hit predicted now: ghosts started from the player's state with (with) and without (without) the hit */
+    void predict(const Ref& ref, const vec2f& impulse, const State& without, const State& with) {
+        _hits.push_back({ref, impulse, pair_t{with, without}, {}});
     }
 
-    /* The snapshots show the hit (matches(ref)): start the opposite motion */
-    template <typename F>
-    void confirm(F&& matches, bool grounded) {
+    /**
+     * The snapshots show the hit (matches(ref)): start the opposite pair,
+     * make_pair(impulse) -> pair_t from the snapshot state
+     */
+    template <typename F, typename FMakePair>
+    void confirm(F&& matches, FMakePair&& make_pair) {
         for (auto& h : _hits)
-            if (!h.authoritative && !h.missed && matches(h.ref)) {
-                auto dv = h.dv;
-                if (grounded && !h.predicted.grounded)
-                    dv.y = 0.f;
-                h.authoritative = motion_t{{0.f, 0.f}, dv, grounded, -1.f};
-            }
+            if (!h.authoritative && !h.missed && matches(h.ref))
+                h.authoritative = make_pair(h.impulse);
     }
 
     /* Hits not confirmed for this long were not registered by the server */
@@ -333,28 +343,41 @@ public:
                 h.missed = true;
     }
 
-    void step(float dt, float slowdown, float gravity) {
-        for (auto& h : _hits) {
-            h.age += dt;
-            if (h.missed) {
-                h.predicted.vel = {0.f, 0.f};
-                h.fade *= std::exp(-dt / fade_s);
-                continue;
-            }
-
-            h.predicted.step(dt, slowdown, gravity);
-            if (h.authoritative) {
-                h.authoritative->step(dt, slowdown, gravity);
-                /* Both motions are over: fade out what the model got wrong */
-                if (h.predicted.settled() && h.authoritative->settled())
-                    h.fade *= std::exp(-dt / fade_s);
+    /**
+     * Advance by dt in fixed physics steps of timestep;
+     * step_state(State&, float timestep) steps one ghost
+     */
+    template <typename F>
+    void step(float dt, float timestep, F&& step_state) {
+        _accumulated += dt;
+        while (_accumulated >= timestep) {
+            _accumulated -= timestep;
+            for (auto& h : _hits) {
+                if (!h.active())
+                    continue;
+                step_state(h.predicted.with, timestep);
+                step_state(h.predicted.without, timestep);
+                if (h.authoritative) {
+                    step_state(h.authoritative->with, timestep);
+                    step_state(h.authoritative->without, timestep);
+                }
             }
         }
 
+        for (auto& h : _hits) {
+            h.age += dt;
+            /* Missed, both motions are over (fade what is left), or too long */
+            bool done = h.missed || h.age > max_age_s ||
+                        (h.authoritative && h.predicted.settled() && h.authoritative->settled());
+            if (done)
+                h.fade *= std::exp(-dt / fade_s);
+        }
+
         std::erase_if(_hits, [](const hit_t& h) {
-            return (h.missed || h.authoritative) && magnitude(h.offset()) < remove_below &&
-                   magnitude(h.velocity()) < remove_below;
+            return !h.active() && magnitude(h.offset()) < remove_below && magnitude(h.velocity()) < remove_below;
         });
+        if (_hits.empty())
+            _accumulated = 0.f;
     }
 
     [[nodiscard]]
@@ -373,6 +396,15 @@ public:
         return v;
     }
 
+    /* Ground contact of the shown motion: of the newest active hit's ghost, if any */
+    [[nodiscard]]
+    std::optional<bool> grounded() const {
+        for (auto it = _hits.rbegin(); it != _hits.rend(); ++it)
+            if (it->active())
+                return it->predicted.with.lock_y;
+        return {};
+    }
+
     [[nodiscard]]
     bool empty() const {
         return _hits.empty();
@@ -384,6 +416,7 @@ public:
 
 private:
     std::vector<hit_t> _hits;
+    float              _accumulated = 0.f;
 };
 
 } // namespace dfdh::net

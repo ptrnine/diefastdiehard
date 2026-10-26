@@ -182,12 +182,16 @@ bullet, resolved to the id when the bullet is confirmed).
   ticks (never applied twice); a hit the server did not register is undone
   by the next reconciliation (smoothed).
 * **Remote players** (own bullets, other players' bullets): the hit
-  starts a `knockback_offset` on top of the interpolated snapshots, a
-  model of the knockback motion (grounded slide with the player's
-  slowdown, lift and fall back, decay in the air). When the rendered
-  snapshots show the hit, the same motion starts with the opposite sign,
-  so the offset converges to zero while the server's motion takes over;
-  a hit the server did not register within
+  starts a `knockback_offset` on top of the interpolated snapshots,
+  simulated with the game physics: two ghosts of the player start from
+  its shown state, one with the hit applied and one without, stepped with
+  `physic_simulation::step_isolated` + `player::physic_update` (the
+  player's body is the scratch), and the offset is their difference, so
+  it follows the level geometry (slides off platform edges, falls, lands).
+  When the rendered snapshots show the hit, a second pair starts from the
+  last snapshot before the hit, brought to the render time, and is
+  subtracted: the offset converges while the server's motion takes over.
+  A hit the server did not register within
   `max(1 s, 2 * rtt + interp + 0.3 s)` fades out.
 * Player groups are synchronized, so client-side collisions respect teams.
 

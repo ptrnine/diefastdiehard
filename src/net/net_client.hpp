@@ -237,8 +237,6 @@ private:
 
     using history_t = input_history<player_input_state, player::physic_state, tick_extra>;
 
-    /* Knockback model for the remote players' predicted hits (see knockback_offset) */
-    static constexpr float lift_impulse = -180.f; /* player::apply_hit_physics */
 
     [[nodiscard]]
     u32 time_ms() const {
@@ -497,22 +495,59 @@ private:
                 (void)pl.take_predicted_hits();
             }
 
-            /* Predicted hits: shown as a knockback offset until the snapshots show them */
-            auto mass = pl.collision_box()->get_mass();
+            /*
+             * Predicted hits: shown as a knockback offset until the snapshots show
+             * them. The offset is simulated with the game physics, using the
+             * player's own body as scratch (it is restored to the shown state below)
+             */
+            auto make_pair = [&](const player::physic_state& base, const vec2f& impulse) {
+                pl.restore_physic_state(base);
+                pl.apply_hit_physics(impulse);
+                return knockback_t::pair_t{pl.get_physic_state(), base};
+            };
+            auto step_ghost = [&](player::physic_state& st, float timestep) {
+                pl.restore_physic_state(st);
+                pl.replaying(true);
+                gs.sim.step_isolated(pl.collision_box(), timestep, [&](float ts) { pl.physic_update(gs.sim, ts); });
+                pl.replaying(false);
+                st = pl.get_physic_state();
+            };
+
+            /* The body is where the player was shown (and moved by the local simulation) when hit */
+            auto shown = pl.get_physic_state();
             for (auto& hit : pl.take_predicted_hits()) {
-                auto dv = hit.impulse / mass;
-                if (hit.grounded && hit.impulse.y >= lift_impulse)
-                    dv.y = 0.f;
-                kb.predict(hit.ref, dv, hit.grounded);
+                auto pair = make_pair(shown, hit.impulse);
+                kb.predict(hit.ref, hit.impulse, pair.without, pair.with);
             }
+            /*
+             * The snapshots show a predicted hit: the opposite pair starts from the
+             * last snapshot before the hit and is brought to the render time, so it
+             * matches the motion the snapshots show from there on
+             */
             for (auto id : snap->hits)
-                kb.confirm([id](const bullet_ref& ref) { return ref.id == id; }, snap->ph.lock_y);
+                kb.confirm([id](const bullet_ref& ref) { return ref.id == id; },
+                           [&](const vec2f& impulse) {
+                               auto has_hit = [id](const remote_player_snapshot& s) {
+                                   return std::ranges::find(s.hits, id) != s.hits.end();
+                               };
+                               auto pre  = snaps.last_before(has_hit);
+                               auto pair = make_pair(pre ? pre->second.ph : snap->ph, impulse);
+                               if (pre)
+                                   for (auto ts = gs.sim.last_timestep(), left = float(t - pre->first); left >= ts;
+                                        left -= ts) {
+                                       step_ghost(pair.with, ts);
+                                       step_ghost(pair.without, ts);
+                                   }
+                               return pair;
+                           });
             kb.miss_older_than(std::max(1.f, 2.f * _rtt_s + float(_clock.interp_delay()) + 0.3f));
-            kb.step(dt, pl.get_x_slowdown(), gs.sim.gravity().y);
+            kb.step(dt, gs.sim.last_timestep(), step_ghost);
 
             auto ph = snap->ph;
             ph.pos += kb.offset();
             ph.vel += kb.velocity();
+            if (auto grounded = kb.grounded())
+                ph.lock_y = *grounded;
             pl.restore_physic_state(ph);
             pl.on_left(snap->on_left);
 
@@ -755,7 +790,8 @@ private:
     float        _max_correction  = 0.f;
     server_clock _clock;
     std::map<player_name_t, snapshot_buffer<remote_player_snapshot>> _remote;
-    std::map<player_name_t, knockback_offset<bullet_ref>>            _knockbacks;
+    using knockback_t = knockback_offset<bullet_ref, player::physic_state>;
+    std::map<player_name_t, knockback_t>                             _knockbacks;
     std::map<player_name_t, std::optional<u16>>                      _remote_teleports;
     std::optional<u16>                                               _local_teleports;
     double                                                           _last_remote_apply_s = 0.0;
