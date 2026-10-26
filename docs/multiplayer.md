@@ -140,9 +140,16 @@ the client: the old player is deleted.
   - after 0.5 s without input, applies a neutral input.
 - **Lag:** the client reports its RTT (from the echoed client time) and its
   interpolation delay. The server sets per player
-  `lag = rtt/2 + queued ticks/60` and `rewind = lag + interp`
   (`player::lag_compensation`), each capped at
-  `game_state::max_lag_compensation` (1 s).
+  `game_state::max_lag_compensation` (1 s):
+  - `lag = rtt/2 + wait`: how far a shot is forwarded, i.e. the time since
+    the client fired it. `wait` is the measured time the applied input tick
+    spent in the queue (arrival → its tick).
+  - `rewind = rtt/2 + interp`: how far targets are rewound, i.e. how old the
+    client's view of them was. The queue wait is not part of it: the client
+    saw the targets at `server_now − one way − interp`. Adding the wait (as
+    `lag + interp` did) rewound ~3 ticks too far, so hits were tested
+    against stale positions and retroactive knockbacks started early.
 
 ## Local player: prediction and reconciliation
 
@@ -210,6 +217,17 @@ tick N: X px`, `weapon correction ...`).
   on_left, shooting, hits, teleports), out of order, for 1 s. The sample is
   interpolated, but never across a teleport counter change: the player jumps
   to the first snapshot after the teleport.
+  It never interpolates across a newly reported hit either. A retroactive hit
+  rewrote the server's path, so the older snapshot is stale and the victim
+  would cross the whole knockback within one snapshot interval. Instead, the
+  newer snapshot is moved back along its velocity, with its hits, which
+  confirm the prediction at that frame.
+- **Drawing** (`player::drawn_position`): a remote player is already placed
+  at the frame's render time, so it is not extrapolated again between ticks.
+  The tick extrapolation of locally simulated objects used to draw it up to
+  a tick ahead and snap back every tick: a sawtooth of `vel·16 ms`. The
+  correction offset decays continuously between ticks, not in tick-sized
+  steps.
 - **Applied every frame** (`apply_remote_snapshots`): sampled snapshot +
   predicted knockback offset → `restore_physic_state`, `place_legs`,
   `on_left`, and `shot` / `relax` for the visual weapon. Only the newest
@@ -316,8 +334,9 @@ tick N: X px`, `weapon correction ...`).
     motion. The remaining hits of its episode restart from the snapshot.
   - **Unconfirmed hits:** fade out (τ 0.15 s) after
     `clamp(1.5·view_delay + 0.2, 0.3, 1) s`.
-  - **Limit:** the offset is capped at 150 px, and its velocity stops
-    growing it at the limit.
+  - **No limit:** the offset follows the physics until the hit is confirmed
+    or fades out. A 150 px cap used to stop a hard hit in mid-air, after
+    which the confirmation crossed the rest of the knockback at once.
 
 Own-bullet hits on remote players carry a shot key, which is resolved to
 the server id when the bullet is confirmed.

@@ -61,7 +61,12 @@ public:
         game_clock::time_point joined_time;
 
         /* Received, not yet applied input ticks (seq -> bits), applied one per tick in seq order */
-        std::map<u32, u16> inputs;
+        struct queued_input {
+            u16               bits;
+            clock::time_point received; // first arrival (the wait in the queue is part of the shooter's lag)
+        };
+        std::map<u32, queued_input> inputs;
+        float                       input_wait_s = 0.f; // time the last applied input tick waited in the queue
         u32                next_seq      = 0; // first seq not applied yet, 0 = none received yet
         u32                ack_seq       = 0; // last applied seq
         u16                held_bits     = 0; // held part of the last applied input
@@ -354,7 +359,7 @@ private:
 
             /* Too many queued ticks (client clock runs faster, burst after a stall): merge the oldest */
             while (q.size() > max_queued_inputs) {
-                client.pending_edges |= u16(q.begin()->second & in_edge_bits);
+                client.pending_edges |= u16(q.begin()->second.bits & in_edge_bits);
                 q.erase(q.begin());
             }
 
@@ -367,11 +372,14 @@ private:
             if (!client.buffering) {
                 /* Missing seqs before the head are lost for good (they would be in every newer window) */
                 auto head            = q.begin();
-                bits                 = head->second | client.pending_edges;
+                bits                 = head->second.bits | client.pending_edges;
                 client.ack_seq       = head->first;
                 client.next_seq      = head->first + 1;
-                client.held_bits     = u16(head->second & ~in_edge_bits);
+                client.held_bits     = u16(head->second.bits & ~in_edge_bits);
                 client.pending_edges = 0;
+                /* Measured at the tick's time (catch-up ticks run late) */
+                client.input_wait_s =
+                    std::max(std::chrono::duration<float>(gs.sim.current_update_time() - head->second.received).count(), 0.f);
                 q.erase(head);
             }
             else if (q.empty() && now - client.last_input_time > input_timeout) {
@@ -387,8 +395,15 @@ private:
             found->second->last_input_seq(client.ack_seq);
             found->second->apply_input(player_input_state::from_bits(bits));
 
-            auto lag = client.rtt_s * 0.5f + float(q.size()) / 60.f;
-            found->second->lag_compensation({lag, lag + client.interp_s});
+            /*
+             * The shot is forwarded by the time since the client fired it (one
+             * way trip + the measured wait in the input queue). The targets are
+             * rewound to where the client saw them: its view of the server lags
+             * by the one way trip and its interpolation delay, not by the queue
+             * wait
+             */
+            auto one_way = client.rtt_s * 0.5f;
+            found->second->lag_compensation({one_way + client.input_wait_s, one_way + client.interp_s});
         }
     }
 
@@ -523,7 +538,7 @@ private:
         for (u32 i = 0; i < in.bits.size(); ++i) {
             auto seq = in.first_seq() + i;
             if (seq >= client->next_seq)
-                client->inputs.emplace(seq, in.bits[i]);
+                client->inputs.emplace(seq, client_t::queued_input{in.bits[i], now});
         }
     }
 

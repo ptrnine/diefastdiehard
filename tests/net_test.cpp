@@ -1045,7 +1045,7 @@ TEST_CASE("net_sync: server clock and snapshot interpolation") {
     SECTION("snapshot buffer interpolates and clamps") {
         struct val {
             float x;
-            static val interpolate(const val& a, const val& b, float f) {
+            static val interpolate(const val& a, const val& b, float f, float) {
                 return {a.x + (b.x - a.x) * f};
             }
         };
@@ -1095,7 +1095,7 @@ TEST_CASE("net_sync: server clock and snapshot interpolation") {
         CHECK(push.offset().x == Catch::Approx(200.f * 200.f / 1400.f).margin(4.f));
         CHECK(push.offset().y == Catch::Approx(0.f));
 
-        /* A hard push leaves the platform past its edge and falls (geometry from the stepper), limited offset */
+        /* A hard push leaves the platform past its edge and falls (geometry from the stepper) */
         kb_t off_edge;
         off_edge.predict(1, {600.f, 0.f}, standing, apply_hit);
         run(off_edge, 0.35f); /* passes the edge at ~0.17 s */
@@ -1103,7 +1103,7 @@ TEST_CASE("net_sync: server clock and snapshot interpolation") {
         CHECK(off_edge.offset().y > 5.f);
         CHECK(off_edge.grounded() == false);
         run(off_edge, 1.f);
-        CHECK(magnitude(off_edge.offset()) <= kb_t::max_offset + 0.01f);
+        CHECK(off_edge.offset().y > 100.f); /* not limited: keeps falling like the player would */
 
         /* Hits in a row accumulate on one episode (one ghost) */
         kb_t burst;
@@ -1278,15 +1278,24 @@ TEST_CASE("net: remote players are interpolated smoothly") {
     auto& remote = *f.gs_cli.players.at("bot");
 
     bot->move_right();
+    /* What is drawn this frame */
+    auto drawn = [&] { return remote.drawn_position(f.gs_cli.sim.interpolation_factor(), f.gs_cli.sim.last_timestep()).x; };
+
     float prev_x      = remote.get_position().x;
     float window_x    = prev_x;
     float max_speed   = 0.f;
     float min_step    = 0.f;
+    float prev_drawn  = drawn();
+    float drawn_min   = 0.f, drawn_max = 0.f;
     auto  window_from = game_clock::now();
     f.run_for(1500ms, [&] {
         auto x   = remote.get_position().x;
         min_step = std::min(min_step, x - prev_x);
         prev_x   = x;
+
+        drawn_min  = std::min(drawn_min, drawn() - prev_drawn);
+        drawn_max  = std::max(drawn_max, drawn() - prev_drawn);
+        prev_drawn = drawn();
 
         /* Speed over ~50ms windows: never faster than the max speed (no catch-up jumps) */
         auto now = game_clock::now();
@@ -1300,6 +1309,9 @@ TEST_CASE("net: remote players are interpolated smoothly") {
 
     CHECK(max_speed < bot->get_max_speed() * 1.3f);
     CHECK(min_step > -0.5f); /* never moves backwards */
+    /* ...also as drawn in between the ticks (no extrapolation on top of the frame's snapshot: it saw-toothed) */
+    CHECK(drawn_min > -0.5f);
+    CHECK(drawn_max < bot->get_max_speed() * 0.005f * 2.f + 0.5f);
     CHECK(remote.get_position().x > 400.f + 100.f);
 
     /* The remote player is shown in the past, by about the interpolation delay */
@@ -1827,11 +1839,28 @@ TEST_CASE("net: remote snapshots are not interpolated across a teleport") {
     net::remote_player_snapshot a, b;
     a.ph.pos = {1000.f, 0.f};
     b.ph.pos = {0.f, 0.f};
-    CHECK(net::remote_player_snapshot::interpolate(a, b, 0.5f).ph.pos.x == Catch::Approx(500.f));
+    CHECK(net::remote_player_snapshot::interpolate(a, b, 0.5f, 0.016f).ph.pos.x == Catch::Approx(500.f));
 
     b.teleports = 1;
-    CHECK(net::remote_player_snapshot::interpolate(a, b, 0.5f).ph.pos.x == Catch::Approx(1000.f));
-    CHECK(net::remote_player_snapshot::interpolate(a, b, 1.f).ph.pos.x == Catch::Approx(0.f));
+    CHECK(net::remote_player_snapshot::interpolate(a, b, 0.5f, 0.016f).ph.pos.x == Catch::Approx(1000.f));
+    CHECK(net::remote_player_snapshot::interpolate(a, b, 1.f, 0.016f).ph.pos.x == Catch::Approx(0.f));
+}
+
+TEST_CASE("net: remote snapshots are not interpolated across a retroactive hit") {
+    /* b reports a hit: the server rewrote the path (the victim was already flying since before a) */
+    net::remote_player_snapshot a, b;
+    a.ph.pos = {1000.f, 0.f};
+    b.ph.pos = {1400.f, 0.f};
+    b.ph.vel = {3000.f, 0.f};
+    b.hits   = {7};
+
+    auto mid = net::remote_player_snapshot::interpolate(a, b, 0.5f, 0.016f);
+    CHECK(mid.ph.pos.x == Catch::Approx(1400.f - 3000.f * 0.008f)); /* on b's path, not half way from a */
+    CHECK(mid.hits == std::vector<u32>{7});                         /* confirms the prediction right away */
+
+    /* Hits known to both: a regular interpolation */
+    a.hits = {7};
+    CHECK(net::remote_player_snapshot::interpolate(a, b, 0.5f, 0.016f).ph.pos.x == Catch::Approx(1200.f));
 }
 
 TEST_CASE("net: teleported players jump on the client") {
@@ -1885,8 +1914,12 @@ TEST_CASE("net: bullet hits on the local player are predicted") {
 
     REQUIRE(srv_hit);
     REQUIRE(cli_hit);
-    /* Without prediction the knockback shows up one way trip (160..340 ms) after the server hit */
-    CHECK(*cli_hit - *srv_hit < 100ms);
+    /*
+     * Without prediction the knockback shows up one way trip (160..340 ms)
+     * after the server hit; predicted, it differs by the error of the
+     * client's estimate of the bullet's age (0..~100 ms with this jitter)
+     */
+    CHECK(*cli_hit - *srv_hit < 150ms);
 
     /* Settled: confirmed hits were not applied twice */
     f.run_for(2500ms);
@@ -1940,7 +1973,13 @@ TEST_CASE("net: predicted knockback follows the level geometry") {
     int                inside_floor    = 0;
     int                detached_legs   = 0;
     int                frames          = 0;
-    std::vector<vec2f> srv_path, cli_path;
+    std::vector<vec2f> cli_path;
+    /*
+     * The server's path: its per tick history, which the retroactive hit
+     * rewrites (the live position jumps over the rewritten part at once)
+     */
+    std::map<game_clock::time_point, vec2f> srv_arc;
+    auto teleports = f.bot->teleports();
     f.input = {.shot = true};
     f.run_for(1500ms, [&] {
         if (++frames == 20)
@@ -1951,8 +1990,10 @@ TEST_CASE("net: predicted knockback follows the level geometry") {
         auto sz  = f.remote_bot().get_size();
         server_off_edge = server_off_edge || srv.x > 2450.f;
         client_off_edge = client_off_edge || pos.x > 2450.f;
-        srv_path.push_back(srv);
         cli_path.push_back(pos);
+        for (auto& rec : f.gs_srv.history.at("bot"))
+            if (rec.end && rec.teleports == teleports)
+                srv_arc[rec.time] = rec.end->pos;
 
         /* The drawn bot can leave the floor past its edge, never through it */
         if (pos.x + sz.x > 150.f && pos.x < 2450.f && pos.y > 1050.f + 2.f)
@@ -1975,11 +2016,16 @@ TEST_CASE("net: predicted knockback follows the level geometry") {
      * the server gets the shot), but it follows the server's trajectory: slides
      * off the edge and falls, no floating, no sideways shift
      */
+    std::vector<vec2f> srv_path;
+    for (auto& [_, pos] : srv_arc)
+        srv_path.push_back(pos);
+    REQUIRE(srv_path.size() > 30);
+
     float max_path_error = 0.f;
     for (auto& p : cli_path) {
         if (p.y > 1800.f)
             continue; /* about to die and respawn */
-        /* Distance to the server's path (a polyline: its position changes once per tick) */
+        /* Distance to the server's path (a polyline of its tick positions) */
         float d = std::numeric_limits<float>::max();
         for (size_t i = 1; i < srv_path.size(); ++i) {
             auto a = srv_path[i - 1], ab = srv_path[i] - a;
@@ -1990,7 +2036,7 @@ TEST_CASE("net: predicted knockback follows the level geometry") {
         max_path_error = std::max(max_path_error, d);
     }
     UNSCOPED_INFO("max path error " << max_path_error);
-    CHECK(max_path_error < 25.f);
+    CHECK(max_path_error < 5.f);
 }
 
 /*
@@ -2111,6 +2157,47 @@ TEST_CASE("net: traffic in a fight") {
     /* Inputs carry the unacknowledged ticks only (~100 ms ping: a handful) */
     CHECK(inputs <= ticks);
     CHECK(input_avg < 40.0);
+}
+
+TEST_CASE("net: a hard hit on a remote player flies smoothly") {
+    using namespace std::chrono_literals;
+    auto latency = GENERATE(std::pair{1.0, 2.0}, std::pair{20.0, 30.0}, std::pair{80.0, 170.0});
+    CAPTURE(latency.first, latency.second);
+    hit_fixture f{latency.first, latency.second};
+    f.server_side().setup_pistol("wpn_ss50"); /* the hardest knockback */
+    f.run_for(1500ms);
+    REQUIRE(f.local().pistol_section() == "wpn_ss50");
+
+    /* One shot at the standing bot */
+    /* What is drawn this frame */
+    auto drawn = [&] {
+        return f.remote_bot().drawn_position(f.gs_cli.sim.interpolation_factor(), f.gs_cli.sim.last_timestep()).x;
+    };
+    auto x0    = drawn();
+    f.input    = {.shot = true};
+    std::vector<float> xs;
+    int frames = 0;
+    f.run_for(1500ms, [&] {
+        if (++frames == 3)
+            f.input = {};
+        if (drawn() > x0 + 2.f && xs.size() < 40) /* 200 ms of flight from the predicted hit */
+            xs.push_back(drawn());
+    });
+    REQUIRE(xs.size() == 40);
+
+    /*
+     * ~3500 px/s: ~17 px per 5 ms frame. Neither stopping in mid-air until the
+     * server confirms the hit (the prediction used to be limited), nor
+     * crossing the rest of the knockback at once when it does
+     */
+    float min_step = 1e9f, max_step = 0.f;
+    for (size_t i = 1; i < xs.size(); ++i) {
+        min_step = std::min(min_step, xs[i] - xs[i - 1]);
+        max_step = std::max(max_step, xs[i] - xs[i - 1]);
+    }
+    UNSCOPED_INFO("steps " << min_step << " .. " << max_step << " px");
+    CHECK(min_step > 10.f);
+    CHECK(max_step < 28.f);
 }
 
 TEST_CASE("net: predicted hits the server did not register fade out") {

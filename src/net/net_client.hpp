@@ -26,11 +26,28 @@ struct remote_player_snapshot {
     std::vector<u32>     hits; // bullets that hit the player in the last second
     u16                  teleports = 0;
 
-    static remote_player_snapshot interpolate(const remote_player_snapshot& a, const remote_player_snapshot& b, float f) {
+    static remote_player_snapshot
+    interpolate(const remote_player_snapshot& a, const remote_player_snapshot& b, float f, float span_s) {
         auto res = f < 1.f ? a : b;
         /* Teleported in between: no path between the positions, jump at the next snapshot */
         if (a.teleports != b.teleports)
             return res;
+
+        /*
+         * b reports hits a does not: the server applied them where the shooter
+         * saw them (retroactive hits), so the path up to b was rewritten and
+         * a is a stale position. Moving from a to b would cross the whole
+         * knockback within one snapshot interval: take b, moved back along
+         * its velocity instead (with its hits, which confirm the predictions)
+         */
+        auto new_hit = std::ranges::any_of(b.hits, [&](u32 id) { return std::ranges::find(a.hits, id) == a.hits.end(); });
+        if (new_hit) {
+            res     = b;
+            auto vel = b.ph.lock_y ? vec2f{b.ph.vel.x, 0.f} : b.ph.vel;
+            res.ph.pos -= vel * ((1.f - f) * span_s);
+            return res;
+        }
+
         res.ph.pos = lerp(a.ph.pos, b.ph.pos, f);
         res.ph.vel = lerp(a.ph.vel, b.ph.vel, f);
         return res;

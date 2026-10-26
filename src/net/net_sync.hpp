@@ -114,7 +114,8 @@ private:
 
 /**
  * Time-stamped snapshots of a remote entity for interpolation.
- * T must provide static T interpolate(const T& a, const T& b, float f).
+ * T must provide static T interpolate(const T& a, const T& b, float f, float span_s)
+ * (span_s: the time between a and b).
  * Samples may arrive out of order; sampling outside of the stored range
  * clamps to the oldest/newest snapshot
  */
@@ -149,7 +150,7 @@ public:
                                      [](const snap_t& s, double t) { return s.time_s < t; });
         auto prev = std::prev(next);
         auto f    = float((time_s - prev->time_s) / (next->time_s - prev->time_s));
-        return T::interpolate(prev->value, next->value, f);
+        return T::interpolate(prev->value, next->value, f, float(next->time_s - prev->time_s));
     }
 
     [[nodiscard]]
@@ -258,7 +259,9 @@ private:
  * re-simulates the victim (game_state::apply_hit_at), so the snapshots
  * that report the hit already show the motion predicted here: confirmed
  * hits are simply dropped from the prediction (the caller smooths the
- * small difference). Hits the server did not register fade out.
+ * small difference). Hits the server did not register fade out. The
+ * offset is not limited: it follows the game physics, and a hard hit must
+ * not stop in mid-air until it is confirmed.
  *
  * State needs pos, vel (vec2f) and lock_y (bool)
  */
@@ -266,7 +269,6 @@ template <typename Ref, typename State>
 class knockback_offset {
 public:
     static constexpr float fade_s       = 0.15f;
-    static constexpr float max_offset   = 150.f;
     static constexpr float remove_below = 0.05f; /* fade factor */
 
     /* Ghosts with and without the hits, started from the same state */
@@ -372,27 +374,19 @@ public:
             _accumulated = 0.f;
     }
 
-    /* Total offset, limited: a hit the server may not register never takes the player far */
     [[nodiscard]]
     vec2f offset() const {
-        auto o   = raw_offset();
-        auto len = magnitude(o);
-        return len > max_offset ? o * (max_offset / len) : o;
+        vec2f o = {0.f, 0.f};
+        for (auto& ep : _episodes)
+            o += ep.offset() + ep.velocity() * _accumulated; /* in between the fixed steps */
+        return o;
     }
 
-    /* Rate of change of offset(): at the limit, it does not grow any further */
     [[nodiscard]]
     vec2f velocity() const {
         vec2f v = {0.f, 0.f};
         for (auto& ep : _episodes)
             v += ep.velocity();
-
-        auto o   = raw_offset();
-        auto len = magnitude(o);
-        if (len > max_offset) {
-            auto n = o / len;
-            v -= n * std::max(v.x * n.x + v.y * n.y, 0.f);
-        }
         return v;
     }
 
@@ -418,14 +412,6 @@ public:
     }
 
 private:
-    [[nodiscard]]
-    vec2f raw_offset() const {
-        vec2f o = {0.f, 0.f};
-        for (auto& ep : _episodes)
-            o += ep.offset() + ep.velocity() * _accumulated; /* in between the fixed steps */
-        return o;
-    }
-
     std::vector<episode_t> _episodes;
     float                  _accumulated = 0.f;
 };

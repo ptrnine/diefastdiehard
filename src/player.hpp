@@ -330,6 +330,31 @@ public:
         return _render_offset;
     }
 
+    /* Half-life of the correction offset, real seconds */
+    static constexpr float render_offset_half_life = 0.05f;
+
+    /**
+     * Where the body is drawn, interpolation_factor of a tick (of timestep
+     * simulation seconds) after the last tick. A locally simulated player is
+     * moved on from its tick position; a player shown from snapshots
+     * (server-driven, not predicted) is already placed at the frame time
+     * (extrapolating it again would draw it up to a tick ahead, snapping back
+     * on every tick). The correction offset decays in between the ticks too
+     */
+    [[nodiscard]]
+    vec2f drawn_position(float interpolation_factor, float timestep) const {
+        auto pos = _collision_box->get_position();
+        if (!shown_from_snapshots())
+            pos += _collision_box->get_velocity() * (timestep * interpolation_factor);
+        return pos + _render_offset * std::exp2(-interpolation_factor * timestep * _real_time_per_sim_s /
+                                                render_offset_half_life);
+    }
+
+    [[nodiscard]]
+    bool shown_from_snapshots() const {
+        return _server_driven && !_predicted;
+    }
+
     void record_tick_impulse(bool hit, const vec2f& impulse) {
         if (!_replaying)
             (_tick_moved ? _tick_impulses.after_move : _tick_impulses.before_move).push_back({hit, impulse});
@@ -580,7 +605,8 @@ public:
 
         /* The correction offset decays with the simulation (half-life ~50ms) */
         if (!_replaying) {
-            _render_offset *= std::exp2(-timestep / sim.last_speed() / 0.05f);
+            _real_time_per_sim_s = 1.f / sim.last_speed();
+            _render_offset *= std::exp2(-timestep * _real_time_per_sim_s / render_offset_half_life);
             if (magnitude(_render_offset) < 0.01f)
                 _render_offset = {0.f, 0.f};
         }
@@ -722,12 +748,8 @@ public:
     }
 
     void draw(sf::RenderWindow& wnd, float interpolation_factor, float timestep, bool gravity_for_bullets = false) {
-        auto pos      = _collision_box->get_position();
-        auto next_pos = pos + _collision_box->get_velocity() * timestep;
-
-        pos = lerp(pos, next_pos, interpolation_factor);
-
-        pos += _render_offset;
+        auto pos    = drawn_position(interpolation_factor, timestep);
+        auto offset = pos - _collision_box->get_position(); /* the legs move with the body */
 
         auto adj = sprite_size_adjust_factors();
         auto dif = vec2f((_size.x * adj.x - _size.x) * 0.5f, _size.y * adj.y);
@@ -746,16 +768,12 @@ public:
         }
 
         /* Legs are positioned in absolute coordinates by the physics: shift them with the body */
-        static constexpr auto draw_leg_lerp =
-            [](auto&& wnd, float timestep, float factor, auto&& leg, const vec2f& vel, const vec2f& offset) {
-                vec2f pos      = leg.getPosition();
-                auto  next_pos = pos + vel * timestep;
-                leg.setPosition(lerp(pos, next_pos, factor) + offset);
-                wnd.draw(leg);
-                leg.setPosition(pos);
-            };
-        draw_leg_lerp(wnd, timestep, interpolation_factor, _left_leg, _collision_box->get_velocity(), _render_offset);
-        draw_leg_lerp(wnd, timestep, interpolation_factor, _right_leg, _collision_box->get_velocity(), _render_offset);
+        for (auto* leg : {&_left_leg, &_right_leg}) {
+            auto leg_pos = leg->getPosition();
+            leg->setPosition(leg_pos + offset);
+            wnd.draw(*leg);
+            leg->setPosition(leg_pos);
+        }
 
         if (_pistol) {
             auto [lh, rh] = _pistol.draw(arm_position(pos),
@@ -1155,6 +1173,7 @@ private:
     std::vector<predicted_hit_t>                                  _predicted_hits;
     std::deque<std::pair<u32, std::chrono::steady_clock::time_point>> _recent_hits;
     vec2f              _render_offset   = {0.f, 0.f};
+    float              _real_time_per_sim_s = 1.f; // 1 / game speed
     lag_compensation_t _lag_comp;
 
 public:
