@@ -11,6 +11,7 @@
 #include "base/types.hpp"
 #include "base/log.hpp"
 #include "net/net_protocol.hpp"
+#include "net/net_sync.hpp"
 #include "net/net_udp.hpp"
 #include "game_state.hpp"
 
@@ -38,13 +39,36 @@ public:
     using clock = game_clock;
 
     /*
-     * Input jitter buffer: after running dry, the queue refills to this many
-     * ticks before it is consumed again (absorbs the arrival jitter, each
-     * starving tick is a tick the client did not predict)
+     * Input jitter buffer: after running dry, the queue refills to the
+     * client's target number of ticks before it is consumed again (absorbs
+     * the arrival jitter, each starving tick is a tick the client did not
+     * predict). Every queued tick adds a tick of input latency, and the
+     * client's shots are forwarded by the wait. The target adapts to the
+     * measured arrival jitter (adaptive_target), this is the target until
+     * there are input_jitter_warmup_s of measurements
      */
-    static constexpr size_t target_queued_inputs = 3;
-    /* Queued input ticks above this are merged to bound the input latency */
+    static constexpr size_t target_queued_inputs  = 3;
+    static constexpr size_t max_target_inputs     = 8;
+    static constexpr double input_jitter_warmup_s = 1.0;
+    /* Queued input ticks above max(this, target + 4) are merged to bound the input latency */
     static constexpr size_t max_queued_inputs = 8;
+    /*
+     * A queue deeper than the target for this many ticks (a burst after a
+     * client hitch, a target that dropped) merges its oldest tick: once per
+     * window, until it is back at the target
+     */
+    static constexpr u32 drain_window_ticks = 60;
+
+    /**
+     * Ticks to buffer for an input arrival jitter of jitter_s: a tick is
+     * consumed (target - 1) ticks after the earliest arrival, so up to that
+     * late it is on time
+     */
+    [[nodiscard]]
+    static size_t adaptive_target(double jitter_s, double tick_s) {
+        auto late_ticks = std::max(std::ceil(jitter_s / tick_s - 0.1), 0.0);
+        return std::clamp<size_t>(size_t(late_ticks) + 1, 1, max_target_inputs);
+    }
     /* Without inputs for this long the client's player gets a neutral input */
     static constexpr auto input_timeout = std::chrono::milliseconds(500);
     /*
@@ -77,6 +101,10 @@ public:
         u8                 pending_edges = 0; // edges of inputs merged away, applied with the next one
         bool               buffering     = true; // refilling the jitter buffer
         clock::time_point  last_input_time;
+        server_clock       input_jitter;               // input arrivals: offset = arrival - seq * tick
+        size_t             target_inputs = target_queued_inputs;
+        size_t             min_depth     = std::numeric_limits<size_t>::max(); // queue depth in the drain window
+        u32                depth_ticks   = 0;
 
         /* Newest input's client time, echoed back for the client's RTT measurement */
         u32               echo_seq            = 0;
@@ -124,6 +152,34 @@ public:
 
     size_t client_count() const {
         return _clients.size();
+    }
+
+    /** Fixed input jitter buffer of every client, in ticks (1..max_target_inputs); empty: adaptive */
+    void input_buffer(std::optional<size_t> ticks) {
+        if (ticks)
+            ticks = std::clamp<size_t>(*ticks, 1, max_target_inputs);
+        _input_buffer = ticks;
+    }
+
+    [[nodiscard]]
+    std::optional<size_t> input_buffer() const {
+        return _input_buffer;
+    }
+
+    struct input_stats_t {
+        player_name_t player;
+        size_t        target;   /* ticks */
+        double        jitter_s; /* input arrival jitter */
+        float         wait_s;   /* the last applied input tick's wait in the queue */
+    };
+
+    [[nodiscard]]
+    std::vector<input_stats_t> input_stats() const {
+        std::vector<input_stats_t> res;
+        for (auto& [_, c] : _clients)
+            if (c.joined)
+                res.push_back({c.player_name, c.target_inputs, c.input_jitter.jitter(), c.input_wait_s});
+        return res;
     }
 
     [[nodiscard]]
@@ -389,6 +445,7 @@ private:
      */
     void apply_inputs(game_state& gs) {
         auto now = clock::now();
+        _tick_s  = std::chrono::duration<double>(gs.sim.tick_period()).count();
 
         for (auto& [key, client] : _clients) {
             if (!client.joined)
@@ -400,16 +457,41 @@ private:
 
             auto& q = client.inputs;
 
-            /* Too many queued ticks (client clock runs faster, burst after a stall): merge the oldest */
-            while (q.size() > max_queued_inputs) {
+            if (_input_buffer)
+                client.target_inputs = *_input_buffer;
+            else if (client.input_jitter.span() >= input_jitter_warmup_s)
+                client.target_inputs = adaptive_target(client.input_jitter.jitter(), _tick_s);
+            else
+                client.target_inputs = target_queued_inputs;
+
+            auto merge_oldest = [&] {
                 client.pending_edges |= u8(q.begin()->second.bits & in_edge_bits);
                 q.erase(q.begin());
-            }
+            };
+
+            /* Too many queued ticks (client clock runs faster, burst after a stall): merge the oldest */
+            while (q.size() > std::max(max_queued_inputs, client.target_inputs + 4))
+                merge_oldest();
 
             if (q.empty())
                 client.buffering = true;
-            else if (q.size() >= target_queued_inputs)
+            else if (q.size() >= client.target_inputs)
                 client.buffering = false;
+
+            /* Deeper than the target for a whole window: drain a tick (the client corrects its prediction) */
+            if (client.buffering) {
+                client.min_depth   = std::numeric_limits<size_t>::max();
+                client.depth_ticks = 0;
+            }
+            else {
+                client.min_depth = std::min(client.min_depth, q.size());
+                if (++client.depth_ticks >= drain_window_ticks) {
+                    if (client.min_depth > client.target_inputs && q.size() > 1)
+                        merge_oldest();
+                    client.min_depth   = std::numeric_limits<size_t>::max();
+                    client.depth_ticks = 0;
+                }
+            }
 
             u8  bits;
             if (!client.buffering) {
@@ -521,6 +603,7 @@ private:
         client.pending_edges = 0;
         client.buffering     = true;
         client.echo_seq      = 0;
+        client.input_jitter.reset();
 
         /* Create or reconfigure the player */
         player* pl = nullptr;
@@ -566,6 +649,12 @@ private:
             return;
 
         auto now = clock::now();
+
+        /* Arrival jitter (input_jitter): restarts after a pause (the client sends nothing while it doesn't tick) */
+        if (now - client->last_input_time > input_timeout)
+            client->input_jitter.reset();
+        client->input_jitter.on_state(std::chrono::duration<double>(now.time_since_epoch()).count(),
+                                      double(in.last_seq) * _tick_s);
 
         /* Newest input: RTT echo and lag compensation parameters */
         if (in.last_seq > client->echo_seq) {
@@ -647,6 +736,8 @@ private:
     u32                          _broadcast_seq  = 0;
     clock::time_point            _start_time     = clock::now();
     std::map<std::string, client_t> _clients;
+    std::optional<size_t>        _input_buffer; // fixed input jitter buffer target (ticks), adaptive if empty
+    double                       _tick_s = 0.016;
 
     u64                                     _last_broadcast_tick = 0;
     clock::time_point                       _last_broadcast_time;

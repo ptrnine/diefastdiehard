@@ -25,6 +25,13 @@ namespace dfdh::net {
 class server_clock {
 public:
     static constexpr double window_s         = 2.0;
+    /*
+     * Defaults of the interpolation delay: jitter + margin, at least min (see
+     * interp_settings). The margin also covers the error of the client's
+     * timing estimates (one way trip = rtt / 2): the hit predictions on
+     * remote players sample the snapshots at the server's rewound time, a
+     * smaller one (~20 ms) makes them miss on fast (knocked back) targets
+     */
     static constexpr double min_interp_s     = 0.033;
     static constexpr double max_interp_s     = 0.3;
     static constexpr double interp_margin_s  = 0.016 + 0.010; /* one broadcast frame + margin */
@@ -49,6 +56,39 @@ public:
         return !_samples.empty();
     }
 
+    /* Forget the samples (the offset jumped: e.g. the sender paused) */
+    void reset() {
+        _samples.clear();
+    }
+
+    /** Spread of the offsets in the window: the latency jitter, s */
+    [[nodiscard]]
+    double jitter() const {
+        return valid() ? _max_offset - _min_offset : 0.0;
+    }
+
+    /** Time the samples in the window cover, s */
+    [[nodiscard]]
+    double span() const {
+        return valid() ? _samples.back().local_s - _samples.front().local_s : 0.0;
+    }
+
+    /** The interpolation delay: jitter + margin_s, at least min_s */
+    void interp_settings(double min_s, double margin_s) {
+        _interp_min_s    = std::clamp(min_s, 0.0, max_interp_s);
+        _interp_margin_s = std::clamp(margin_s, 0.0, max_interp_s);
+    }
+
+    [[nodiscard]]
+    double interp_min() const {
+        return _interp_min_s;
+    }
+
+    [[nodiscard]]
+    double interp_margin() const {
+        return _interp_margin_s;
+    }
+
     [[nodiscard]]
     double server_now(double local_s) const {
         return local_s - _min_offset;
@@ -67,8 +107,8 @@ public:
     [[nodiscard]]
     double interp_delay() const {
         if (!valid())
-            return min_interp_s;
-        return std::clamp(_max_offset - _min_offset + interp_margin_s, min_interp_s, max_interp_s);
+            return std::max(_interp_min_s, _interp_margin_s);
+        return std::clamp(jitter() + _interp_margin_s, _interp_min_s, max_interp_s);
     }
 
     /**
@@ -110,6 +150,8 @@ private:
     double                _max_offset = 0.0;
     std::optional<double> _render_s;
     double                _render_local_s = 0.0;
+    double                _interp_min_s    = min_interp_s;
+    double                _interp_margin_s = interp_margin_s;
 };
 
 /**

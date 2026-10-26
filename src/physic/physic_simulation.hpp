@@ -434,6 +434,12 @@ public:
         return _interpolation_factor;
     }
 
+    /* Real time between ticks (the tick rate of the last update) */
+    [[nodiscard]]
+    std::chrono::milliseconds tick_period() const {
+        return std::chrono::milliseconds(uint(1000.f / float(last_rps())));
+    }
+
 private:
     void move_with_platforms(physic_point* prim, float timestep) {
         if (prim->allow_platform()) {

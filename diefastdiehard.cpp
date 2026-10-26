@@ -63,7 +63,71 @@ public:
         glog().info("fps: {}", cmd_opt<bool>(is_fps_counter_enabled()));
     }
 
+    void cmd_net(const std::optional<std::string>& value) {
+        if (value && *value == "help") {
+            gc.cmd_help("net");
+            return;
+        }
+        if (net_srv) {
+            auto fixed = net_srv->input_buffer();
+            glog().info("net input buffer: {}", fixed ? std::to_string(*fixed) + " ticks" : std::string("auto"));
+            for (auto& st : net_srv->input_stats())
+                glog().info("  {}: {} ticks, jitter {:.1f} ms, wait {:.1f} ms", st.player, st.target, st.jitter_s * 1000.0,
+                            st.wait_s * 1000.f);
+        }
+        if (net_cli) {
+            auto& clk = net_cli->clock_estimate();
+            glog().info("net interp: {:.1f} ms (jitter {:.1f} ms + margin {:.1f} ms, min {:.1f} ms), rtt {:.1f} ms",
+                        clk.interp_delay() * 1000.0, clk.jitter() * 1000.0, clk.interp_margin() * 1000.0,
+                        clk.interp_min() * 1000.0, net_cli->rtt() * 1000.f);
+        }
+        if (!net_srv && !net_cli)
+            glog().info("net: not in a multiplayer game");
+    }
+
+    void cmd_net_buffer(const std::string& value) {
+        if (!net_srv) {
+            glog().error("net buffer: not a server");
+            return;
+        }
+        if (value == "auto")
+            net_srv->input_buffer({});
+        else if (auto ticks = parse_count(value))
+            net_srv->input_buffer(*ticks);
+        else
+            glog().error("net buffer: expected 'auto' or a number of ticks, got '{}'", value);
+        cmd_net({});
+    }
+
+    void cmd_net_interp(const std::string& key, const std::string& value) {
+        if (!net_cli) {
+            glog().error("net interp: not a client");
+            return;
+        }
+        auto ms = parse_count(value);
+        if (!ms || (key != "min" && key != "margin")) {
+            glog().error("net interp: expected 'min|margin <ms>'");
+            return;
+        }
+        auto& clk = net_cli->clock_estimate();
+        auto  s   = double(*ms) / 1000.0;
+        net_cli->interp_settings(key == "min" ? s : clk.interp_min(), key == "margin" ? s : clk.interp_margin());
+        cmd_net({});
+    }
+
+    static std::optional<size_t> parse_count(const std::string& value) {
+        try {
+            return ston<size_t>(value);
+        }
+        catch (const std::exception&) {
+            return {};
+        }
+    }
+
     void init_commands() {
+        command_buffer().add_handler("net", &diefastdiehard::cmd_net, this);
+        command_buffer().add_handler("net buffer", &diefastdiehard::cmd_net_buffer, this);
+        command_buffer().add_handler("net interp", &diefastdiehard::cmd_net_interp, this);
         command_buffer().add_handler("fps", &diefastdiehard::cmd_fps, this);
         command_buffer().add_handler("log", &diefastdiehard::cmd_log, this);
         command_buffer().add_handler("log time", &diefastdiehard::cmd_log_time, this);
@@ -336,6 +400,12 @@ private:
             port = ston<u16>(*port_arg);
 
         net_srv = std::make_shared<net::net_server>(port);
+        if (auto buffer = args.by_key_opt<std::string>("--input-buffer"); buffer && *buffer != "auto") {
+            if (auto ticks = parse_count(*buffer))
+                net_srv->input_buffer(*ticks);
+            else
+                glog().error("multiplayer: --input-buffer expects 'auto' or a number of ticks, got '{}'", *buffer);
+        }
 
         if (!net_srv->is_ready())
             glog().error("multiplayer: can't start the server on port {}", port);
@@ -369,6 +439,18 @@ private:
 
         net_cli = std::make_shared<net::net_client>(
             ip, port, name, pc.pistol, pc.face_id, pc.body_id, pc.body_color, pc.tracer_color);
+
+        auto interp_ms = [&](const char* key, double default_s) {
+            auto value = args.by_key_opt<std::string>(key);
+            if (!value)
+                return default_s;
+            if (auto ms = parse_count(*value))
+                return double(*ms) / 1000.0;
+            glog().error("multiplayer: {} expects milliseconds, got '{}'", key, *value);
+            return default_s;
+        };
+        net_cli->interp_settings(interp_ms("--interp-min", net::server_clock::min_interp_s),
+                                 interp_ms("--interp-margin", net::server_clock::interp_margin_s));
 
         if (!net_cli->is_ready()) {
             glog().error("multiplayer: can't connect to {}", addr_str);

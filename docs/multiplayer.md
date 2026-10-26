@@ -8,9 +8,11 @@ The server compensates for each client's lag.
 ## Running
 
 ```sh
-./dfdh --server [--port=10443]                    # host: plays too (local keyboard player, bots)
-./dfdh --client 127.0.0.1:10443 [--name=client0]  # client
+./dfdh --server [--port=10443] [--input-buffer=auto|N]                       # host: plays too (local keyboard player, bots)
+./dfdh --client 127.0.0.1:10443 [--name=client0] [--interp-margin=MS] [--interp-min=MS]  # client
 ```
+
+The latency flags are optional (see Latency settings).
 
 A client sends its skin, tracer color and gun from its local player config
 (`player_configurator` of `--name`) in HELLO. In client mode,
@@ -162,12 +164,22 @@ the client: the old player is deleted.
   brings back an old input. Each server tick:
   - applies exactly one queued input tick, after `last_input_seq(seq)`, so
     the weapon counts input ticks and seeds its shots by the pull tick;
-  - runs a 3-tick jitter buffer: after running dry it waits for 3 queued
-    ticks. Dry ticks repeat the last held bits without edges and consume no
-    seq;
-  - above 8 queued ticks, merges the oldest ticks away, keeping their edges.
-    The merged ticks are not simulated, so the client's prediction of them
-    diverges and gets corrected (physics and weapon);
+  - runs a jitter buffer: after running dry it waits for the client's
+    target number of queued ticks. Dry ticks repeat the last held bits
+    without edges and consume no seq;
+  - the target adapts to the client's input arrival jitter
+    (`client_t::input_jitter`, a `server_clock` of `arrival − seq·tick`
+    over 2 s, restarted after 0.5 s without input):
+    `ceil(jitter / tick − 0.1) + 1` ticks (`adaptive_target`, 1..8). Each
+    queued tick is a tick of input latency and of the client's shot
+    forwarding (`lag`). Until 1 s is measured, the target is 3;
+  - drains a queue that stayed deeper than the target for a whole window
+    of 60 ticks (`drain_window_ticks`): merges its oldest tick. Without it,
+    the backlog of a client hitch (a stall, then the ticks at once) stayed
+    queued for good;
+  - above `max(8, target + 4)` queued ticks, merges the oldest ticks away,
+    keeping their edges. Merged ticks are not simulated, so the client's
+    prediction of them diverges and gets corrected (physics and weapon);
   - after 0.5 s without input, applies a neutral input.
 - **Lag:** the client reports its RTT (from the echoed client time) and its
   interpolation delay. The server sets per player
@@ -181,6 +193,25 @@ the client: the old player is deleted.
     saw the targets at `server_now − one way − interp`. Adding the wait (as
     `lag + interp` did) rewound ~3 ticks too far, so hits were tested
     against stale positions and retroactive knockbacks started early.
+
+## Latency settings
+
+| setting | side | default | CLI | console |
+|---------|------|---------|-----|---------|
+| input jitter buffer | server | adaptive | `--input-buffer=auto\|N` (ticks) | `net buffer auto\|N` |
+| interpolation margin | client | 26 ms | `--interp-margin=MS` | `net interp margin MS` |
+| interpolation minimum | client | 33 ms | `--interp-min=MS` | `net interp min MS` |
+
+`net` shows each client's buffer target, input jitter and queue wait (server)
+and the interpolation delay with its parts (client).
+
+The interpolation margin is not only snapshot headroom (one 16 ms state
+interval): it also absorbs the error of the client's timing estimates
+(one way trip = RTT/2, the interp it reported a trip ago). The hit
+predictions on remote players sample the snapshots at the server's rewound
+time; with less than ~26 ms they predict hits the server misses on fast
+(knocked back) targets (`net: remote knockback under sustained fire ...`
+fails). Lower it only on a stable LAN.
 
 ## Local player: prediction and reconciliation
 
@@ -241,7 +272,8 @@ tick N: X px`, `weapon correction ...`).
 
 - **`server_clock`:** estimates the server time from the least delayed state
   in a 2 s window. Its offset spread is the latency jitter:
-  `interp_delay = clamp(spread + 26 ms, 33 ms, 300 ms)`. Remote players are
+  `interp_delay = clamp(spread + margin, min, 300 ms)`, by default a 26 ms
+  margin and a 33 ms minimum (see Latency settings). Remote players are
   rendered at `server_now - interp_delay`, using a monotonic render clock
   that slews by at most 10 % (and snaps beyond 0.5 s).
 - **`snapshot_buffer`:** stores each remote player's snapshots (state,

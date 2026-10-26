@@ -958,6 +958,64 @@ TEST_CASE("net_server: handshake, rename and leave") {
         CHECK(pl.get_velocity().y < -500.f); /* the merged jump edge was applied */
     }
 
+    SECTION("the input buffer adapts to the arrival jitter, a deeper queue drains back") {
+        net::hello h;
+        h.name = "test1";
+        REQUIRE(cli.send(net::encode_msg(net::msg_type::hello, h)));
+        srv.update(gs);
+        cli.recv(std::chrono::milliseconds(50));
+
+        u32  seq       = 0;
+        auto tick_s    = std::chrono::duration<double>(gs.sim.tick_period()).count();
+        auto send_tick = [&](u32 count) {
+            seq += count;
+            REQUIRE(cli.send(net::encode_msg(net::msg_type::input,
+                                             net::input{.last_seq = seq, .bits = std::vector<u8>(count, 0)})));
+        };
+        auto run_ticks = [&](int n) {
+            for (int i = 0; i < n; ++i) {
+                game_clock::advance(gs.sim.tick_period());
+                send_tick(1);
+                srv.update(gs);
+                sim_tick(gs);
+            }
+        };
+        auto stats = [&] {
+            auto st = srv.input_stats();
+            REQUIRE(st.size() == 1);
+            return st.front();
+        };
+
+        /* Until it is measured: the default buffer */
+        run_ticks(10);
+        CHECK(stats().target == net::net_server::target_queued_inputs);
+
+        /* A steady client (no jitter): one tick, no wait (the ticks queued by the default buffer drain) */
+        run_ticks(int(4 * net::net_server::drain_window_ticks));
+        CHECK(stats().target == 1);
+        CHECK(stats().wait_s < 0.001f);
+
+        /*
+         * A client hitch: nothing for 5 ticks (the server runs dry), then the
+         * 5 ticks at once. They stay queued: each drain window merges one
+         */
+        for (int i = 0; i < 5; ++i) {
+            game_clock::advance(gs.sim.tick_period());
+            srv.update(gs);
+            sim_tick(gs);
+        }
+        send_tick(5);
+        run_ticks(5);
+        CHECK(stats().wait_s > float(3.5 * tick_s));
+        run_ticks(int(6 * net::net_server::drain_window_ticks));
+        CHECK(stats().wait_s < 0.001f);
+
+        /* A fixed buffer */
+        srv.input_buffer(4);
+        run_ticks(10);
+        CHECK(stats().target == 4);
+    }
+
     SECTION("leave removes the player") {
         net::hello h;
         h.name = "test1";
@@ -2149,6 +2207,18 @@ TEST_CASE("net: teleported players jump on the client") {
         watch([&] { return f.local().get_position().x + f.local().render_offset().x; }, 700.f, 800.f);
         CHECK(f.local().render_offset().x == 0.f);
     }
+}
+
+TEST_CASE("net: the input buffer of a steady client is short") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{25, 25};
+    f.run_for(3000ms);
+
+    /* Frames of 5 ms: the inputs arrive up to a frame late, a tick of buffer covers it (the default was 3) */
+    auto st = f.srv.input_stats();
+    REQUIRE(st.size() == 1);
+    CHECK(st.front().target <= 2);
+    CHECK(st.front().wait_s < 0.035f);
 }
 
 TEST_CASE("net: bullet hits on the local player are predicted") {

@@ -240,6 +240,11 @@ public:
         return _clock;
     }
 
+    /* Remote players are shown the state jitter + margin_s in the past, at least min_s (server_clock::interp_delay) */
+    void interp_settings(double min_s, double margin_s) {
+        _clock.interp_settings(min_s, margin_s);
+    }
+
     void update(game_state& gs) {
         if (!is_ready())
             return;

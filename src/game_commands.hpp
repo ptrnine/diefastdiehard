@@ -103,6 +103,14 @@ public:
                    "  lobby       - stop the game and open the lobby (server)\n"
                    "  lobby start - start the game with the lobby's map and game mode";
         }
+        else if (cmd == "net") {
+            help = "multiplayer latency settings\n"
+                   "available commands:\n"
+                   "  net                         - show the input buffers (server) and the interpolation delay (client)\n"
+                   "  net buffer [auto|ticks]     - input jitter buffer of the clients (server; auto: from their jitter)\n"
+                   "  net interp [min|margin] [ms] - remote players are shown jitter + margin in the past, at least\n"
+                   "                                min (client; below 33/26 ms hit predictions get less accurate)";
+        }
         else if (cmd == "game") {
             help = "game settings\n"
                    "available commands:\n"
