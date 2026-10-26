@@ -1427,6 +1427,79 @@ struct hit_fixture : net_game_fixture {
     }
 };
 
+TEST_CASE("player: teleport") {
+    game_state gs;
+    auto pl = gs.player_create("tp");
+    REQUIRE(pl);
+
+    auto t = std::chrono::steady_clock::now();
+    for (int i = 0; i < 10; ++i) {
+        t += std::chrono::milliseconds(16);
+        gs.sim.update_immediate(1.f / 60.f, t);
+    }
+    REQUIRE(pl->position_trace_lookup(gs.sim.current_update_time(), 0.05f));
+
+    auto before = pl->teleports();
+    pl->velocity({100.f, -50.f});
+    pl->add_render_offset({10.f, 0.f});
+    pl->teleport({300.f, 400.f});
+
+    CHECK(pl->teleports() == u16(before + 1));
+    CHECK(pl->get_position().x == 300.f);
+    CHECK(pl->get_position().y == 400.f);
+    CHECK(pl->get_velocity().x == 0.f);
+    CHECK(pl->render_offset().x == 0.f);
+    /* No lag compensation path across the teleport */
+    CHECK_FALSE(pl->position_trace_lookup(gs.sim.current_update_time(), 0.05f));
+
+    /* Spawning teleports */
+    REQUIRE(gs.level_current("lvl_aes"));
+    gs.player_spawn(pl);
+    CHECK(pl->teleports() == u16(before + 2));
+}
+
+TEST_CASE("net: remote snapshots are not interpolated across a teleport") {
+    net::remote_player_snapshot a, b;
+    a.ph.pos = {1000.f, 0.f};
+    b.ph.pos = {0.f, 0.f};
+    CHECK(net::remote_player_snapshot::interpolate(a, b, 0.5f).ph.pos.x == Catch::Approx(500.f));
+
+    b.teleports = 1;
+    CHECK(net::remote_player_snapshot::interpolate(a, b, 0.5f).ph.pos.x == Catch::Approx(1000.f));
+    CHECK(net::remote_player_snapshot::interpolate(a, b, 1.f).ph.pos.x == Catch::Approx(0.f));
+}
+
+TEST_CASE("net: teleported players jump on the client") {
+    using namespace std::chrono_literals;
+    hit_fixture f;
+
+    /* Every frame the client shows a player either at the old or at the new position, nothing in between */
+    auto watch = [&](auto&& visual_x, float from, float to) {
+        int  between = 0;
+        bool arrived = false;
+        f.run_for(1500ms, [&] {
+            auto x = visual_x();
+            if (std::abs(x - from) > 10.f && std::abs(x - to) > 10.f)
+                ++between;
+            arrived = arrived || std::abs(x - to) < 1.f;
+        });
+        CHECK(between == 0);
+        CHECK(arrived);
+    };
+
+    SECTION("remote player") {
+        f.bot->teleport({300.f, 1040.f});
+        watch([&] { return f.remote_bot().get_position().x; }, 1100.f, 300.f);
+    }
+
+    SECTION("local player") {
+        /* A short teleport: a regular prediction correction of this size would be smoothed */
+        f.server_side().teleport({800.f, 1040.f});
+        watch([&] { return f.local().get_position().x + f.local().render_offset().x; }, 700.f, 800.f);
+        CHECK(f.local().render_offset().x == 0.f);
+    }
+}
+
 TEST_CASE("net: bullet hits on the local player are predicted") {
     using namespace std::chrono_literals;
     hit_fixture f;

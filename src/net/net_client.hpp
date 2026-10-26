@@ -24,14 +24,24 @@ struct remote_player_snapshot {
     bool                 on_left  = false;
     bool                 shooting = false;
     std::vector<u32>     hits; // bullets that hit the player in the last second
+    u16                  teleports = 0;
 
     static remote_player_snapshot interpolate(const remote_player_snapshot& a, const remote_player_snapshot& b, float f) {
-        auto res   = f < 1.f ? a : b;
+        auto res = f < 1.f ? a : b;
+        /* Teleported in between: no path between the positions, jump at the next snapshot */
+        if (a.teleports != b.teleports)
+            return res;
         res.ph.pos = lerp(a.ph.pos, b.ph.pos, f);
         res.ph.vel = lerp(a.ph.vel, b.ph.vel, f);
         return res;
     }
 };
+
+/* Wrapping counter a is ahead of b */
+inline bool counter_newer(u16 a, u16 b) {
+    auto diff = u16(a - b);
+    return diff != 0 && diff < 0x8000;
+}
 
 inline player::physic_state to_physic_state(const state_player& sp) {
     return {{sp.pos_x, sp.pos_y}, {sp.vel_x, sp.vel_y}, sp.lock_y != 0, sp.jumps_left, sp.accel_lf, sp.accel_rf};
@@ -292,11 +302,16 @@ private:
      * on divergence restore it and re-simulate the unacknowledged ticks
      */
     void reconcile(game_state& gs, player& pl, const player::physic_state& server_st, u32 ack_seq,
-                   const std::vector<u32>& server_hits) {
+                   const std::vector<u32>& server_hits, u16 teleports) {
+        /* Teleported on the server (respawn): jump there right away, even without a new ack */
+        bool teleported = !_local_teleports || counter_newer(teleports, *_local_teleports);
+
         /* Reordered older state, or the same ack again (already reconciled) */
-        if (ack_seq < _last_ack || (ack_seq == _last_ack && ack_seq != 0))
+        if (!teleported && (ack_seq < _last_ack || (ack_seq == _last_ack && ack_seq != 0)))
             return;
-        _last_ack = ack_seq;
+        _last_ack = std::max(_last_ack, ack_seq);
+        if (teleported)
+            _local_teleports = teleports;
 
         /*
          * Hits the server already applied are in the server state: never replay
@@ -310,7 +325,7 @@ private:
                 });
 
         auto predicted = _history.find(ack_seq);
-        if (!predicted || diverged(predicted->state, server_st)) {
+        if (teleported || !predicted || diverged(predicted->state, server_st)) {
             auto old_pos = pl.get_position();
 
             pl.restore_physic_state(server_st);
@@ -328,7 +343,10 @@ private:
             pl.replaying(false);
 
             auto correction = old_pos - pl.get_position();
-            pl.add_render_offset(correction);
+            if (teleported)
+                pl.reset_render_offset();
+            else
+                pl.add_render_offset(correction);
             ++_corrections;
             _max_correction = std::max(_max_correction, magnitude(correction));
             glog().detail("net client: prediction correction at tick {}: {} px", ack_seq, magnitude(correction));
@@ -463,10 +481,18 @@ private:
                 continue;
 
             auto& pl = *found->second;
+            auto& kb = _knockbacks[name];
+
+            /* Teleported: the predicted knockbacks belong to the old position */
+            auto& seen = _remote_teleports[name];
+            if (seen != snap->teleports) {
+                seen = snap->teleports;
+                kb   = {};
+                (void)pl.take_predicted_hits();
+            }
 
             /* Predicted hits: shown as a knockback offset until the snapshots show them */
-            auto& kb   = _knockbacks[name];
-            auto  mass = pl.collision_box()->get_mass();
+            auto mass = pl.collision_box()->get_mass();
             for (auto& hit : pl.take_predicted_hits()) {
                 auto dv = hit.impulse / mass;
                 if (hit.grounded && hit.impulse.y >= lift_impulse)
@@ -596,10 +622,11 @@ private:
             pl->set_server_driven(true);
 
             if (is_local)
-                reconcile(gs, *pl, to_physic_state(sp), st.ack_seq, sp.hits);
+                reconcile(gs, *pl, to_physic_state(sp), st.ack_seq, sp.hits, sp.teleports);
             else
                 _remote[sp.name].push(double(st.server_time_ms) / 1000.0,
-                                      remote_player_snapshot{to_physic_state(sp), sp.on_left != 0, sp.shooting != 0, sp.hits});
+                                      remote_player_snapshot{to_physic_state(sp), sp.on_left != 0, sp.shooting != 0,
+                                                             sp.hits, sp.teleports});
         }
 
         auto age = std::min(state_age(st), game_state::max_lag_compensation);
@@ -723,6 +750,8 @@ private:
     server_clock _clock;
     std::map<player_name_t, snapshot_buffer<remote_player_snapshot>> _remote;
     std::map<player_name_t, knockback_offset<bullet_ref>>            _knockbacks;
+    std::map<player_name_t, std::optional<u16>>                      _remote_teleports;
+    std::optional<u16>                                               _local_teleports;
     double                                                           _last_remote_apply_s = 0.0;
     std::deque<predicted_bullet_t>                                   _predicted;
     float                                                            _max_bullet_correction = 0.f;

@@ -226,6 +226,7 @@ private:
         sp.on_left      = pl.get_on_left() ? 1 : 0;
         sp.shooting     = pl.shotting() ? 1 : 0;
         sp.group        = pl.get_group();
+        sp.teleports    = pl.teleports();
         sp.hits         = pl.recent_hit_ids();
         return sp;
     }

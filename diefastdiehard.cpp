@@ -337,7 +337,7 @@ private:
             net_ctrl = std::make_shared<net_player_controller>(1000);
             net_ctrl->player_name = pname;
             net_cli->input_source([ctrl = net_ctrl] { return ctrl->take_input_state(); });
-            gs.player_spawn(pl);
+            /* No local spawn: the server spawns the player, the first state places it */
             gs.game_run(true);
             glog().info("multiplayer: controlling player {}", pname);
 

@@ -272,6 +272,30 @@ public:
         return _render_offset;
     }
 
+    void reset_render_offset() {
+        _render_offset = {0.f, 0.f};
+    }
+
+    /**
+     * Instantly move the player (spawn, respawn): stops it and counts the
+     * teleport, so network clients jump to the new position instead of
+     * interpolating or smoothing across the map. The position trace (lag
+     * compensation history) restarts: there is no path between the positions
+     */
+    void teleport(const vec2f& pos) {
+        position(pos);
+        velocity({0.f, 0.f});
+        _position_trace.clear();
+        _render_offset = {0.f, 0.f};
+        ++_teleports;
+    }
+
+    /** Number of teleports so far (wraps around) */
+    [[nodiscard]]
+    u16 teleports() const {
+        return _teleports;
+    }
+
     /**
      * Lag compensation of a remote (network) player's shots, seconds:
      * lag    - time between the shot on the client and its processing on the server;
@@ -1029,6 +1053,7 @@ private:
     drop_gun_fn_t _drop_gun_cb;
 
     vec2f              _pending_impulse = {0.f, 0.f};
+    u16                _teleports       = 0;
 
     std::vector<predicted_hit_t>                                  _predicted_hits;
     std::deque<std::pair<u32, std::chrono::steady_clock::time_point>> _recent_hits;

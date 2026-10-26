@@ -240,9 +240,7 @@ public:
         }
 
         if (player) {
-            auto pos = cur_level->pick_player_spawn();
-            player->position(pos);
-            player->velocity({0.f, 0.f});
+            player->teleport(cur_level->pick_player_spawn());
             player->enable_double_jump();
         } else {
             for (auto& [_, p] : players)
