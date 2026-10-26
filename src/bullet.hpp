@@ -186,6 +186,7 @@ public:
         float flight;        // flight time along the trajectory now, s
         float shown_flight;  // flight time the shown players were tested up to, s
         bool  own = false;   // the local player's predicted bullet: swept against the remote players only
+        std::optional<double> view = {}; // own: the server time shown at the shot's tick (net::input::view_base)
 
         /*
          * Drawing: where the remote players see the bullet (the shown frame)

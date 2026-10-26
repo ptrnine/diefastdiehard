@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 16;
+inline constexpr u16 protocol_version = 17;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -142,25 +142,71 @@ struct welcome {
 struct input {
     static constexpr size_t max_window = 32;
 
+    /* View times: server time in 1/view_scale s */
+    static constexpr double view_scale = 4000.0;
+
     u32              last_seq       = 0;
     u32              client_time_ms = 0; // echoed back in the state for RTT measurement
     u16              rtt_ms         = 0; // client-measured round-trip time
-    u16              interp_ms      = 0; // client remote-player interpolation delay
     std::vector<u8>  bits;
+    /*
+     * The server time the client was showing (its render time) at each tick
+     * of bits: the newest one (view_base, 0: unknown, nothing shown yet),
+     * and view_steps[i] from tick i to i + 1 (a tick ~16 ms, the ticks of
+     * one frame 0; sent without a length: bits.size() - 1 of them). The
+     * server tests the client's shots against the players at that time
+     */
+    u32             view_base  = 0;
+    std::vector<u8> view_steps = {};
 
     [[nodiscard]]
     u32 first_seq() const {
         return last_seq + 1 - u32(bits.size());
     }
 
+    [[nodiscard]]
+    std::optional<double> view_s(size_t i) const {
+        if (view_base == 0 || i >= bits.size() || view_steps.size() + 1 != bits.size())
+            return {};
+        auto q = i64(view_base);
+        for (size_t j = i; j < view_steps.size(); ++j)
+            q -= view_steps[j];
+        return double(q) / view_scale;
+    }
+
+    /* Set the views of bits (the same count), server times in s; a step over 64 ms (a frame hitch) is cut */
+    void set_views(const std::vector<double>& views_s) {
+        view_steps.clear();
+        view_base = 0;
+        if (views_s.size() != bits.size() || views_s.empty())
+            return;
+        std::vector<i64> q;
+        for (auto v : views_s)
+            q.push_back(std::max(i64(std::llround(v * view_scale)), i64(1)));
+        view_base = u32(q.back());
+        for (size_t i = 0; i + 1 < q.size(); ++i)
+            view_steps.push_back(u8(std::clamp<i64>(q[i + 1] - q[i], 0, 255)));
+    }
+
     void serialize(auto& s) const {
-        s.write(last_seq, client_time_ms, rtt_ms, interp_ms, bits);
+        s.write(last_seq, client_time_ms, rtt_ms, bits, view_base);
+        if (view_base != 0)
+            for (size_t i = 0; i + 1 < bits.size(); ++i)
+                s.write(i < view_steps.size() ? view_steps[i] : u8(0));
     }
 
     void deserialize(auto& d) {
-        d.read(last_seq, client_time_ms, rtt_ms, interp_ms, bits);
+        d.read(last_seq, client_time_ms, rtt_ms, bits, view_base);
         if (bits.size() > max_window || bits.size() > size_t(last_seq))
             throw std::out_of_range("net: bad input window");
+        view_steps.clear();
+        if (view_base != 0) {
+            if (bits.empty())
+                throw std::out_of_range("net: bad input views");
+            view_steps.resize(bits.size() - 1);
+            for (auto& step : view_steps)
+                d.read(step);
+        }
     }
 };
 
@@ -475,8 +521,6 @@ struct state {
     u32 echo_client_time_ms = 0; // client_time_ms of the client's newest input
     u16 echo_hold_ms        = 0; // time since that input was received
     std::optional<weapon_sync> own_weapon; // the client's player's weapon (if it has a gun)
-    u16 own_lag    = 0; // the client's lag compensation: its shots are forwarded by lag (shot_info::forward units)
-    u16 own_rewind = 0; // ... and hit the players rewind ago (same units)
     std::optional<game_mode_info> mode;    // only when the client may not know it (see net_server)
     std::optional<lobby_info>     lobby;   // same policy as mode
 
@@ -493,13 +537,13 @@ struct state {
     alive_set alive_bullets;
 
     void serialize(auto& s) const {
-        s.write(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, own_lag, own_rewind, mode,
-                lobby, configs, players, shots, crates, guns, alive_bullets);
+        s.write(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, mode, lobby, configs, players,
+                shots, crates, guns, alive_bullets);
     }
 
     void deserialize(auto& d) {
-        d.read(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, own_lag, own_rewind, mode,
-               lobby, configs, players, shots, crates, guns, alive_bullets);
+        d.read(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, mode, lobby, configs, players,
+               shots, crates, guns, alive_bullets);
     }
 };
 

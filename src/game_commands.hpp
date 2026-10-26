@@ -108,8 +108,8 @@ public:
                    "available commands:\n"
                    "  net                         - show the input buffers (server) and the interpolation delay (client)\n"
                    "  net buffer [auto|ticks]     - input jitter buffer of the clients (server; auto: from their jitter)\n"
-                   "  net interp [min|margin] [ms] - remote players are shown jitter + margin in the past, at least\n"
-                   "                                min (client; below 33/26 ms hit predictions get less accurate)";
+                   "  net interp [min|margin] [ms] - remote players are shown jitter + state interval + margin\n"
+                   "                                in the past, at least min (client)";
         }
         else if (cmd == "game") {
             help = "game settings\n"

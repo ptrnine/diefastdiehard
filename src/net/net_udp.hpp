@@ -84,7 +84,7 @@ public:
             /* Simulated latency: queue the datagram and let it go out only after
              * its one-way delay has elapsed */
             flush_due_sends();
-            _pending_sends.push_back({game_clock::now() + one_way_delay(),
+            _pending_sends.push_back({game_clock::now() + one_way_delay() + to_duration_ms(_send_extra_ms),
                                       address, port, std::vector<u8>(data.begin(), data.end())});
             return true;
         }
@@ -156,9 +156,14 @@ public:
         _delay_max_ms = std::max(min_ms, max_ms);
     }
 
+    /* An extra simulated delay of the sent datagrams only: an asymmetric link (tests) */
+    void set_simulated_send_delay(double extra_ms) {
+        _send_extra_ms = std::max(extra_ms, 0.0);
+    }
+
     [[nodiscard]]
     bool simulated_latency() const {
-        return _delay_max_ms > 0.0;
+        return _delay_max_ms > 0.0 || _send_extra_ms > 0.0;
     }
 
     /* Traffic sent so far (payloads with the protocol header, without UDP/IP headers) */
@@ -198,10 +203,15 @@ private:
         received_datagram    datagram;
     };
 
+    double _send_extra_ms = 0.0;
+
+    static std::chrono::steady_clock::duration to_duration_ms(double ms) {
+        return std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double, std::milli>(ms));
+    }
+
     std::chrono::steady_clock::duration one_way_delay() {
         std::uniform_real_distribution<double> dist(_delay_min_ms, _delay_max_ms);
-        return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::duration<double, std::milli>(dist(_ping_rng)));
+        return to_duration_ms(dist(_ping_rng));
     }
 
     /* Send every queued datagram whose simulated deadline has passed */

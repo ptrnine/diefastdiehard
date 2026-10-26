@@ -799,8 +799,10 @@ public:
     /**
      * Spawn a bullet of the owner's weapon. A lag-compensated (network) owner
      * shot lag seconds ago on its screen: the bullet spawns forwarded by the
-     * distance it would have flown since, and the skipped segment is covered
-     * by a hit-scan against the players as the owner saw them (rewound).
+     * distance it would have flown since, and the skipped path is swept
+     * against the players as the owner saw them while the bullet flew it:
+     * the path at flight f against the players rewind + lag - f ago (its
+     * view time + f, like rewound_bullets_tick_update sweeps the rest).
      * A server-driven owner's bullet is a prediction (client side): it gets
      * no net id until the authoritative bullet is matched to it
      */
@@ -825,12 +827,20 @@ public:
         auto [pos, vel] = ballistic_forward(start, velocity, gravity, lag);
 
         if (lag > 0.f) {
-            if (auto hit = hitscan(start, pos, rewind, owner)) {
-                apply_hit_at(*hit->target, velocity * mass, hit->position, bullet_ref{id, {}, owner.name()},
-                             sim.current_update_time() - to_duration(rewind));
-                cur_frame_bullets.push_back(
-                    {owner.name(), id, key, start, start, velocity, velocity, 0.f, 0.f, mass, owner.tracer_color(), gravity, false, {}});
-                return;
+            /* Tick by tick, ending at flight f1 (like a tick of the rewound sweep) */
+            auto tick_s = std::chrono::duration<float>(sim.tick_period()).count();
+            for (float f0 = 0.f; f0 < lag; f0 += tick_s) {
+                auto f1      = std::min(f0 + tick_s, lag);
+                auto a       = ballistic_forward(start, velocity, gravity, f0).first;
+                auto [b, bv] = ballistic_forward(start, velocity, gravity, f1);
+                auto back    = rewind + (lag - f1);
+                if (auto hit = hitscan(a, b, back, owner)) {
+                    apply_hit_at(*hit->target, bv * mass, hit->position, bullet_ref{id, {}, owner.name()},
+                                 sim.current_update_time() - to_duration(back));
+                    cur_frame_bullets.push_back(
+                        {owner.name(), id, key, start, start, velocity, velocity, 0.f, 0.f, mass, owner.tracer_color(), gravity, false, {}});
+                    return;
+                }
             }
         }
 

@@ -73,7 +73,6 @@ TEST_CASE("protocol: message round-trips") {
         in.last_seq       = 42;
         in.client_time_ms = 1234;
         in.rtt_ms         = 250;
-        in.interp_ms      = 90;
         in.bits           = {in_bit_left, in_bit_left | in_bit_shot};
 
         auto data = encode_msg(msg_type::input, in);
@@ -85,9 +84,28 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(r.first_seq() == 41);
         CHECK(r.client_time_ms == 1234);
         CHECK(r.rtt_ms == 250);
-        CHECK(r.interp_ms == 90);
         REQUIRE(r.bits.size() == 2);
         CHECK(r.bits[1] == (in_bit_left | in_bit_shot));
+        CHECK_FALSE(r.view_s(0)); /* no views */
+
+        /* The view (shown server time) of every tick, 0.25 ms precision, a byte per older tick */
+        in.bits = {0, 0, 0};
+        in.set_views({12.3456, 12.3456, 12.3617}); /* the first two ticks in one frame */
+        auto with_views = encode_msg(msg_type::input, in);
+        CHECK(with_views.size() == data.size() + 1 + 2); /* a tick more, its 2 steps (the base is always there) */
+        auto rv = read_msg<input>(decode_msg({with_views.data(), with_views.size()}).payload);
+        REQUIRE(rv.view_s(0));
+        REQUIRE(rv.view_s(2));
+        CHECK(*rv.view_s(0) == Catch::Approx(12.3456).margin(2e-4));
+        CHECK(*rv.view_s(1) == Catch::Approx(12.3456).margin(2e-4));
+        CHECK(*rv.view_s(2) == Catch::Approx(12.3617).margin(2e-4));
+
+        /* Truncated views */
+        input r_views;
+        auto  views_msg = decode_msg({with_views.data(), with_views.size()});
+        CHECK_FALSE(try_read_msg(views_msg.payload.first(views_msg.payload.size() - 1), r_views));
+        in.bits      = {in_bit_left, in_bit_left | in_bit_shot};
+        in.view_base = 0;
 
         /* A window reaching before seq 1 is malformed */
         in.last_seq = 1;
@@ -1016,6 +1034,40 @@ TEST_CASE("net_server: handshake, rename and leave") {
         CHECK(stats().target == 4);
     }
 
+    SECTION("a shot's lag compensation is the time since the view the client reported") {
+        net::hello h;
+        h.name = "test1";
+        REQUIRE(cli.send(net::encode_msg(net::msg_type::hello, h)));
+        srv.update(gs);
+        cli.recv(std::chrono::milliseconds(50));
+        auto& pl = *gs.players.at("test1");
+
+        /* The server time of the next tick (STATE stamps its ticks in ms), a while after the start */
+        game_clock::advance(std::chrono::seconds(1));
+        sim_tick(gs);
+        srv.update(gs);
+        std::optional<u32> server_ms;
+        for (auto& d : cli.recv(std::chrono::milliseconds(50)))
+            if (auto msg = net::decode_msg({d.data.data(), d.data.size()}); msg.type == net::msg_type::state)
+                server_ms = net::read_msg<net::state>(msg.payload).server_time_ms;
+        REQUIRE(server_ms);
+        game_clock::advance(gs.sim.tick_period());
+        auto next_s = double(*server_ms) / 1000.0 + std::chrono::duration<double>(gs.sim.tick_period()).count();
+
+        /* It showed the server 70 ms before the tick; its RTT estimate (300 ms) does not matter */
+        net::input in{.last_seq = 3, .rtt_ms = 300, .bits = {0, 0, 0}};
+        in.set_views({next_s - 0.07, next_s - 0.07, next_s - 0.07});
+        REQUIRE(cli.send(net::encode_msg(net::msg_type::input, in)));
+        srv.update(gs);
+        sim_tick(gs);
+
+        auto lc = pl.lag_compensation();
+        CHECK(lc.lag + lc.rewind == Catch::Approx(0.07f).margin(0.0015f));
+        /* The forwarded flight is whole ticks: the server sweeps where the client does */
+        auto tick_s = std::chrono::duration<float>(gs.sim.tick_period()).count();
+        CHECK(lc.lag / tick_s == Catch::Approx(std::round(lc.lag / tick_s)).margin(1e-3f));
+    }
+
     SECTION("leave removes the player") {
         net::hello h;
         h.name = "test1";
@@ -1297,7 +1349,8 @@ TEST_CASE("net_sync: server clock and snapshot interpolation") {
         }
         auto now = 100.0 + 60 * 0.016;
         CHECK(clk.server_now(now) == Catch::Approx(now - 10.0 - 0.08).margin(0.001));
-        CHECK(clk.interp_delay() == Catch::Approx(0.09 + server_clock::interp_margin_s).margin(0.001));
+        /* The jitter + the longest state interval + the margin */
+        CHECK(clk.interp_delay() == Catch::Approx(0.09 + clk.max_interval() + server_clock::interp_margin_s).margin(0.001));
 
         /* Render time is monotonic and moves with the local clock */
         double prev = clk.render_time(now);
@@ -1781,16 +1834,31 @@ TEST_CASE("game_state: lag-compensated bullets") {
         CHECK(gs.cur_frame_bullets[0].id == blt.net_id());
     }
 
-    SECTION("the skipped segment is a hit-scan against the rewound players") {
-        shooter->lag_compensation({0.5f, 0.25f});
+    SECTION("the skipped path is swept against the players as the shooter saw them in its flight") {
+        /*
+         * The bullet reaches x = 500 at flight 1/3 s, which the shooter saw
+         * lag - 1/3 s ago with the players rewind before: 0.1 + 0.5 - 1/3 =
+         * 0.27 s ago the target was at y ~= 130 (box 40 .. 130): a hit
+         */
+        shooter->lag_compensation({0.5f, 0.1f});
         target->velocity({0.f, 0.f});
         gs.spawn_bullet(*shooter, start, {1500.f, 0.f}, 1.f, false);
 
-        /* Hit 0.25 s in the past: no bullet, the target got the impulse */
+        /* No bullet, the target got the impulse */
         CHECK(gs.blt_mgr.bullets().empty());
         CHECK(target->get_velocity().x > 0.f);
         CHECK(target->pop_on_hit_event());
         REQUIRE(gs.cur_frame_bullets.size() == 1);
+    }
+
+    SECTION("the skipped path is not tested against the players of one fixed time") {
+        /* 0.25 + 0.5 - 1/3 = 0.42 s ago the target was at y ~= 40 (0.25 s ago it covered y 120) */
+        shooter->lag_compensation({0.5f, 0.25f});
+        target->velocity({0.f, 0.f});
+        gs.spawn_bullet(*shooter, start, {1500.f, 0.f}, 1.f, false);
+
+        CHECK(gs.blt_mgr.bullets().size() == 1);
+        CHECK(target->get_velocity().x == 0.f);
     }
 
     SECTION("no lag: a plain bullet at the muzzle") {
@@ -2333,17 +2401,21 @@ TEST_CASE("net: hits of a lagging shooter on the local player are predicted (100
     CHECK(f.local().get_position().x == Catch::Approx(f.server_side().get_position().x).margin(1.f));
 }
 
-/* Where the client draws its server bullets (bullet_mgr::draw at a tick), the leftmost live one */
-static std::optional<float> leftmost_drawn_bullet(game_state& gs) {
+/*
+ * Where the client draws its server bullets (bullet_mgr::draw at a tick):
+ * the leftmost live one at the height of the box (top .. bottom)
+ */
+static std::optional<float> leftmost_drawn_bullet(game_state& gs, float top, float bottom) {
     std::optional<float> res;
     for (auto& blt : gs.blt_mgr.bullets()) {
         auto& ph = blt.physic();
         if (ph->ready_delete_later())
             continue;
-        auto x = ph->get_position().x;
+        auto pos = ph->get_position();
         if (auto& fr = blt.framed(); fr && !fr->own)
-            x += fr->draw_offset(ph->get_position(), ph->get_velocity()).x;
-        res = std::min(res.value_or(x), x);
+            pos += fr->draw_offset(ph->get_position(), ph->get_velocity());
+        if (pos.y >= top && pos.y <= bottom)
+            res = std::min(res.value_or(pos.x), pos.x);
     }
     return res;
 }
@@ -2377,22 +2449,30 @@ TEST_CASE("net: server bullets are drawn where they hit the remote and the local
     auto& target = remote ? *f.gs_cli.players.at("host") : f.local();
     auto  right  = x + target.get_size().x; /* the bullet flies left */
 
-    REQUIRE(f.bot->shot());
+    /*
+     * Single shots until a hit: the dispersion (random) can make a shot miss
+     * at this distance (above or below). One bullet in flight at a time
+     */
     std::optional<float> last_drawn, drawn_at_hit;
     float                min_drawn_before = std::numeric_limits<float>::max();
+    auto                 top              = target.get_position().y - target.get_size().y;
+    auto                 bottom           = target.get_position().y;
     auto                 t0               = game_clock::now();
-    f.run_for(1000ms, [&] {
-        if (game_clock::now() - t0 > 40ms)
-            f.bot->relax();
+    f.run_for(3000ms, [&] {
         if (drawn_at_hit)
             return;
+        if ((game_clock::now() - t0) % 700ms < 40ms)
+            f.bot->shot();
+        else
+            f.bot->relax();
         if (target.get_position().x < x - 1.f) {
             drawn_at_hit = last_drawn;
             return;
         }
-        if ((last_drawn = leftmost_drawn_bullet(f.gs_cli)))
+        if ((last_drawn = leftmost_drawn_bullet(f.gs_cli, top, bottom)))
             min_drawn_before = std::min(min_drawn_before, *last_drawn);
     });
+    f.bot->relax();
 
     REQUIRE(drawn_at_hit);
     /* Never drawn through the target before the hit, and at the target when it is hit (a tick of flight: ~24 px) */
@@ -2437,7 +2517,14 @@ TEST_CASE("net: own bullet hits on a falling remote player are predicted as the 
 
     auto weapon = GENERATE(as<std::string>{}, "wpn_ak9", "wpn_glk17");
     auto drop_y = GENERATE(905.f, 940.f); /* the stream flies at ~990..1030 */
-    CAPTURE(weapon, drop_y);
+    /*
+     * An asymmetric link: the inputs take 40 ms longer than the states. An
+     * RTT / 2 estimate of the one way trips would test the hits 20 ms off;
+     * the client's reported view time is exact
+     */
+    auto send_delay = GENERATE(0.0, 40.0);
+    CAPTURE(weapon, drop_y, send_delay);
+    f.cli->channel().set_simulated_send_delay(send_delay);
 
     f.server_side().setup_pistol(weapon);
     f.run_for(1000ms);
@@ -2486,6 +2573,7 @@ TEST_CASE("net: predicted knockback follows the level geometry") {
     REQUIRE(f.remote_bot().get_position().x == Catch::Approx(2380.f).margin(1.f));
 
     bool               server_off_edge = false, client_off_edge = false;
+    bool               fell_out        = false; /* the drawn path ends there (it respawns elsewhere) */
     int                inside_floor    = 0;
     int                detached_legs   = 0;
     int                frames          = 0;
@@ -2506,7 +2594,9 @@ TEST_CASE("net: predicted knockback follows the level geometry") {
         auto sz  = f.remote_bot().get_size();
         server_off_edge = server_off_edge || srv.x > 2450.f;
         client_off_edge = client_off_edge || pos.x > 2450.f;
-        cli_path.push_back(pos);
+        fell_out = fell_out || pos.y > 1800.f;
+        if (!fell_out)
+            cli_path.push_back(pos);
         for (auto& rec : f.gs_srv.history.at("bot"))
             if (rec.end && rec.teleports == teleports)
                 srv_arc[rec.time] = rec.end->pos;

@@ -90,8 +90,9 @@ public:
 
         /* Received, not yet applied input ticks (seq -> bits), applied one per tick in seq order */
         struct queued_input {
-            u8                bits;
-            clock::time_point received; // first arrival (the wait in the queue is part of the shooter's lag)
+            u8                    bits;
+            clock::time_point     received; // first arrival (the wait in the queue is part of the shooter's lag)
+            std::optional<double> view_s;   // the server time the client was showing at the tick
         };
         std::map<u32, queued_input> inputs;
         float                       input_wait_s = 0.f; // time the last applied input tick waited in the queue
@@ -111,7 +112,6 @@ public:
         u32               echo_client_time_ms = 0;
         clock::time_point echo_recv_time;
         float             rtt_s    = 0.f;
-        float             interp_s = 0.f;
 
         u32 lobby_session = 0; // lobby_request::session
         u32 lobby_seq     = 0; // last applied lobby_request of the session
@@ -412,10 +412,6 @@ private:
 
             auto own      = gs.players.find(client.player_name);
             st.own_weapon = own != gs.players.end() ? make_weapon_sync(*own->second) : std::nullopt;
-            /* What the client's shots are compensated by (game_state::spawn_bullet): it predicts their hits with it */
-            auto lc       = own != gs.players.end() ? own->second->lag_compensation() : player::lag_compensation_t{};
-            st.own_lag    = shot_info::pack_forward(std::min(lc.lag, game_state::max_lag_compensation));
-            st.own_rewind = shot_info::pack_forward(std::min(lc.rewind, game_state::max_lag_compensation));
 
             /* The configs the client may not know */
             bool new_client = now - client.joined_time < config_resend;
@@ -494,9 +490,11 @@ private:
             }
 
             u8  bits;
+            std::optional<double> view_s;
             if (!client.buffering) {
                 /* Missing seqs before the head are lost for good (they would be in every newer window) */
                 auto head            = q.begin();
+                view_s               = head->second.view_s;
                 bits                 = head->second.bits | client.pending_edges;
                 client.ack_seq       = head->first;
                 client.next_seq      = head->first + 1;
@@ -520,16 +518,37 @@ private:
             found->second->last_input_seq(client.ack_seq);
             found->second->apply_input(player_input_state::from_bits(bits));
 
-            /*
-             * The shot is forwarded by the time since the client fired it (one
-             * way trip + the measured wait in the input queue). The targets are
-             * rewound to where the client saw them: its view of the server lags
-             * by the one way trip and its interpolation delay, not by the queue
-             * wait
-             */
-            auto one_way = client.rtt_s * 0.5f;
-            found->second->lag_compensation({one_way + client.input_wait_s, one_way + client.interp_s});
+            /* A starving tick keeps the compensation of the last applied one */
+            if (!client.buffering)
+                found->second->lag_compensation(lag_compensation_of(client, gs, view_s));
         }
+    }
+
+    /**
+     * Lag compensation of a client's tick that showed the server time view_s.
+     * A shot is forwarded by the time since the client fired it (lag: one way
+     * trip + the measured wait in the input queue, an estimate). At flight f
+     * the client saw it together with the players at view + f, so they are
+     * tested rewind = (tick time - view) - lag ago: exact, whatever the lag
+     * estimate. The lag is whole ticks: the server sweeps the bullet's path
+     * tick by tick, ending at the flights the client sweeps its prediction
+     * at (net_client::own_bullet_hit: view + n ticks). Without a view
+     * (nothing shown yet) the view is estimated: the client's view of the
+     * server lags by the one way trip and about the default interpolation
+     */
+    [[nodiscard]]
+    player::lag_compensation_t lag_compensation_of(const client_t& client, const game_state& gs,
+                                                   std::optional<double> view_s) const {
+        auto one_way = client.rtt_s * 0.5f;
+        auto lag     = one_way + client.input_wait_s;
+        if (!view_s)
+            return {lag, one_way + float(server_clock::default_interval_s + server_clock::interp_margin_s)};
+
+        auto tick_s = std::chrono::duration<double>(gs.sim.current_update_time() - _start_time).count();
+        auto behind = float(std::clamp(tick_s - *view_s, 0.0, double(game_state::max_lag_compensation)));
+        auto tick   = float(_tick_s);
+        lag         = std::floor(std::min(lag, behind) / tick + 1e-3f) * tick;
+        return {lag, std::max(behind - lag, 0.f)};
     }
 
     void handle_msg(game_state& gs, const received_datagram& datagram) {
@@ -662,7 +681,6 @@ private:
             client->echo_client_time_ms = in.client_time_ms;
             client->echo_recv_time      = now;
             client->rtt_s               = float(in.rtt_ms) / 1000.f;
-            client->interp_s            = float(in.interp_ms) / 1000.f;
             client->last_input_time     = now;
         }
 
@@ -672,7 +690,7 @@ private:
         for (u32 i = 0; i < in.bits.size(); ++i) {
             auto seq = in.first_seq() + i;
             if (seq >= client->next_seq)
-                client->inputs.emplace(seq, client_t::queued_input{in.bits[i], now});
+                client->inputs.emplace(seq, client_t::queued_input{in.bits[i], now, in.view_s(i)});
         }
     }
 

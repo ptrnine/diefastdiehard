@@ -20,34 +20,41 @@ namespace dfdh::net {
  * (= clock difference + one-way latency). The smallest offset in a sliding
  * window is the least delayed datagram, so local - min_offset estimates the
  * server time; the spread of the offsets in the window is the latency
- * jitter, which the interpolation delay has to cover.
+ * jitter, which the interpolation delay has to cover, plus the longest
+ * interval between the states (the next snapshot must be there: the
+ * sender sends once per frame, which can run more than one tick).
  */
 class server_clock {
 public:
     static constexpr double window_s         = 2.0;
-    /*
-     * Defaults of the interpolation delay: jitter + margin, at least min (see
-     * interp_settings). The margin also covers the error of the client's
-     * timing estimates (one way trip = rtt / 2): the hit predictions on
-     * remote players sample the snapshots at the server's rewound time, a
-     * smaller one (~20 ms) makes them miss on fast (knocked back) targets
-     */
-    static constexpr double min_interp_s     = 0.033;
-    static constexpr double max_interp_s     = 0.3;
-    static constexpr double interp_margin_s  = 0.016 + 0.010; /* one broadcast frame + margin */
+    /* Defaults of the interpolation delay: jitter + state interval + margin, at least min (see interp_settings) */
+    static constexpr double min_interp_s       = 0.020;
+    static constexpr double max_interp_s       = 0.3;
+    static constexpr double interp_margin_s    = 0.010;
+    static constexpr double default_interval_s = 0.016; /* the state interval before it is measured (a tick) */
+    static constexpr double max_interval_s     = 0.1;   /* longer pauses (e.g. a paused game) are not a state rate */
     static constexpr double max_slew         = 0.1;  /* render clock speed deviation */
     static constexpr double snap_threshold_s = 0.5;
 
     void on_state(double local_s, double server_s) {
-        _samples.push_back({local_s, local_s - server_s});
+        /* Interval since the newest state so far (an older reordered one has none) */
+        auto interval = 0.0;
+        if (_newest_server_s && server_s > *_newest_server_s)
+            interval = std::min(server_s - *_newest_server_s, max_interval_s);
+        if (!_newest_server_s || server_s > *_newest_server_s)
+            _newest_server_s = server_s;
+
+        _samples.push_back({local_s, local_s - server_s, interval});
         while (!_samples.empty() && _samples.front().local_s < local_s - window_s)
             _samples.pop_front();
 
-        _min_offset = std::numeric_limits<double>::max();
-        _max_offset = std::numeric_limits<double>::lowest();
+        _min_offset   = std::numeric_limits<double>::max();
+        _max_offset   = std::numeric_limits<double>::lowest();
+        _max_interval = 0.0;
         for (auto& smp : _samples) {
-            _min_offset = std::min(_min_offset, smp.offset_s);
-            _max_offset = std::max(_max_offset, smp.offset_s);
+            _min_offset   = std::min(_min_offset, smp.offset_s);
+            _max_offset   = std::max(_max_offset, smp.offset_s);
+            _max_interval = std::max(_max_interval, smp.interval_s);
         }
     }
 
@@ -59,6 +66,7 @@ public:
     /* Forget the samples (the offset jumped: e.g. the sender paused) */
     void reset() {
         _samples.clear();
+        _newest_server_s.reset();
     }
 
     /** Spread of the offsets in the window: the latency jitter, s */
@@ -67,13 +75,19 @@ public:
         return valid() ? _max_offset - _min_offset : 0.0;
     }
 
+    /** Longest interval between the states in the window, s (a tick before there are two) */
+    [[nodiscard]]
+    double max_interval() const {
+        return _max_interval > 0.0 ? _max_interval : default_interval_s;
+    }
+
     /** Time the samples in the window cover, s */
     [[nodiscard]]
     double span() const {
         return valid() ? _samples.back().local_s - _samples.front().local_s : 0.0;
     }
 
-    /** The interpolation delay: jitter + margin_s, at least min_s */
+    /** The interpolation delay: jitter + max_interval + margin_s, at least min_s */
     void interp_settings(double min_s, double margin_s) {
         _interp_min_s    = std::clamp(min_s, 0.0, max_interp_s);
         _interp_margin_s = std::clamp(margin_s, 0.0, max_interp_s);
@@ -106,9 +120,7 @@ public:
     /** Remote players are shown this far in the past */
     [[nodiscard]]
     double interp_delay() const {
-        if (!valid())
-            return std::max(_interp_min_s, _interp_margin_s);
-        return std::clamp(jitter() + _interp_margin_s, _interp_min_s, max_interp_s);
+        return std::clamp(jitter() + max_interval() + _interp_margin_s, _interp_min_s, max_interp_s);
     }
 
     /**
@@ -143,11 +155,14 @@ private:
     struct sample_t {
         double local_s;
         double offset_s;
+        double interval_s; /* since the previous newest state */
     };
 
     std::deque<sample_t>  _samples;
-    double                _min_offset = 0.0;
-    double                _max_offset = 0.0;
+    double                _min_offset   = 0.0;
+    double                _max_offset   = 0.0;
+    double                _max_interval = 0.0;
+    std::optional<double> _newest_server_s;
     std::optional<double> _render_s;
     double                _render_local_s = 0.0;
     double                _interp_min_s    = min_interp_s;
@@ -440,9 +455,17 @@ public:
 
     [[nodiscard]]
     vec2f offset() const {
+        return offset_unless([](const Ref&) { return false; });
+    }
+
+    /* The offset of the episodes none of whose hits reported(ref) (a state that already shows them) */
+    template <typename F>
+    [[nodiscard]]
+    vec2f offset_unless(F&& reported) const {
         vec2f o = {0.f, 0.f};
         for (auto& ep : _episodes)
-            o += ep.offset() + ep.velocity() * _accumulated; /* in between the fixed steps */
+            if (std::ranges::none_of(ep.hits, [&](const hit_t& h) { return reported(h.ref); }))
+                o += ep.offset() + ep.velocity() * _accumulated; /* in between the fixed steps */
         return o;
     }
 

@@ -77,9 +77,10 @@ public:
         }
         if (net_cli) {
             auto& clk = net_cli->clock_estimate();
-            glog().info("net interp: {:.1f} ms (jitter {:.1f} ms + margin {:.1f} ms, min {:.1f} ms), rtt {:.1f} ms",
-                        clk.interp_delay() * 1000.0, clk.jitter() * 1000.0, clk.interp_margin() * 1000.0,
-                        clk.interp_min() * 1000.0, net_cli->rtt() * 1000.f);
+            glog().info("net interp: {:.1f} ms (jitter {:.1f} ms + state interval {:.1f} ms + margin {:.1f} ms, min {:.1f} "
+                        "ms), rtt {:.1f} ms",
+                        clk.interp_delay() * 1000.0, clk.jitter() * 1000.0, clk.max_interval() * 1000.0,
+                        clk.interp_margin() * 1000.0, clk.interp_min() * 1000.0, net_cli->rtt() * 1000.f);
         }
         if (!net_srv && !net_cli)
             glog().info("net: not in a multiplayer game");

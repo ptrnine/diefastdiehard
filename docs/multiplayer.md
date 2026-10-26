@@ -80,13 +80,13 @@ Every datagram has a header `u16 type, u16 payload_size`, then an
 `ss::serializer` payload: little endian, with **u16** string and vector
 length prefixes (`net::wire_size_type`; the serializer default is u64).
 **Bump `net::protocol_version`** on any wire change: a HELLO with another
-version is answered with ERROR. The current version is 16.
+version is answered with ERROR. The current version is 17.
 
 | id | dir | payload |
 |----|-----|---------|
 | 1 HELLO | C → S | `u16 version`, name, pistol section, face_id, body_id, body color, tracer color |
 | 2 WELCOME | S → C | player name |
-| 3 INPUT | C → S | `u32 last_seq`, `u32 client_time_ms`, `u16 rtt_ms`, `u16 interp_ms`, `vector<u8> bits`: the input ticks not acknowledged yet (up to 32), where `bits[i]` belongs to tick `last_seq - size + 1 + i` |
+| 3 INPUT | C → S | `u32 last_seq`, `u32 client_time_ms`, `u16 rtt_ms`, `vector<u8> bits`: the input ticks not acknowledged yet (up to 32), where `bits[i]` belongs to tick `last_seq - size + 1 + i`; `u32 view_base`, then (if not 0) `size − 1` raw `u8` view steps: the views (see Lag) |
 | 4 STATE | S → C | see below; encoded per client, sent once per server tick (every 100 ms while paused) |
 | 5 LEAVE | C → S | player name |
 | 6 ERROR | S → C | message (duplicate name, version mismatch, ...) |
@@ -94,7 +94,6 @@ version is answered with ERROR. The current version is 16.
 
 STATE contains:
 - **Header:** `tick` (broadcast sequence number), `server_time_ms` (time of the simulated tick), `ack_seq` (the last input tick applied to this client's player), and `echo_client_time_ms` + `echo_hold_ms` (RTT echo of the newest input).
-- **`own_lag`, `own_rewind`:** the lag compensation of the client's shots (u16, 1/32768 s, see Input), for its hit prediction.
 - **`own_weapon`:** the client's own player's weapon logic state (`weapon_sync`: ammo, logic animation id and time, time since the last shot, reloading/trigger flags, shot index and seed), if it holds a gun. Only the recipient's player is reconciled, so other players' weapons are not sent.
 - **`mode`, the game mode, only when the client may not know it:** section name, bullet gravity, crate drop period (see `src/game_mode.hpp`). It is sent with the same policy as the player configs (1 s after the join or a change, every 30th broadcast); the client applies the newest one with `game_state::game_mode_set` and sets `game_mode_networked`, so its console cannot change the game mode.
 - **`lobby`, only when the client may not know it (the same policy as `mode`):** `u8 active`, level and game mode sections. While active, these are the owner's choices; in game, what is played.
@@ -181,37 +180,43 @@ the client: the old player is deleted.
     keeping their edges. Merged ticks are not simulated, so the client's
     prediction of them diverges and gets corrected (physics and weapon);
   - after 0.5 s without input, applies a neutral input.
-- **Lag:** the client reports its RTT (from the echoed client time) and its
-  interpolation delay. The server sets per player
-  (`player::lag_compensation`), each capped at
-  `game_state::max_lag_compensation` (1 s):
-  - `lag = rtt/2 + wait`: how far a shot is forwarded, i.e. the time since
-    the client fired it. `wait` is the measured time the applied input tick
-    spent in the queue (arrival → its tick).
-  - `rewind = rtt/2 + interp`: how far targets are rewound, i.e. how old the
-    client's view of them was. The queue wait is not part of it: the client
-    saw the targets at `server_now − one way − interp`. Adding the wait (as
-    `lag + interp` did) rewound ~3 ticks too far, so hits were tested
-    against stale positions and retroactive knockbacks started early.
+- **View:** with every input tick the client reports its view: the server
+  time it was showing then (`_shown_time`, the render time of the last
+  frame; INPUT `view_base` and per tick `view_steps` in 0.25 ms, ~1 byte a
+  tick). A bullet at flight `f` was on its screen together with the
+  players at `view + f`: that is what the server tests.
+- **Lag** (`net_server::lag_compensation_of`, per applied tick, capped at
+  `game_state::max_lag_compensation`, 1 s), with `behind = S_k − view`
+  (`S_k`: the server time of the tick):
+  - `lag = rtt/2 + wait`, rounded down to whole ticks and at most `behind`:
+    how far a shot is forwarded (an estimate of the time since the client
+    fired it; `wait` is the measured time the tick spent in the queue).
+    Whole ticks: the server sweeps the path at the flights the client
+    sweeps its prediction at (`view + n` ticks);
+  - `rewind = behind − lag`: how far the targets are rewound. Only the sum
+    matters for the hits, and it is measured, not estimated: the old
+    `rtt/2 + interp` was off by the asymmetry of the trips, the RTT jitter,
+    the render clock's slewing and an interp reported a trip ago.
+  - Without a view (nothing shown yet), `rewind = rtt/2 + 26 ms`.
 
 ## Latency settings
 
 | setting | side | default | CLI | console |
 |---------|------|---------|-----|---------|
 | input jitter buffer | server | adaptive | `--input-buffer=auto\|N` (ticks) | `net buffer auto\|N` |
-| interpolation margin | client | 26 ms | `--interp-margin=MS` | `net interp margin MS` |
-| interpolation minimum | client | 33 ms | `--interp-min=MS` | `net interp min MS` |
+| interpolation margin | client | 10 ms | `--interp-margin=MS` | `net interp margin MS` |
+| interpolation minimum | client | 20 ms | `--interp-min=MS` | `net interp min MS` |
 
 `net` shows each client's buffer target, input jitter and queue wait (server)
 and the interpolation delay with its parts (client).
 
-The interpolation margin is not only snapshot headroom (one 16 ms state
-interval): it also absorbs the error of the client's timing estimates
-(one way trip = RTT/2, the interp it reported a trip ago). The hit
-predictions on remote players sample the snapshots at the server's rewound
-time; with less than ~26 ms they predict hits the server misses on fast
-(knocked back) targets (`net: remote knockback under sustained fire ...`
-fails). Lower it only on a stable LAN.
+The interpolation delay is the state jitter + the longest state interval
+in the window (16 ms, 32 ms when a server frame runs two ticks) + the
+margin: ~26 ms on a steady link (it was max(jitter + 26 ms, 33 ms)). The
+hit predictions no longer need it (they use the exact view), but the
+hand-over of a predicted hard knockback to the confirming snapshots does:
+with less than ~10 ms margin it shows a jump (`net: a hard hit on a remote
+player flies smoothly`).
 
 ## Local player: prediction and reconciliation
 
@@ -272,8 +277,8 @@ tick N: X px`, `weapon correction ...`).
 
 - **`server_clock`:** estimates the server time from the least delayed state
   in a 2 s window. Its offset spread is the latency jitter:
-  `interp_delay = clamp(spread + margin, min, 300 ms)`, by default a 26 ms
-  margin and a 33 ms minimum (see Latency settings). Remote players are
+  `interp_delay = clamp(spread + max state interval + margin, min, 300 ms)`,
+  by default a 10 ms margin and a 20 ms minimum (see Latency settings). Remote players are
   rendered at `server_now - interp_delay`, using a monotonic render clock
   that slews by at most 10 % (and snaps beyond 0.5 s).
 - **`snapshot_buffer`:** stores each remote player's snapshots (state,
@@ -321,9 +326,12 @@ tick N: X px`, `weapon correction ...`).
   players only.
 - **Network shooter** (server): the bullet spawns forwarded to
   `start + vel·lag` along its ballistic path (`ballistic_forward`). The
-  skipped segment is hit-scanned (`game_state::hitscan`) against the other
-  players rewound by `rewind` (`player::position_trace_lookup`); a hit
-  consumes the bullet.
+  skipped path is swept tick by tick (`game_state::hitscan`): the part
+  ending at flight `f` against the other players rewound by
+  `rewind + lag − f` (`player::position_trace_lookup`), i.e. at `view + f`
+  like the rest of the flight. A hit consumes the bullet. (It used to be
+  tested against the players at one time, `S_k − rewind`: newer than the
+  shooter saw, by up to `lag`.)
 - **Whole flight:** a lag-compensated bullet (`bullet::lag_compensate`)
   does not collide with players physically. Every tick, the segment it flew
   is swept against the players rewound by the same amount
@@ -474,13 +482,14 @@ the server id when the bullet is confirmed.
 
 **Own bullets vs. remote players** (`own_bullet_hit`): own predicted
 bullets don't collide with players physically. Every tick their path is
-swept against the remote players where the server tests it: the server
-applies the shot tick `k` at `S_k`, forwarded by `lag` (the skipped path is
-hit-scanned against the players at `S_k − rewind`), then sweeps each tick's
-path against the players `rewind` ago. So the remote players are taken
-from their snapshots at `S_k − rewind + max(flight − lag, 0)` (about the
-shown time), plus the predicted knockback offset, with the server's `lag`
-and `rewind` from STATE. Testing them where they are drawn instead missed
+swept against the remote players where the server tests it: the path
+ending at flight `f` against the players at `view + f`, `view` being the
+view the client reported for the shot's tick (`bullet::framed_t::view`, set
+at the end of the tick that fired it). That is about the shown time, so it
+is in the snapshots, and it needs no clock estimate (an asymmetric link is
+covered by a test). Plus the predicted knockback offset, except of the hits
+the sampled snapshot already reports (it can be newer than the shown one,
+which confirms them: `knockback_offset::offset_unless`). Testing them where they are drawn instead missed
 the server's hits on fast-falling players by up to a tick of fall: a hit in
 the head the server did not have, or a bullet under the feet that the
 server registered. A teleport clears the server's position trace: a newer
@@ -544,6 +553,8 @@ across a teleport.
   - Mean one-way trip ≈ 2× the mean delay; RTT ≈ 4×.
   - For example, ~100 ms ping needs a delay of ~25 ms (24..26 ms).
   - If only one side of the link is built with it, halve these numbers.
+  - `set_simulated_send_delay(extra_ms)` delays the sent datagrams only: an
+    asymmetric link.
 - **`tests/net_test.cpp`:**
   - protocol round-trips, input queue, prediction units,
     `knockback_offset`, retroactive history;
