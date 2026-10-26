@@ -24,7 +24,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 5;
+inline constexpr u16 protocol_version = 6;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -184,15 +184,26 @@ struct state_player {
 
     std::vector<u32> hits; // ids of the bullets that hit the player in the last second
 
+    /* Weapon logic state (see weapon_instance::sync_state) */
+    u32   ammo           = 0;
+    u8    wpn_anim       = 0;
+    float wpn_anim_time  = 0.f;
+    float wpn_since_shot = 0.f;
+    u8    wpn_flags      = 0; // 1: reloading, 2: trigger held
+    u32   shot_index     = 0;
+    u32   seed_base      = 0;
+
     void serialize(auto& s) const {
         s.write(std::string(name), pistol, face_id, body_id, body_color, tracer_color,
-                pos_x, pos_y, vel_x, vel_y, jumps_left, lock_y, accel_lf, accel_rf, on_left, shooting, group, teleports, hits);
+                pos_x, pos_y, vel_x, vel_y, jumps_left, lock_y, accel_lf, accel_rf, on_left, shooting, group, teleports, hits,
+                ammo, wpn_anim, wpn_anim_time, wpn_since_shot, wpn_flags, shot_index, seed_base);
     }
 
     void deserialize(auto& d) {
         std::string n;
         d.read(n, pistol, face_id, body_id, body_color, tracer_color,
-               pos_x, pos_y, vel_x, vel_y, jumps_left, lock_y, accel_lf, accel_rf, on_left, shooting, group, teleports, hits);
+               pos_x, pos_y, vel_x, vel_y, jumps_left, lock_y, accel_lf, accel_rf, on_left, shooting, group, teleports, hits,
+               ammo, wpn_anim, wpn_anim_time, wpn_since_shot, wpn_flags, shot_index, seed_base);
         name = n;
     }
 };

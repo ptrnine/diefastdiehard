@@ -228,6 +228,16 @@ private:
         sp.group        = pl.get_group();
         sp.teleports    = pl.teleports();
         sp.hits         = pl.recent_hit_ids();
+        if (auto& gun = pl.get_gun()) {
+            auto ws           = gun.get_sync_state();
+            sp.ammo           = ws.ammo;
+            sp.wpn_anim       = ws.anim;
+            sp.wpn_anim_time  = ws.anim_time;
+            sp.wpn_since_shot = ws.since_shot;
+            sp.wpn_flags      = u8((ws.on_reload ? 1 : 0) | (ws.on_shot ? 2 : 0));
+            sp.shot_index     = ws.shot_index;
+            sp.seed_base      = ws.seed_base;
+        }
         return sp;
     }
 

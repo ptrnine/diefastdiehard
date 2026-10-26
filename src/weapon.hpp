@@ -2,6 +2,8 @@
 
 #include <SFML/Graphics/RenderWindow.hpp>
 #include <SFML/Graphics/Sprite.hpp>
+#include <algorithm>
+#include <array>
 #include <utility>
 
 #include "base/rand_pool.hpp"
@@ -479,8 +481,34 @@ public:
 
     struct anim_spec_t {
         std::string _name;
-        timer   _timer = {};
+        float       _time        = 0.f; /* simulation seconds (advanced on ticks) */
         bool        _stop_at_end = true;
+    };
+
+    /* Animations that drive the weapon logic (anim ids of sync_state) */
+    static constexpr std::array<std::string_view, 6> anim_names = {"", "shot", "reload", "load_start", "shell", "load_end"};
+
+    /**
+     * Everything that decides when the weapon fires and reloads: the client
+     * prediction of a network player is corrected with the server's
+     */
+    struct sync_state {
+        u32   ammo       = 0;
+        u8    anim       = 0; /* index in anim_names, 0: none */
+        float anim_time  = 0.f;
+        float since_shot = 0.f;
+        bool  on_reload  = false;
+        bool  on_shot    = false;
+        u32   shot_index = 0;
+        u32   seed_base  = 0; /* 0: not seeded */
+
+        [[nodiscard]]
+        bool diverged(const sync_state& s) const {
+            constexpr float time_eps = 0.001f;
+            return ammo != s.ammo || anim != s.anim || on_reload != s.on_reload || on_shot != s.on_shot ||
+                   shot_index != s.shot_index || seed_base != s.seed_base ||
+                   std::abs(anim_time - s.anim_time) > time_eps || std::abs(since_shot - s.since_shot) > time_eps;
+        }
     };
 
     weapon_instance() = default;
@@ -531,8 +559,57 @@ public:
             return;
         }
 
-        _current_anim = anim_spec_t{name, {}};
+        _current_anim = anim_spec_t{name};
         _anim_played_sounds.clear();
+    }
+
+    [[nodiscard]]
+    sync_state get_sync_state() const {
+        sync_state s{_ammo_elapsed, 0, 0.f, _since_shot, _on_reload, _on_shot, _shot_index, _seed_base.value_or(0)};
+        if (_current_anim) {
+            auto found = std::ranges::find(anim_names, std::string_view(_current_anim->_name));
+            if (found != anim_names.end()) {
+                s.anim      = u8(found - anim_names.begin());
+                s.anim_time = _current_anim->_time;
+            }
+        }
+        return s;
+    }
+
+    /* Restore the weapon logic state, as it was after the input tick input_seq */
+    void restore_sync_state(const sync_state& s, u32 input_seq) {
+        _ammo_elapsed = s.ammo;
+        if (s.anim != 0 && s.anim < anim_names.size()) {
+            if (!_current_anim || _current_anim->_name != anim_names[s.anim])
+                play_animation(std::string(anim_names[s.anim]));
+            if (_current_anim)
+                _current_anim->_time = s.anim_time;
+        }
+        else
+            _current_anim.reset();
+        _since_shot   = s.since_shot;
+        _on_reload    = s.on_reload;
+        _on_shot      = s.on_shot;
+        _shot_index   = s.shot_index;
+        _seed_base    = s.seed_base != 0 ? std::optional{s.seed_base} : std::nullopt;
+        _input_tick         = input_seq;
+        _counted_input_tick = input_seq;
+    }
+
+    /**
+     * Re-simulate one tick of the weapon logic without any effect (no
+     * bullets, sounds or flash; client rollback). Returns the recoil if it
+     * fires
+     */
+    std::optional<float> replay_tick(float timestep) {
+        if (!_wpn || !tick(timestep))
+            return {};
+        ++_shot_index; /* as shot() does */
+        play_animation("shot");
+        --_ammo_elapsed;
+        _on_reload  = false;
+        _since_shot = 0.f;
+        return _wpn->_recoil;
     }
 
     template <typename F = int, typename F2 = void (*)(const vec2f&, const vec2f&, float)>
@@ -551,29 +628,9 @@ public:
         if (!_wpn)
             return {};
 
-        if (_ammo_elapsed == 0 && !_current_anim && !_on_reload) {
-            _on_reload = true;
-            if (_wpn->_wpn_class == weapon::shotgun)
-                play_animation("load_start");
-            else
-                play_animation("reload");
-            return {};
-        }
-
-        /*
-         * Fire rate in simulation time, updated once per tick. A network player's
-         * weapon counts its applied input ticks instead (the server can tick
-         * without a new input while waiting for one), so the shots land on the
-         * same input ticks on the server and in the client's prediction
-         */
-        if (_input_tick) {
-            auto ticks       = _counted_input_tick ? *_input_tick - *_counted_input_tick : 1u;
-            _counted_input_tick = _input_tick;
-            _since_shot += sim.last_timestep() * float(ticks);
-        }
-        else
-            _since_shot += sim.last_timestep();
-        if (_on_shot && _ammo_elapsed && _since_shot > 60.f / _wpn->_fire_rate) {
+        _last_time_speed = sim.last_speed();
+        _anim_tick_timer.restart();
+        if (tick(sim.last_timestep())) {
             shot(position,
                  cam_position,
                  direction,
@@ -590,11 +647,6 @@ public:
             _on_reload = false;
             _since_shot = 0.f;
             return _wpn->_recoil;
-        }
-
-        if (_on_reload && !_current_anim) {
-            _ammo_elapsed = _wpn->mag_size();
-            _on_reload = false;
         }
 
         if (_anim_sound_to_play) {
@@ -684,61 +736,23 @@ public:
             return make_return(position, _wpn, LF, shot_angle_rad * LF);
         }
 
-        weapon_anim* anim;
-        std::vector<weapon_anim_frame>* frames;
-        float max_frame;
-        float cur_frame_time;
-
-        for (bool repeat = true; repeat;) {
-            repeat = false;
-
-            auto found_anim = _wpn->_animations.find(_current_anim->_name);
-            if (found_anim == _wpn->_animations.end()) {
-                glog().error("Animation '{}' not found in weapon [{}]", _current_anim->_name, _wpn->_section);
-                _ammo_elapsed = _wpn->_mag_size;
-                if (_current_anim->_name == "shell")
-                    _current_anim = anim_spec_t{"load_end"};
-                else
-                    _current_anim.reset();
-                return make_return(position, _wpn, LF, shot_angle_rad * LF);
-            }
-            anim = &found_anim->second;
-
-            frames = &anim->_frames;
-
-            if (frames->empty()) {
-                _current_anim.reset();
-                draw(position, left_dir, enable_long_shot, wnd);
-                return make_return(position, _wpn, LF, shot_angle_rad * LF);
-            }
-
-            auto  dur      = anim->_duration;
-            float time     = _current_anim->_timer.elapsed(_last_time_speed);
-            max_frame      = frames->back()._time;
-            cur_frame_time = max_frame / dur * time;
-
-            if (cur_frame_time > max_frame && _current_anim->_stop_at_end) {
-                if (_current_anim->_name == "load_start") {
-                    _current_anim = anim_spec_t{"shell"};
-                    repeat = true;
-                }
-                else if (_current_anim->_name == "shell") {
-                    ++_ammo_elapsed;
-                    if (_ammo_elapsed == _wpn->_mag_size)
-                        _current_anim = anim_spec_t{"load_end"};
-                    else
-                        _current_anim = anim_spec_t{"shell"};
-                    repeat = true;
-                }
-                else {
-                    _current_anim.reset();
-                    draw(position, left_dir, enable_long_shot, wnd);
-                    return make_return(position, _wpn, LF, shot_angle_rad * LF);
-                }
-            }
+        /* The animation state advances on ticks (tick()): only show it here, in between the ticks */
+        auto found_anim = _wpn->_animations.find(_current_anim->_name);
+        if (found_anim == _wpn->_animations.end() || found_anim->second._frames.empty()) {
+            _wpn->draw(position, left_dir, shot_angle_deg, wnd);
+            draw_shells(wnd);
+            return make_return(position, _wpn, LF, shot_angle_rad * LF);
         }
+        auto* anim   = &found_anim->second;
+        auto* frames = &anim->_frames;
 
-        cur_frame_time = std::fmod(cur_frame_time, max_frame);
+        auto  time           = _current_anim->_time + std::min(_anim_tick_timer.elapsed(_last_time_speed), _anim_tick_dt);
+        float max_frame      = frames->back()._time;
+        float cur_frame_time = max_frame / anim->_duration * time;
+        if (_current_anim->_stop_at_end)
+            cur_frame_time = std::min(cur_frame_time, max_frame);
+        else
+            cur_frame_time = std::fmod(cur_frame_time, max_frame);
 
         auto beg = frames->begin();
         auto end = frames->begin() + 1;
@@ -837,6 +851,79 @@ public:
     }
 
 private:
+    /**
+     * The weapon logic of one simulation tick: animations (reloads included)
+     * and the fire rate run in simulation time, so they end on the same tick
+     * wherever the weapon is simulated. A network player's weapon counts its
+     * applied input ticks instead (the server can tick without a new input
+     * while waiting for one), so the shots and reloads land on the same input
+     * ticks on the server and in the client's prediction. Returns whether the
+     * weapon fires
+     */
+    bool tick(float timestep) {
+        if (_input_tick) {
+            auto ticks          = _counted_input_tick ? *_input_tick - *_counted_input_tick : 1u;
+            _counted_input_tick = _input_tick;
+            timestep *= float(ticks);
+        }
+        _anim_tick_dt = timestep;
+        advance_animation(timestep);
+
+        if (_ammo_elapsed == 0 && !_current_anim && !_on_reload) {
+            _on_reload = true;
+            play_animation(_wpn->_wpn_class == weapon::shotgun ? "load_start" : "reload");
+            return false;
+        }
+
+        _since_shot += timestep;
+        if (_on_shot && _ammo_elapsed && _since_shot > 60.f / _wpn->_fire_rate)
+            return true;
+
+        if (_on_reload && !_current_anim) {
+            _ammo_elapsed = _wpn->mag_size();
+            _on_reload    = false;
+        }
+        return false;
+    }
+
+    /* Advance the current animation, switching to the next one at its end (shotgun shells, ...) */
+    void advance_animation(float dt) {
+        if (!_current_anim)
+            return;
+
+        _current_anim->_time += dt;
+        while (_current_anim) {
+            auto found_anim = _wpn->_animations.find(_current_anim->_name);
+            if (found_anim == _wpn->_animations.end()) {
+                glog().error("Animation '{}' not found in weapon [{}]", _current_anim->_name, _wpn->_section);
+                _ammo_elapsed = _wpn->_mag_size;
+                if (_current_anim->_name == "shell")
+                    _current_anim = anim_spec_t{"load_end"};
+                else
+                    _current_anim.reset();
+                return;
+            }
+
+            auto& anim = found_anim->second;
+            if (anim._frames.empty()) {
+                _current_anim.reset();
+                return;
+            }
+            if (!_current_anim->_stop_at_end || _current_anim->_time <= anim._duration)
+                return;
+
+            auto overshoot = _current_anim->_time - anim._duration;
+            if (_current_anim->_name == "load_start")
+                _current_anim = anim_spec_t{"shell", overshoot};
+            else if (_current_anim->_name == "shell") {
+                ++_ammo_elapsed;
+                _current_anim = anim_spec_t{_ammo_elapsed >= _wpn->_mag_size ? "load_end" : "shell", overshoot};
+            }
+            else
+                _current_anim.reset();
+        }
+    }
+
     void draw_shells(sf::RenderWindow& wnd) {
         auto& sprite = _wpn->_shell_sprite;
         for (auto i = _active_shells.begin(); i != _active_shells.end();) {
@@ -972,6 +1059,9 @@ private:
     bool                  _shell_ejected   = false;
     vec2f                 _last_gravity    = {0.f, 0.f};
     float                 _last_time_speed = 1.f;
+
+    timer _anim_tick_timer; /* since the last tick: animations are drawn in between the ticks */
+    float _anim_tick_dt = 0.f;
 
     bool  _on_shot   = false;
     bool  _on_reload = false;

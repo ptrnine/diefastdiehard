@@ -35,14 +35,14 @@ client A                          server                         client B
 * UDP datagrams carry a 4-byte header `u16 type, u16 payload_size` followed
   by a payload serialized with the existing `ss::serializer` (little-endian).
 
-### Protocol messages (protocol version 5)
+### Protocol messages (protocol version 6)
 
 | id  | dir        | payload |
 |-----|------------|---------|
 | 1   | C → S      | HELLO: `u16 version`, player name, pistol section, face_id, body_id, body color, tracer color. A version other than `net::protocol_version` is answered with ERROR |
 | 2   | S → C      | WELCOME: player name |
 | 3   | C → S      | INPUT: `u32 last_seq`, `u32 client_time_ms`, `u16 rtt_ms`, `u16 interp_ms`, `vector<u16> bits` — the input bits of the last up to 32 ticks, `bits[i]` belongs to tick `last_seq - size + 1 + i` |
-| 4   | S → C      | STATE (encoded per client): `u32 tick` (broadcast sequence number), `u32 server_time_ms` (time of the simulated tick), `u32 ack_seq` (last input tick applied to the client's player), `u32 echo_client_time_ms` + `u16 echo_hold_ms` (RTT echo of the newest input); per player: name, pistol, face_id, body_id, body color, tracer color, physic state (pos.xy, vel.xy, jumps_left, lock_y, accel factors), on_left, shooting, group, teleport counter, ids of the bullets that hit the player in the last second; the bullets spawned this frame (owner, id, shot key: pull_seq/shot_index/pellet, muzzle start.xy, spawn pos.xy, vel.xy, hit_mass, tracer color, gravity); the crates (id, pos.xy, vel.xy, landed); the dropped guns (id, section, pos.xy, vel.xy, angle, on_left, long_shot); the ids of all bullets alive on the server |
+| 4   | S → C      | STATE (encoded per client): `u32 tick` (broadcast sequence number), `u32 server_time_ms` (time of the simulated tick), `u32 ack_seq` (last input tick applied to the client's player), `u32 echo_client_time_ms` + `u16 echo_hold_ms` (RTT echo of the newest input); per player: name, pistol, face_id, body_id, body color, tracer color, physic state (pos.xy, vel.xy, jumps_left, lock_y, accel factors), on_left, shooting, group, teleport counter, ids of the bullets that hit the player in the last second, weapon state (ammo, logic animation id and time, time since the last shot, reloading/trigger flags, shot index, shot seed); the bullets spawned this frame (owner, id, shot key: pull_seq/shot_index/pellet, muzzle start.xy, spawn pos.xy, vel.xy, hit_mass, tracer color, gravity); the crates (id, pos.xy, vel.xy, landed); the dropped guns (id, section, pos.xy, vel.xy, angle, on_left, long_shot); the ids of all bullets alive on the server |
 | 5   | C → S      | LEAVE: player name |
 | 6   | S → C      | ERROR: message string (join failed, version mismatch, etc.) |
 
@@ -157,6 +157,20 @@ server and in the client's prediction. The prediction records the recoil
 as an after-movement impulse of the tick that fired it and re-simulations
 apply it there (the client's tick end callback runs after the game's,
 `add_tick_end_callback(..., order)`).
+
+Weapon animations, reloads included, advance on ticks as well
+(`weapon_instance::tick`, in the same counted time as the fire rate);
+`draw()` only shows them. So a reload ends on the same input tick on the
+server and in the prediction, and a trigger held through its end fires
+the same shot on both sides. The rest of the weapon logic state
+(`weapon_instance::sync_state`: ammo, animation and its time, time since
+the last shot, reloading and trigger flags, shot index and seed) is part
+of STATE and of every predicted tick: when the state of the acknowledged
+tick differs (an input tick the server merged away after a jitter burst,
+a gun picked up), the client restores the server's and replays the weapon
+over the unacknowledged ticks along with the physics
+(`weapon_instance::replay_tick`, without bullets or sounds), its shots'
+recoil included.
 
 ### Own bullet prediction
 

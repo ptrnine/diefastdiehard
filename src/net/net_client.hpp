@@ -47,6 +47,11 @@ inline player::physic_state to_physic_state(const state_player& sp) {
     return {{sp.pos_x, sp.pos_y}, {sp.vel_x, sp.vel_y}, sp.lock_y != 0, sp.jumps_left, sp.accel_lf, sp.accel_rf};
 }
 
+inline weapon_instance::sync_state to_weapon_state(const state_player& sp) {
+    return {sp.ammo,       sp.wpn_anim,    sp.wpn_anim_time, sp.wpn_since_shot, (sp.wpn_flags & 1) != 0,
+            (sp.wpn_flags & 2) != 0, sp.shot_index, sp.seed_base};
+}
+
 /**
  * Multiplayer client.
  *
@@ -151,9 +156,16 @@ public:
         return _max_correction;
     }
 
+    /** Number of weapon state (ammo, reload, fire rate) corrections so far */
+    [[nodiscard]]
+    u64 weapon_corrections() const {
+        return _weapon_corrections;
+    }
+
     void reset_correction_stats() {
-        _corrections    = 0;
-        _max_correction = 0.f;
+        _corrections        = 0;
+        _max_correction     = 0.f;
+        _weapon_corrections = 0;
     }
 
     [[nodiscard]]
@@ -229,10 +241,14 @@ public:
 private:
     using clock = std::chrono::steady_clock;
 
-    /* Per predicted tick, besides the input: predicted bullet hits (before the movement), shot recoil (after it) */
+    /*
+     * Per predicted tick, besides the input: predicted bullet hits (before the
+     * movement), shot recoil (after it) and the weapon state after the tick
+     */
     struct tick_extra {
         vec2f                                        impulse;
         std::vector<std::pair<bullet_ref, vec2f>>    hits;
+        std::optional<weapon_instance::sync_state>   weapon;
     };
 
     using history_t = input_history<player_input_state, player::physic_state, tick_extra>;
@@ -291,6 +307,19 @@ private:
         for (auto& hit : pl->take_predicted_hits())
             entry->extra.hits.emplace_back(hit.ref, hit.impulse);
         entry->state = pl->get_physic_state();
+        if (pl->get_gun())
+            entry->extra.weapon = pl->get_gun().get_sync_state();
+    }
+
+    /* Direction of the recoil of a replayed shot: the tick's movement input, else the recorded recoil or the facing */
+    template <typename Entry>
+    [[nodiscard]]
+    static vec2f recoil_dir(const player& pl, const Entry& e) {
+        if (e.input.left != e.input.right)
+            return {e.input.left ? -1.f : 1.f, 0.f};
+        if (e.extra.impulse.x != 0.f)
+            return {e.extra.impulse.x > 0.f ? -1.f : 1.f, 0.f};
+        return pl.facing_dir();
     }
 
     [[nodiscard]]
@@ -303,10 +332,13 @@ private:
 
     /**
      * Reconcile the local player with the server state of the tick ack_seq:
-     * on divergence restore it and re-simulate the unacknowledged ticks
+     * on divergence restore it and re-simulate the unacknowledged ticks.
+     * The weapon (ammo, reload, fire rate) is reconciled the same way with
+     * server_wpn, its server state (if it holds the same gun)
      */
     void reconcile(game_state& gs, player& pl, const player::physic_state& server_st, u32 ack_seq,
-                   const std::vector<u32>& server_hits, u16 teleports) {
+                   const std::vector<u32>& server_hits, u16 teleports,
+                   const std::optional<weapon_instance::sync_state>& server_wpn) {
         /* Teleported on the server (respawn): jump there right away, even without a new ack */
         bool teleported = !_local_teleports || counter_newer(teleports, *_local_teleports);
 
@@ -329,21 +361,48 @@ private:
                 });
 
         auto predicted = _history.find(ack_seq);
-        if (teleported || !predicted || diverged(predicted->state, server_st)) {
+
+        /* The weapon fires and reloads differently than predicted: replay it too (its shots' recoil included) */
+        auto& gun          = pl.get_gun();
+        bool  replay_weapon = server_wpn && gun && ack_seq != 0 &&
+                              (teleported || !predicted || !predicted->extra.weapon ||
+                               predicted->extra.weapon->diverged(*server_wpn));
+
+        if (replay_weapon || teleported || !predicted || diverged(predicted->state, server_st)) {
             auto old_pos = pl.get_position();
 
             pl.restore_physic_state(server_st);
+            if (replay_weapon) {
+                gun.restore_sync_state(*server_wpn, ack_seq);
+                ++_weapon_corrections;
+                glog().detail("net client: weapon correction at tick {}: ammo {}", ack_seq, server_wpn->ammo);
+            }
+
             pl.replaying(true);
             for (auto& e : _history) {
                 if (e.seq <= ack_seq)
                     continue;
                 pl.apply_movement_input(e.input);
+                if (replay_weapon) {
+                    pl.last_input_seq(e.seq);
+                    if (e.input.shot)
+                        pl.shot();
+                    else
+                        pl.relax();
+                }
                 for (auto& [_, impulse] : e.extra.hits)
                     pl.apply_hit_physics(impulse);
                 gs.sim.step_isolated(pl.collision_box(), e.timestep, [&](float dt) { pl.physic_update(gs.sim, dt); });
+                if (replay_weapon) {
+                    gun.input_tick(e.seq);
+                    auto recoil      = gun.replay_tick(e.timestep);
+                    e.extra.impulse  = recoil ? -recoil_dir(pl, e) * *recoil : vec2f{0.f, 0.f};
+                    e.extra.weapon   = gun.get_sync_state();
+                }
                 pl.apply_impulse(e.extra.impulse);
                 e.state = pl.get_physic_state();
             }
+            pl.last_input_seq(_input_seq);
             pl.replaying(false);
 
             auto correction = old_pos - pl.get_position();
@@ -683,7 +742,8 @@ private:
             pl->set_server_driven(true);
 
             if (is_local)
-                reconcile(gs, *pl, to_physic_state(sp), st.ack_seq, sp.hits, sp.teleports);
+                reconcile(gs, *pl, to_physic_state(sp), st.ack_seq, sp.hits, sp.teleports,
+                          sp.pistol == pl->pistol_section() ? std::optional{to_weapon_state(sp)} : std::nullopt);
             else
                 _remote[sp.name].push(double(st.server_time_ms) / 1000.0,
                                       remote_player_snapshot{to_physic_state(sp), sp.on_left != 0, sp.shooting != 0,
@@ -808,6 +868,7 @@ private:
     u32          _last_state_tick = 0;
     u64          _corrections     = 0;
     float        _max_correction  = 0.f;
+    u64          _weapon_corrections = 0;
     server_clock _clock;
     std::map<player_name_t, snapshot_buffer<remote_player_snapshot>> _remote;
     using knockback_t = knockback_offset<bullet_ref, player::physic_state>;

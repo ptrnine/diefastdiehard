@@ -100,7 +100,8 @@ TEST_CASE("protocol: message round-trips") {
         st.echo_hold_ms        = 16;
         st.players.push_back(state_player{.name = "p1", .pos_x = 10.f, .pos_y = 20.f,
                                           .vel_x = -3.f, .vel_y = 4.f, .jumps_left = 1, .lock_y = 1,
-                                          .accel_lf = 0.5f, .on_left = 1, .shooting = 1});
+                                          .accel_lf = 0.5f, .on_left = 1, .shooting = 1, .ammo = 5,
+                                          .wpn_anim = 2, .wpn_anim_time = 0.25f, .wpn_flags = 1, .shot_index = 3});
         st.players.push_back(state_player{.name = "p2", .pistol = "wpn_m40", .face_id = 3});
         st.bullets.push_back(bullet_info{.owner = "p1", .pos_x = 11.f, .pos_y = 21.f,
                                          .vel_x = 900.f, .vel_y = -10.f, .hit_mass = 2.f,
@@ -128,6 +129,11 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(r.players[0].jumps_left == 1);
         CHECK(r.players[0].on_left == 1);
         CHECK(r.players[0].shooting == 1);
+        CHECK(r.players[0].ammo == 5);
+        CHECK(r.players[0].wpn_anim == 2);
+        CHECK(r.players[0].wpn_anim_time == Catch::Approx(0.25f));
+        CHECK(r.players[0].wpn_flags == 1);
+        CHECK(r.players[0].shot_index == 3);
         CHECK(std::string(r.players[1].name) == "p2");
         CHECK(r.players[1].pistol == "wpn_m40");
         CHECK(r.players[1].face_id == 3);
@@ -1287,6 +1293,59 @@ TEST_CASE("net: weapon recoil is predicted") {
 
     f.run_for(1500ms);
     CHECK(f.local().get_position().x == Catch::Approx(f.server_side().get_position().x).margin(1.f));
+}
+
+TEST_CASE("net: ammo and reloads are predicted and synced") {
+    using namespace std::chrono_literals;
+    auto wpn = GENERATE(as<std::string>{}, "wpn_glk17", "wpn_1887"); /* magazine and shell by shell reloads */
+    /*
+     * Steady latency (~400ms RTT): every input tick reaches the server. A
+     * jitter burst can overflow its input queue, merging ticks: then the
+     * weapon is corrected (the section below)
+     */
+    net_game_fixture f{100, 100};
+
+    f.server_side().setup_pistol(wpn);
+    f.server_side().teleport({1300.f, 1040.f});
+    f.run_for(2000ms);
+    REQUIRE(f.local().pistol_section() == wpn);
+
+    auto& srv_gun = f.server_side().get_gun();
+    auto& cli_gun = f.local().get_gun();
+
+    /* Through several reloads, also pulling the trigger right when they end */
+    f.cli->reset_correction_stats();
+    bool reloaded = false;
+    int  frames   = 0;
+    f.run_for(6000ms, [&] {
+        f.input.shot = (++frames / 7) % 4 != 0;
+        if (cli_gun.ammo_elapsed() == 0)
+            reloaded = true;
+    });
+    f.input = {};
+
+    /* Deterministic: the prediction never needed the server's weapon state */
+    CHECK(reloaded);
+    CHECK(f.cli->weapon_corrections() == 0);
+
+    /* (the client is ahead by the latency: compare once the reload is over on both sides) */
+    auto settle = [&] {
+        f.run_for(5000ms);
+        CHECK(cli_gun.ammo_elapsed() == srv_gun.ammo_elapsed());
+        CHECK(cli_gun.get_sync_state().shot_index == srv_gun.get_sync_state().shot_index);
+        CHECK_FALSE(cli_gun.get_sync_state().on_reload);
+        CHECK_FALSE(srv_gun.get_sync_state().on_reload);
+    };
+    settle();
+
+    SECTION("a diverged weapon is corrected") {
+        cli_gun.ammo_elapsed(1);
+        f.input.shot = true;
+        f.run_for(300ms);
+        f.input = {};
+        settle();
+        CHECK(f.cli->weapon_corrections() > 0);
+    }
 }
 
 TEST_CASE("net: server-only knockback is reconciled on the client") {
