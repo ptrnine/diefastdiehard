@@ -378,6 +378,18 @@ with its player.
 - **Remote players** are shown in the past: the bullet path delayed by
   `local_frame_time − render time` (`shown_delay`) is swept against them.
   The path from the muzzle up to there is hit-scanned on spawn.
+- **Drawing** (`bullet::framed_t::draw_offset`): the bullet is drawn in the
+  shown frame, `gap` (the shown position minus the local frame position,
+  ~`shown_delay·speed`) behind its simulated position. Drawn in the local
+  frame, it flew through a remote player it hit ~`shown_delay` before
+  the hit (and the knockback) showed up.
+  It converges to the local frame when it flies at the local player
+  (ahead of it on its path, < 150 px aside), over 2 gaps of the distance
+  (drawn ≤ 1.5× faster meanwhile), down to 30 px before the player: there
+  it hits in the local frame. The blend never grows back, so a bullet that
+  passed the local player stays in its frame and never looks like it flies
+  backwards. `net_client::frame_draw_update` updates the gap and the local
+  player each tick.
 - Before the first acknowledged input there is no tick time: the bullet is
   forwarded by its state's age (present time) and collides physically.
 - Bullets the server already consumed are not spawned, and bullets missing
@@ -533,7 +545,10 @@ across a teleport.
 - **Remote players vs. framed bullets:** they are swept by the bullet path
   delayed along the muzzle trajectory; that stops when the shown bullet
   dies, so a hit in the last `shown_delay` of its flight is not predicted
-  (the snapshots correct it).
+  (the snapshots correct it). Drawn in the shown frame, the bullet
+  disappears ~`gap` before a wall it hits in the local frame. With a
+  remote player right next to the local player, a bullet flying at both
+  is drawn in the local frame, so it passes through the remote player.
 - **Unpredicted hits on remote players:** if the client simulation missed a
   hit that the server's lag compensation registered, it shows up as a
   smoothed correction about one view delay later. With fast-falling or

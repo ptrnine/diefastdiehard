@@ -186,6 +186,41 @@ public:
         float flight;        // flight time along the trajectory now, s
         float shown_flight;  // flight time the shown players were tested up to, s
         bool  own = false;   // the local player's predicted bullet: swept against the remote players only
+
+        /*
+         * Drawing: where the remote players see the bullet (the shown frame)
+         * is gap from it. It is drawn there, so it meets the remote players
+         * when they are hit, but converges to the local frame when it flies
+         * at the local player (local_center): it hits it in that frame
+         */
+        vec2f                gap         = {0.f, 0.f};
+        std::optional<vec2f> local_center = {};
+        float                shown_blend = 1.f; // 1: drawn in the shown frame, 0: in the local frame; never grows
+
+        /* Blend to the shown frame of the bullet at pos flying along vel: by its distance to the local player ahead */
+        [[nodiscard]]
+        float shown_blend_at(const vec2f& pos, const vec2f& vel) const {
+            constexpr float near   = 30.f;  /* px: in the local frame at the local player */
+            constexpr float aside  = 150.f; /* px: passing further aside, the local player is not its target */
+            constexpr float span_k = 2.f;   /* converges over 2 gaps: drawn at most 1.5x faster meanwhile */
+
+            auto speed = magnitude(vel);
+            if (!local_center || speed < 1.f)
+                return shown_blend;
+            auto dir    = vel / speed;
+            auto to     = *local_center - pos;
+            auto along  = to.x * dir.x + to.y * dir.y;
+            auto across = std::abs(to.x * dir.y - to.y * dir.x);
+            if (along < 0.f || across > aside)
+                return shown_blend;
+            auto span = std::max(span_k * magnitude(gap), 150.f);
+            return std::min(shown_blend, std::clamp((along - near) / span, 0.f, 1.f));
+        }
+
+        [[nodiscard]]
+        vec2f draw_offset(const vec2f& pos, const vec2f& vel) const {
+            return gap * shown_blend_at(pos, vel);
+        }
     };
 
     /**
@@ -207,6 +242,11 @@ public:
 
     [[nodiscard]]
     std::optional<framed_t>& framed() {
+        return _framed;
+    }
+
+    [[nodiscard]]
+    const std::optional<framed_t>& framed() const {
         return _framed;
     }
 
@@ -340,6 +380,8 @@ public:
             auto pos = ph->get_position();
             auto next_pos = pos + ph->get_velocity() * timestep;
             pos = lerp(pos, next_pos, interpolation_factor);
+            if (auto& fr = b.framed(); fr && !fr->own)
+                pos += fr->draw_offset(pos, ph->get_velocity());
 
             auto dir = ph->get_direction();
             auto angle = std::atan2(dir.y, dir.x);

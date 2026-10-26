@@ -845,7 +845,27 @@ private:
             /* The local player is swept from the tick it is at now on */
             auto from = gs.ballistic_forward(start, vel, gravity, std::max(flight - _tick_dt, 0.f)).first;
             blt.frame_on_client({start, vel, gravity, shot.rewind_s(), flight, shown_flight}, from);
+            frame_draw_update(gs, *blt.framed(), pos, fwd_vel, shown_flight,
+                              local && may_hit(*local, owner_pl, owner_pl ? owner_pl->get_group() : -1) ? local : nullptr);
         }
+    }
+
+    /**
+     * Where a framed bullet at pos (flying vel) is drawn (bullet::framed_t):
+     * the shown frame is the bullet at shown_flight, local is the player it
+     * may hit in the local frame (nullptr: none)
+     */
+    static void frame_draw_update(game_state& gs, bullet::framed_t& fr, const vec2f& pos, const vec2f& vel,
+                                  float shown_flight, const player* local) {
+        fr.gap = gs.ballistic_forward(fr.start, fr.velocity, fr.gravity, shown_flight).first - pos;
+        if (local) {
+            auto size       = local->get_size();
+            fr.local_center = local->get_position() + vec2f{size.x * 0.5f, -size.y * 0.5f};
+        }
+        else {
+            fr.local_center.reset();
+        }
+        fr.shown_blend = fr.shown_blend_at(pos, vel);
     }
 
     /*
@@ -948,8 +968,9 @@ private:
                 continue;
             }
 
-            auto test = hit_test_t::of(fr->rewind, _tick_dt);
-            if (local && may_hit(*local, owner, blt.group())) {
+            auto test       = hit_test_t::of(fr->rewind, _tick_dt);
+            auto hits_local = local && may_hit(*local, owner, blt.group());
+            if (hits_local) {
                 if (auto hit = tick_hit(*local, _input_seq, from, to, test)) {
                     apply_tick_hit(gs, *local, *hit, ph->impulse(), bullet_ref::of(ph.get()), test);
                     ph->delete_later();
@@ -958,6 +979,7 @@ private:
             }
 
             auto shown = std::max(flight - test.ahead_s(_tick_dt) + test.rewind_s(_tick_dt) - delay, 0.f);
+            frame_draw_update(gs, *fr, to, ph->get_velocity(), shown, hits_local ? local : nullptr);
             if (shown <= fr->shown_flight)
                 continue;
             auto a = gs.ballistic_forward(fr->start, fr->velocity, fr->gravity, fr->shown_flight).first;

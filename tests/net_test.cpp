@@ -2263,6 +2263,73 @@ TEST_CASE("net: hits of a lagging shooter on the local player are predicted (100
     CHECK(f.local().get_position().x == Catch::Approx(f.server_side().get_position().x).margin(1.f));
 }
 
+/* Where the client draws its server bullets (bullet_mgr::draw at a tick), the leftmost live one */
+static std::optional<float> leftmost_drawn_bullet(game_state& gs) {
+    std::optional<float> res;
+    for (auto& blt : gs.blt_mgr.bullets()) {
+        auto& ph = blt.physic();
+        if (ph->ready_delete_later())
+            continue;
+        auto x = ph->get_position().x;
+        if (auto& fr = blt.framed(); fr && !fr->own)
+            x += fr->draw_offset(ph->get_position(), ph->get_velocity()).x;
+        res = std::min(res.value_or(x), x);
+    }
+    return res;
+}
+
+TEST_CASE("net: server bullets are drawn where they hit the remote and the local players (100 ms ping)") {
+    using namespace std::chrono_literals;
+    hit_fixture f{25, 25};
+
+    /*
+     * A network shooter with ~100 ms ping (the bot, facing left) fires at a
+     * target: another server player (shown in the past) or the local player
+     * (in the predicted frame). The bullet must reach the drawn target when
+     * the knockback starts, not fly through it first
+     */
+    auto remote = GENERATE(true, false);
+    auto i      = GENERATE(size_t(0), size_t(1));
+    /* The local player is hit ~500 px into the flight before the bullet arrives (predict_past_hit): further away */
+    auto x = remote ? std::array{500.f, 650.f}[i] : std::array{250.f, 400.f}[i];
+    CAPTURE(remote, x);
+    f.bot->lag_compensation({.lag = 0.1f, .rewind = 0.11f});
+
+    player* srv_target = &f.server_side();
+    if (remote) {
+        srv_target = f.gs_srv.player_create("host");
+        REQUIRE(srv_target);
+        srv_target->group(2);
+        f.server_side().teleport({1400.f, 1040.f}); /* behind the bot */
+    }
+    srv_target->teleport({x, 1040.f});
+    f.run_for(1500ms);
+    auto& target = remote ? *f.gs_cli.players.at("host") : f.local();
+    auto  right  = x + target.get_size().x; /* the bullet flies left */
+
+    REQUIRE(f.bot->shot());
+    std::optional<float> last_drawn, drawn_at_hit;
+    float                min_drawn_before = std::numeric_limits<float>::max();
+    auto                 t0               = game_clock::now();
+    f.run_for(1000ms, [&] {
+        if (game_clock::now() - t0 > 40ms)
+            f.bot->relax();
+        if (drawn_at_hit)
+            return;
+        if (target.get_position().x < x - 1.f) {
+            drawn_at_hit = last_drawn;
+            return;
+        }
+        if ((last_drawn = leftmost_drawn_bullet(f.gs_cli)))
+            min_drawn_before = std::min(min_drawn_before, *last_drawn);
+    });
+
+    REQUIRE(drawn_at_hit);
+    /* Never drawn through the target before the hit, and at the target when it is hit (a tick of flight: ~24 px) */
+    CHECK(min_drawn_before > right - 30.f);
+    CHECK(*drawn_at_hit < right + 30.f);
+}
+
 TEST_CASE("net: own bullet hits on remote players are predicted") {
     using namespace std::chrono_literals;
     hit_fixture f;
