@@ -9,6 +9,7 @@
 #include <SFML/Graphics/Rect.hpp>
 #include <SFML/System/Clock.hpp>
 
+#include "base/game_clock.hpp"
 #include "base/types.hpp"
 #include "physic_point.hpp"
 #include "physic_line.hpp"
@@ -75,7 +76,7 @@ public:
     using float_seconds = std::chrono::duration<float>;
 
     static auto tp_now() {
-        return std::chrono::steady_clock::now();
+        return game_clock::now();
     }
 
     template <typename T>
@@ -526,10 +527,10 @@ private:
     float                                   _prev_timestep        = 1.f / 60.f;
     u32                                     _last_rps             = 60;
     float                                   _last_speed           = 1.f;
-    steady_clock::time_point                _next_update_time     = steady_clock::now();
+    steady_clock::time_point                _next_update_time     = game_clock::now();
     float                                   _interpolation_factor = 0.f;
 
-    std::chrono::steady_clock::time_point _current_update_time = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point _current_update_time = game_clock::now();
 
     using collide_callback_arg_generic_t =
         std::variant<physic_line*, physic_point*, physic_group*>;

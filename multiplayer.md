@@ -244,7 +244,11 @@ reorders) every datagram it sends and receives; `DFDH_DEBUG_PING`
 (`./build-plz --debug --define=DFDH_DEBUG_PING`) enables 80..170 ms by
 default. Both ends delay, so a client and a server built with it see a
 one-way trip of 160..340 ms (~500 ms ping).
-`tests/net_test.cpp` runs real-time loopback games with simulated latency.
+`tests/net_test.cpp` runs loopback games with simulated latency on a
+manual game clock: the game time (`game_clock`: simulation ticks, network
+timing, latency simulation) only moves when the test advances it, one
+render frame at a time, so the real-time code paths run without waiting
+(`game_clock_manual_guard`; `udp_channel::recv` does not block then).
 
 ## File layout
 

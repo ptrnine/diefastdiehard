@@ -31,7 +31,7 @@ inline sf::Color unpack_color(u32 v) {
  */
 class net_server {
 public:
-    using clock = std::chrono::steady_clock;
+    using clock = game_clock;
 
     /*
      * Input jitter buffer: after running dry, the queue refills to this many

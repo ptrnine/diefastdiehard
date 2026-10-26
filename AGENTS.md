@@ -42,6 +42,11 @@ easybuild-debug/submodules/luacpp/3rd/lib:easybuild-debug/submodules/luacpp/3rd/
 ./easybuild-debug/cfg_test    # also: tasks_test, net_test
 ```
 
+Game time (sim ticks, net timing, simulated latency) comes from
+`game_clock` (src/base/game_clock.hpp), not `std::chrono::steady_clock`:
+tests drive it by hand (`game_clock_manual_guard` + `game_clock::advance`)
+instead of sleeping. Use it for any new gameplay/network timer.
+
 ## Layout
 
 - `diefastdiehard.cpp` — main: CLI args, subsystem composition (console,

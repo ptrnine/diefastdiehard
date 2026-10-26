@@ -11,6 +11,7 @@
 #include <SFML/Network/SocketSelector.hpp>
 #include <SFML/Network/IpAddress.hpp>
 
+#include "base/game_clock.hpp"
 #include "base/types.hpp"
 #include "net_protocol.hpp"
 
@@ -31,7 +32,7 @@ struct received_datagram {
  * - bind(port) opens the socket and binds it (port 0 = ephemeral)
  * - connect(address, port) sets the peer for connected sends
  * - recv(timeout) drains all pending datagrams, blocking up to the
- *   given timeout for the first datagram
+ *   given timeout for the first datagram (never with a manual game_clock)
  */
 class udp_channel {
 public:
@@ -80,7 +81,7 @@ public:
             /* Simulated latency: queue the datagram and let it go out only after
              * its one-way delay has elapsed */
             flush_due_sends();
-            _pending_sends.push_back({std::chrono::steady_clock::now() + one_way_delay(),
+            _pending_sends.push_back({game_clock::now() + one_way_delay(),
                                       address, port, std::vector<u8>(data.begin(), data.end())});
             return true;
         }
@@ -104,11 +105,14 @@ public:
 
         flush_due_sends();
 
-        sf::SocketSelector selector;
-        selector.add(_sock);
-        selector.wait(sf::milliseconds(static_cast<i32>(timeout.count())));
-        if (!selector.isReady(_sock))
-            return release_due_recvs();
+        /* Manual game time (tests): no waiting, a loopback datagram is readable as soon as it is sent */
+        if (!game_clock::manual()) {
+            sf::SocketSelector selector;
+            selector.add(_sock);
+            selector.wait(sf::milliseconds(static_cast<i32>(timeout.count())));
+            if (!selector.isReady(_sock))
+                return release_due_recvs();
+        }
 
         for (;;) {
             size_t recv_size = 0;
@@ -126,7 +130,7 @@ public:
             if (simulated_latency())
                 /* Simulated latency: deliver the datagram only after its
                  * one-way delay has elapsed */
-                _held_recvs.push_back({std::chrono::steady_clock::now() + one_way_delay(), std::move(d)});
+                _held_recvs.push_back({game_clock::now() + one_way_delay(), std::move(d)});
             else
                 out.push_back(std::move(d));
         }
@@ -185,7 +189,7 @@ private:
 
     /* Send every queued datagram whose simulated deadline has passed */
     void flush_due_sends() {
-        auto now = std::chrono::steady_clock::now();
+        auto now = game_clock::now();
         auto it  = _pending_sends.begin();
         while (it != _pending_sends.end()) {
             if (it->deadline <= now) {
@@ -201,7 +205,7 @@ private:
     /* Take every received datagram whose simulated delivery time has passed */
     std::vector<received_datagram> release_due_recvs() {
         std::vector<received_datagram> due;
-        auto now = std::chrono::steady_clock::now();
+        auto now = game_clock::now();
         auto it  = _held_recvs.begin();
         while (it != _held_recvs.end()) {
             if (it->deadline <= now) {

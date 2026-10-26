@@ -18,7 +18,7 @@ using namespace dfdh;
 
 /* One simulation tick (inputs are applied by the network layer on ticks) */
 static void sim_tick(game_state& gs) {
-    gs.sim.update_immediate(1.f / 60.f, std::chrono::steady_clock::now());
+    gs.sim.update_immediate(1.f / 60.f, game_clock::now());
 }
 
 static u16 free_udp_port() {
@@ -449,7 +449,7 @@ TEST_CASE("player: apply_input") {
         pl->velocity({0.f, 0.f});
 
         pl->apply_input(net::player_input_state{.jump = true});
-        gs.sim.update_immediate(1.f / 60.f, std::chrono::steady_clock::now());
+        gs.sim.update_immediate(1.f / 60.f, game_clock::now());
         CHECK(pl->get_velocity().y < -500.f);
     }
 
@@ -492,7 +492,7 @@ TEST_CASE("player: physic state snapshot and isolated re-simulation") {
         inputs.push_back({.right = i < 30, .jump = i == 5});
 
     /* Regular simulation */
-    auto t = std::chrono::steady_clock::now();
+    auto t = game_clock::now();
     for (auto& in : inputs) {
         pl->apply_movement_input(in);
         t += std::chrono::milliseconds(16);
@@ -541,7 +541,7 @@ TEST_CASE("player: position_trace_lookup") {
     REQUIRE(pl != nullptr);
 
     /* Samples at t0, t0+100ms, t0+200ms with x = 0, 100, 200 */
-    auto t0 = std::chrono::steady_clock::now();
+    auto t0 = game_clock::now();
     for (int i = 0; i < 3; ++i) {
         pl->position({float(i) * 100.f, 0.f});
         pl->velocity({0.f, 0.f});
@@ -562,6 +562,7 @@ TEST_CASE("player: position_trace_lookup") {
 }
 
 TEST_CASE("net_server: handshake, rename and leave") {
+    game_clock_manual_guard clock_guard; /* the waits advance the game time by hand */
     auto port = free_udp_port();
     game_state gs;
     net::net_server srv{port};
@@ -722,7 +723,7 @@ TEST_CASE("net_server: handshake, rename and leave") {
         sim_tick(gs);
         CHECK(pl.is_walking());
 
-        std::this_thread::sleep_for(net::net_server::input_timeout + std::chrono::milliseconds(50));
+        game_clock::advance(net::net_server::input_timeout + std::chrono::milliseconds(50));
         sim_tick(gs);
         CHECK_FALSE(pl.is_walking());
     }
@@ -770,6 +771,7 @@ TEST_CASE("net_server: handshake, rename and leave") {
 }
 
 TEST_CASE("net_client: join and state application") {
+    game_clock_manual_guard clock_guard; /* the waits advance the game time by hand */
     auto port = free_udp_port();
     game_state gs_srv;
     game_state gs_cli;
@@ -876,7 +878,7 @@ TEST_CASE("net_client: join and state application") {
          * so step frames with a small sleep until the first shot is fired
          */
         for (int i = 0; i < 300 && gs_srv.cur_frame_bullets.empty(); ++i) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            game_clock::advance(std::chrono::milliseconds(5));
             gs_srv.game_update();
         }
 
@@ -911,7 +913,7 @@ TEST_CASE("net_client: join and state application") {
         gs_srv.game_run(true);
 
         for (int i = 0; i < 300 && gs_srv.cur_frame_bullets.empty(); ++i) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            game_clock::advance(std::chrono::milliseconds(5));
             gs_srv.game_update();
         }
 
@@ -940,7 +942,7 @@ TEST_CASE("net_client: join and state application") {
         gs_srv.game_run(true);
 
         for (int i = 0; i < 300 && gs_srv.cur_frame_bullets.empty(); ++i) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            game_clock::advance(std::chrono::milliseconds(5));
             gs_srv.game_update();
         }
         REQUIRE(!gs_srv.cur_frame_bullets.empty());
@@ -1107,12 +1109,15 @@ TEST_CASE("net_sync: server clock and snapshot interpolation") {
  * level, stepped like the game main loop
  */
 struct net_game_fixture {
+    /* Real-time code paths on manual game time: a frame takes no wall time */
+    game_clock_manual_guard clock_guard;
     u16             port = free_udp_port();
     game_state      gs_srv;
     game_state      gs_cli;
     net::net_server srv{port};
     std::optional<net::net_client> cli;
     net::player_input_state       input;
+    std::chrono::milliseconds     frame_period{5}; /* frame rate of both games (render frames, not ticks) */
 
     net_game_fixture(double latency_min_ms, double latency_max_ms) {
         REQUIRE(gs_srv.level_current("lvl_aes"));
@@ -1142,7 +1147,7 @@ struct net_game_fixture {
     }
 
     void frame() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        game_clock::advance(frame_period);
         gs_cli.game_update();
         cli->update(gs_cli);
         gs_srv.game_update();
@@ -1150,8 +1155,8 @@ struct net_game_fixture {
     }
 
     void run_for(std::chrono::milliseconds duration, auto&& on_frame) {
-        auto end = std::chrono::steady_clock::now() + duration;
-        while (std::chrono::steady_clock::now() < end) {
+        auto end = game_clock::now() + duration;
+        while (game_clock::now() < end) {
             frame();
             on_frame();
         }
@@ -1235,14 +1240,14 @@ TEST_CASE("net: remote players are interpolated smoothly") {
     float window_x    = prev_x;
     float max_speed   = 0.f;
     float min_step    = 0.f;
-    auto  window_from = std::chrono::steady_clock::now();
+    auto  window_from = game_clock::now();
     f.run_for(1500ms, [&] {
         auto x   = remote.get_position().x;
         min_step = std::min(min_step, x - prev_x);
         prev_x   = x;
 
         /* Speed over ~50ms windows: never faster than the max speed (no catch-up jumps) */
-        auto now = std::chrono::steady_clock::now();
+        auto now = game_clock::now();
         auto dt  = std::chrono::duration<float>(now - window_from).count();
         if (dt >= 0.05f) {
             max_speed   = std::max(max_speed, (x - window_x) / dt);
@@ -1269,7 +1274,7 @@ TEST_CASE("net: weapon recoil is predicted") {
     REQUIRE(f.local().pistol_section() == "wpn_ss50");
     REQUIRE(f.local().collision_box()->is_lock_y());
 
-    using clock = std::chrono::steady_clock;
+    using clock = game_clock;
     std::optional<clock::time_point> srv_recoil, cli_recoil;
 
     f.cli->reset_correction_stats();
@@ -1378,7 +1383,7 @@ TEST_CASE("game_state: lag-compensated bullets") {
     shooter->velocity({0.f, 0.f});
 
     /* The target moves down along x = 500 at 600 px/s; 30 ticks of position trace */
-    auto t = std::chrono::steady_clock::now();
+    auto t = game_clock::now();
     for (int i = 0; i < 30; ++i) {
         target->position({500.f, float(i) * 10.f});
         target->velocity({0.f, 0.f});
@@ -1462,7 +1467,7 @@ TEST_CASE("bullets never hit their owner nor the owner's group") {
     mate->group(group);
     enemy->group(2);
 
-    auto t = std::chrono::steady_clock::now();
+    auto t = game_clock::now();
     auto run = [&] {
         for (int i = 0; i < 30; ++i) {
             t += std::chrono::microseconds(16667);
@@ -1494,9 +1499,9 @@ TEST_CASE("game_state: retroactive hits rewrite the victim's history") {
     struct world {
         game_state gs;
         player*    victim;
-        std::chrono::steady_clock::time_point t;
+        game_clock::time_point t;
 
-        world(std::chrono::steady_clock::time_point t0): t(t0) {
+        world(game_clock::time_point t0): t(t0) {
             REQUIRE(gs.level_current("lvl_aes"));
             gs.game_run(true);
             victim = gs.player_create("victim");
@@ -1515,9 +1520,9 @@ TEST_CASE("game_state: retroactive hits rewrite the victim's history") {
         }
     };
 
-    auto t0 = std::chrono::steady_clock::now();
+    auto t0 = game_clock::now();
     world live{t0}, retro{t0};
-    std::chrono::steady_clock::time_point hit_time;
+    game_clock::time_point hit_time;
 
     for (int i = 0; i < 70; ++i) {
         live.tick(i);
@@ -1562,7 +1567,7 @@ TEST_CASE("game_state: lag-compensated bullets hit rewound players for their who
     target->position({600.f, 0.f});
     target->velocity({0.f, 0.f});
 
-    auto t    = std::chrono::steady_clock::now();
+    auto t    = game_clock::now();
     auto tick = [&] {
         t += std::chrono::microseconds(16667);
         gs.sim.update_immediate(1.f / 60.f, t);
@@ -1750,7 +1755,7 @@ TEST_CASE("player: teleport") {
     auto pl = gs.player_create("tp");
     REQUIRE(pl);
 
-    auto t = std::chrono::steady_clock::now();
+    auto t = game_clock::now();
     for (int i = 0; i < 10; ++i) {
         t += std::chrono::milliseconds(16);
         gs.sim.update_immediate(1.f / 60.f, t);
@@ -1822,7 +1827,7 @@ TEST_CASE("net: bullet hits on the local player are predicted") {
     using namespace std::chrono_literals;
     hit_fixture f;
 
-    using clock = std::chrono::steady_clock;
+    using clock = game_clock;
     std::optional<clock::time_point> srv_hit, cli_hit;
 
     REQUIRE(f.bot->shot());
@@ -1850,7 +1855,7 @@ TEST_CASE("net: own bullet hits on remote players are predicted") {
     using namespace std::chrono_literals;
     hit_fixture f;
 
-    using clock = std::chrono::steady_clock;
+    using clock = game_clock;
     std::optional<clock::time_point> srv_hit, cli_hit;
     auto srv_x0 = f.bot->get_position().x;
     auto cli_x0 = f.remote_bot().get_position().x;
@@ -1970,9 +1975,10 @@ TEST_CASE("net: remote knockback under sustained fire stays on the server's path
     using namespace std::chrono_literals;
     hit_fixture f{20, 30};
 
-    auto weapon = GENERATE(as<std::string>{}, "wpn_ak9", "wpn_sw500", "wpn_ss50");
-    auto moving = GENERATE(false, true);
-    CAPTURE(weapon, moving);
+    auto weapon   = GENERATE(as<std::string>{}, "wpn_ak9", "wpn_sw500", "wpn_ss50");
+    auto moving   = GENERATE(false, true);
+    auto frame_ms = GENERATE(4, 10, 16); /* frames shorter and as long as a tick */
+    CAPTURE(weapon, moving, frame_ms);
 
     f.server_side().setup_pistol(weapon);
     f.server_side().teleport({1100.f, 1040.f});
@@ -1983,14 +1989,15 @@ TEST_CASE("net: remote knockback under sustained fire stays on the server's path
     std::vector<std::pair<vec2f, u16>> srv_path;
     std::vector<vec2f>                 cli_path;
     size_t                             server_hits = 0;
-    int                                frames      = 0;
-    f.input = {.shot = true};
+    auto                               start       = game_clock::now();
+    f.frame_period = std::chrono::milliseconds(frame_ms);
+    f.input        = {.shot = true};
     f.run_for(3000ms, [&] {
-        ++frames;
-        if (frames == 300)
+        auto elapsed = game_clock::now() - start;
+        if (elapsed >= 1500ms)
             f.input = {};
         if (moving)
-            frames % 120 < 60 ? f.bot->move_left() : f.bot->move_right();
+            elapsed % 600ms < 300ms ? f.bot->move_left() : f.bot->move_right();
         srv_path.push_back({f.bot->get_position(), f.bot->teleports()});
         /* What is drawn: the position with the smoothing offset */
         cli_path.push_back(f.remote_bot().get_position() + f.remote_bot().render_offset());
@@ -2039,6 +2046,7 @@ TEST_CASE("net: predicted hits the server did not register fade out") {
 }
 
 TEST_CASE("weapon: seeded shots are deterministic") {
+    game_clock_manual_guard clock_guard; /* the waits advance the game time by hand */
     game_state gs;
     auto a = gs.player_create("a");
     auto b = gs.player_create("b");
@@ -2057,7 +2065,7 @@ TEST_CASE("weapon: seeded shots are deterministic") {
         gs.controller_attach(7, ctrl);
         gs.rebuild_controlled_players();
         for (int i = 0; i < 200 && gs.cur_frame_bullets.empty(); ++i) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            game_clock::advance(std::chrono::milliseconds(5));
             gs.game_update();
         }
         pl.relax();
@@ -2098,6 +2106,7 @@ TEST_CASE("net: unconfirmed bullet predictions expire") {
 
 TEST_CASE("udp_channel simulates latency") {
     using namespace net;
+    game_clock_manual_guard clock_guard; /* the waits advance the game time by hand */
 
     udp_channel srv;
     REQUIRE(srv.bind(0));
@@ -2109,7 +2118,7 @@ TEST_CASE("udp_channel simulates latency") {
     cli.set_simulated_latency(80, 170);
 
     const std::vector<u8> data = {1, 2, 3, 4};
-    auto t0 = std::chrono::steady_clock::now();
+    auto t0 = game_clock::now();
 
     REQUIRE(cli.send_to(sf::IpAddress("127.0.0.1"), port, data));
 
@@ -2119,7 +2128,8 @@ TEST_CASE("udp_channel simulates latency") {
      * Both channels are pumped every frame, like in the game
      */
     bool arrived = false;
-    while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(40)) {
+    while (game_clock::now() - t0 < std::chrono::milliseconds(40)) {
+        game_clock::advance(std::chrono::milliseconds(5));
         cli.recv(std::chrono::milliseconds(5));
         if (!srv.recv(std::chrono::milliseconds(5)).empty()) {
             arrived = true;
@@ -2129,7 +2139,8 @@ TEST_CASE("udp_channel simulates latency") {
     REQUIRE(!arrived);
 
     /* ...and it must arrive within the worst case (170ms + 170ms) plus margin */
-    while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(600)) {
+    while (game_clock::now() - t0 < std::chrono::milliseconds(600)) {
+        game_clock::advance(std::chrono::milliseconds(5));
         cli.recv(std::chrono::milliseconds(10));
         if (!srv.recv(std::chrono::milliseconds(10)).empty()) {
             arrived = true;
@@ -2137,4 +2148,5 @@ TEST_CASE("udp_channel simulates latency") {
         }
     }
     REQUIRE(arrived);
+    CHECK(game_clock::now() - t0 >= std::chrono::milliseconds(160));
 }

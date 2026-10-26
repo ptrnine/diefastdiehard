@@ -1367,7 +1367,7 @@ public:
     /* Hit feedback without the knockback (the knockback is applied separately, e.g. retroactively) */
     void hit_feedback(const vec2f& impulse, const vec2f& hit_position, const bullet_ref& ref = {}) {
         if (!_server_driven && ref.id != 0)
-            _recent_hits.push_back({ref.id, std::chrono::steady_clock::now()});
+            _recent_hits.push_back({ref.id, game_clock::now()});
         set_on_hit_event();
         play_hit_sound(hit_position, magnitude(impulse) > 2200.f);
     }
@@ -1400,7 +1400,7 @@ public:
     /* Ids of the bullets that hit this (authoritative) player in the last second */
     [[nodiscard]]
     std::vector<u32> recent_hit_ids() {
-        auto now = std::chrono::steady_clock::now();
+        auto now = game_clock::now();
         while (!_recent_hits.empty() && now - _recent_hits.front().second > std::chrono::seconds(1))
             _recent_hits.pop_front();
 

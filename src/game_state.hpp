@@ -762,7 +762,7 @@ public:
 
         /* Drop period is defined by the level; no period means crates never drop */
         if (auto period = cur_level->crate_drop_period()) {
-            if (crate_timer.getElapsedTime().asSeconds() >= *period) {
+            if (crate_timer.elapsed() >= *period) {
                 crates_spawn();
                 crate_timer.restart();
             }
@@ -956,7 +956,7 @@ public:
     dropped_gun_mgr                                       dropped_guns;
 
     std::vector<std::unique_ptr<crate>> crates;
-    sf::Clock crate_timer;
+    game_timer crate_timer;
     u32   _next_crate_id    = 1;
     u32   _next_bullet_id   = 0;
 
