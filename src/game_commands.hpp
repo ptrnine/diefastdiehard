@@ -163,7 +163,7 @@ public:
         auto& player = *found->second;
         if (wpn_section) {
             if (weapon_mgr().is_exists(*wpn_section))
-                player.setup_pistol(*wpn_section);
+                player.setup_pistol(*wpn_section, gs.cur_game_mode.magazines_count);
             else
                 glog().error("weapon {} not found", *wpn_section);
         }

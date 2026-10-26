@@ -73,7 +73,7 @@ public:
     void player_conf_reload(const player_name_t& player_name = {}) {
         if (player_name.empty()) {
             for (auto& [name, p] : players) {
-                p->set_from_config();
+                p->set_from_config(cur_game_mode.magazines_count);
                 glog().info("reload player config {}", name);
             }
         } else {
@@ -83,7 +83,7 @@ public:
                 return;
             }
 
-            found->second->set_from_config();
+            found->second->set_from_config(cur_game_mode.magazines_count);
             glog().info("reload player config {}", player_name);
         }
     }
@@ -95,7 +95,7 @@ public:
         }
 
         auto player = player::create(player_name, sim, player::default_size());
-        player->set_from_config();
+        player->set_from_config(cur_game_mode.magazines_count);
         player->set_drop_gun_cb([this, player_name](const player::drop_gun_spec_t& spec) {
             auto* gun = dropped_guns.spawn(spec.section, spec.position, spec.on_left,
                                            spec.long_shot, spec.group, spec.velocity,

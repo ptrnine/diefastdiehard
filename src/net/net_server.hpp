@@ -519,7 +519,7 @@ private:
             }
         }
 
-        apply_player_config(*pl, h);
+        apply_player_config(*pl, h, gs.cur_game_mode.magazines_count);
         pl->set_net_controlled(true);
         gs.player_spawn(pl);
 
@@ -575,11 +575,11 @@ private:
         glog().info("net server: client {} left", addr.toString());
     }
 
-    static void apply_player_config(player& pl, const hello& h) {
+    static void apply_player_config(player& pl, const hello& h, u32 magazines_count) {
         pl.set_body("player/body" + std::to_string(h.body_id) + ".png", unpack_color(h.body_color));
         pl.set_face("player/face" + std::to_string(h.face_id) + ".png");
         if (!h.pistol.empty())
-            pl.setup_pistol(h.pistol);
+            pl.setup_pistol(h.pistol, magazines_count);
         pl.tracer_color(unpack_color(h.tracer_color));
     }
 

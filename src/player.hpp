@@ -1087,11 +1087,12 @@ public:
         return pos->second;
     }
 
-    void set_from_config() {
+    /* magazines_count: ammo limit of the configured gun (see setup_pistol) */
+    void set_from_config(u32 magazines_count = 0) {
         player_configurator pc{_name};
         set_body(pc.body_texture_path(), pc.body_color);
         set_face(pc.face_texture_path());
-        setup_pistol(pc.pistol);
+        setup_pistol(pc.pistol, magazines_count);
         tracer_color(pc.tracer_color);
     }
 
