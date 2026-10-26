@@ -158,8 +158,8 @@ private:
     static constexpr size_t max_datagram_size = 65536;
 
 #if defined(DFDH_DEBUG_PING)
-    double _delay_min_ms = 80.0;
-    double _delay_max_ms = 170.0;
+    double _delay_min_ms = 24.0;
+    double _delay_max_ms = 26.0;
 #else
     double _delay_min_ms = 0.0;
     double _delay_max_ms = 0.0;
