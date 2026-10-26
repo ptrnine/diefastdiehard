@@ -874,7 +874,9 @@ private:
      */
     static void frame_draw_update(game_state& gs, bullet::framed_t& fr, const vec2f& pos, const vec2f& vel,
                                   float shown_flight, const player* local) {
-        fr.gap = gs.ballistic_forward(fr.start, fr.velocity, fr.gravity, shown_flight).first - pos;
+        auto [shown_pos, shown_vel] = gs.ballistic_forward(fr.start, fr.velocity, fr.gravity, shown_flight);
+        fr.gap     = shown_pos - pos;
+        fr.gap_vel = shown_vel - vel;
         if (local) {
             auto size       = local->get_size();
             fr.local_center = local->get_position() + vec2f{size.x * 0.5f, -size.y * 0.5f};

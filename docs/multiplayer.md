@@ -430,6 +430,10 @@ with its player.
   passed the local player stays in its frame and never looks like it flies
   backwards. `net_client::frame_draw_update` updates the gap and the local
   player each tick.
+  It is turned like its path where it is drawn (`gap_vel`: the velocity at
+  the shown flight minus the simulated one). Under bullet gravity the
+  simulated velocity is later in the flight, so a bullet turned by it
+  pointed below its drawn path (up to ~3.7° at 100 ms ping).
 - Before the first acknowledged input there is no tick time: the bullet is
   forwarded by its state's age (present time) and collides physically.
 - Bullets the server already consumed are not spawned, and bullets missing

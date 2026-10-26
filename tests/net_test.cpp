@@ -2480,6 +2480,59 @@ TEST_CASE("net: server bullets are drawn where they hit the remote and the local
     CHECK(*drawn_at_hit < right + 30.f);
 }
 
+TEST_CASE("net: server bullets under gravity are drawn turned along their drawn path") {
+    using namespace std::chrono_literals;
+    hit_fixture f{25, 25};
+    REQUIRE(f.gs_srv.game_mode_apply("gm_ballistic"));
+    /* The bot fires away from the local player (behind it): the bullets stay in the shown frame */
+    f.server_side().teleport({1400.f, 1040.f});
+    f.bot->setup_pistol("wpn_ak9");
+    f.run_for(1500ms);
+    REQUIRE(f.gs_cli.sim.bullet_gravity().y > 0.f);
+
+    /*
+     * Drawn shown_delay behind its simulated position (earlier in its
+     * flight), a bullet must be turned like its path there: the direction it
+     * is drawn moving in. Turned like the simulated one, it pointed up to
+     * ~3.7 deg lower than its path at this ping
+     */
+    std::map<u32, std::vector<std::pair<vec2f, vec2f>>> drawn; /* per bullet: drawn position and direction per tick */
+    auto last_tick = f.gs_cli.sim.tick();
+    REQUIRE(f.bot->shot());
+    f.run_for(500ms, [&] {
+        if (f.gs_cli.sim.tick() == last_tick)
+            return;
+        last_tick = f.gs_cli.sim.tick();
+        for (auto& blt : f.gs_cli.blt_mgr.bullets())
+            if (auto& fr = blt.framed(); fr && !fr->own && blt.net_id() != 0 && !blt.physic()->ready_delete_later()) {
+                auto [pos, vel] = fr->drawn(blt.physic()->get_position(), blt.physic()->get_velocity());
+                drawn[blt.net_id()].emplace_back(pos, normalize(vel));
+            }
+    });
+    f.bot->relax();
+    REQUIRE(!drawn.empty());
+
+    /* The angle between two directions, deg */
+    auto angle_between = [](const vec2f& a, const vec2f& b) {
+        return std::abs(std::atan2(a.x * b.y - a.y * b.x, a.x * b.x + a.y * b.y)) * 180.f / float(M_PI);
+    };
+    float max_error = 0.f;
+    size_t steps    = 0;
+    for (auto& [_, path] : drawn)
+        for (size_t i = 1; i < path.size(); ++i) {
+            auto chord = path[i].first - path[i - 1].first;
+            if (magnitude(chord) < 1.f)
+                continue;
+            auto mean_dir = normalize(path[i].second + path[i - 1].second);
+            max_error     = std::max(max_error, angle_between(chord, mean_dir));
+            ++steps;
+        }
+    UNSCOPED_INFO("max angle to the drawn path " << max_error << " deg over " << steps << " steps");
+    REQUIRE(steps > 20);
+    /* (the drawn path wobbles a little with the shown delay: ~0.5 deg) */
+    CHECK(max_error < 1.f);
+}
+
 TEST_CASE("net: own bullet hits on remote players are predicted") {
     using namespace std::chrono_literals;
     hit_fixture f;

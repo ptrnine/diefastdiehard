@@ -190,11 +190,14 @@ public:
 
         /*
          * Drawing: where the remote players see the bullet (the shown frame)
-         * is gap from it. It is drawn there, so it meets the remote players
-         * when they are hit, but converges to the local frame when it flies
-         * at the local player (local_center): it hits it in that frame
+         * is gap from it, its velocity there gap_vel from its own (earlier in
+         * its flight: under gravity, less bent). It is drawn there and turned
+         * that way, so it meets the remote players when they are hit, but
+         * converges to the local frame when it flies at the local player
+         * (local_center): it hits it in that frame
          */
         vec2f                gap         = {0.f, 0.f};
+        vec2f                gap_vel     = {0.f, 0.f};
         std::optional<vec2f> local_center = {};
         float                shown_blend = 1.f; // 1: drawn in the shown frame, 0: in the local frame; never grows
 
@@ -221,6 +224,13 @@ public:
         [[nodiscard]]
         vec2f draw_offset(const vec2f& pos, const vec2f& vel) const {
             return gap * shown_blend_at(pos, vel);
+        }
+
+        /* Where it is drawn and its velocity there, for the bullet at pos flying along vel */
+        [[nodiscard]]
+        std::pair<vec2f, vec2f> drawn(const vec2f& pos, const vec2f& vel) const {
+            auto blend = shown_blend_at(pos, vel);
+            return {pos + gap * blend, vel + gap_vel * blend};
         }
     };
 
@@ -381,10 +391,15 @@ public:
             auto pos = ph->get_position();
             auto next_pos = pos + ph->get_velocity() * timestep;
             pos = lerp(pos, next_pos, interpolation_factor);
-            if (auto& fr = b.framed(); fr && !fr->own)
-                pos += fr->draw_offset(pos, ph->get_velocity());
-
             auto dir = ph->get_direction();
+            /* A server bullet on a client: drawn in the shown frame, turned like its path there */
+            if (auto& fr = b.framed(); fr && !fr->own) {
+                auto [drawn_pos, drawn_vel] = fr->drawn(pos, ph->get_velocity());
+                pos                         = drawn_pos;
+                if (magnitude(drawn_vel) > 1.f)
+                    dir = normalize(drawn_vel);
+            }
+
             auto angle = std::atan2(dir.y, dir.x);
 
             auto x_sz = std::min(ph->get_distance(), bullet_sprite_cache::bullet_x_max);
