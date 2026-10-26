@@ -26,6 +26,7 @@ struct remote_player_snapshot {
     bool                 on_left  = false;
     bool                 shooting = false;
     bool                 throwing = false;
+    bool                 long_shot = false; // the long shot (adjust) mode
     std::vector<u32>     hits; // bullets that hit the player in the last second
     u16                  teleports = 0;
 
@@ -1236,6 +1237,9 @@ private:
             /* The throw is shown only: the server drops the gun (and the pistol sync removes it) */
             if (snap->throwing && !pl.throwing())
                 pl.drop_gun();
+
+            /* The gun is aimed up in the long shot mode (under bullet gravity) */
+            pl.enable_long_shot(snap->long_shot);
         }
     }
 
@@ -1446,6 +1450,7 @@ private:
                                                           (sp.flags & state_player::flag_on_left) != 0,
                                                           (sp.flags & state_player::flag_shooting) != 0,
                                                           (sp.flags & state_player::flag_throwing) != 0,
+                                                          (sp.flags & state_player::flag_long_shot) != 0,
                                                           sp.hits,
                                                           sp.teleports});
         }

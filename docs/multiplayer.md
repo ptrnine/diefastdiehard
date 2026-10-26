@@ -80,7 +80,7 @@ Every datagram has a header `u16 type, u16 payload_size`, then an
 `ss::serializer` payload: little endian, with **u16** string and vector
 length prefixes (`net::wire_size_type`; the serializer default is u64).
 **Bump `net::protocol_version`** on any wire change: a HELLO with another
-version is answered with ERROR. The current version is 17.
+version is answered with ERROR. The current version is 18.
 
 | id | dir | payload |
 |----|-----|---------|
@@ -104,7 +104,7 @@ STATE contains:
   - the client keeps them by id: a known config is changed only by the newest STATE, and a player whose config is unknown yet is skipped.
 - **`state_player`, per player:**
   - id;
-  - physic state: pos and **raw** velocity as full floats (the client reconciles with them), flags (lock_y, on_left, shooting, throwing, ready in the lobby), jumps_left, accel factors (u16 fixed point);
+  - physic state: pos and **raw** velocity as full floats (the client reconciles with them), flags (lock_y, on_left, shooting, throwing, ready in the lobby, long_shot: the adjust mode of `key_adjust_up`, which aims the gun up under bullet gravity; clients apply it to remote players), jumps_left, accel factors (u16 fixed point);
   - `throwing`: the player throws its gun away (`player::drop_gun` plays a 0.25-0.45 s wind-up and throw, the server drops the gun at its end). Clients show the throw of remote players from this flag and the local one from the predicted drop input; the server's drop (the secondary gun in the player config, or an empty pistol: no gun) replaces the gun at the release of the shown throw (`player::setup_pistol_on_release`). The local player's thrown gun is predicted: it spawns at the local release with local physics and takes over the id of the first new server gun owned by the local player (`net_client::confirm_predicted_gun`). From then on every STATE corrects it to the server's gun forwarded by the difference of their flight times (`age`) along the ballistic path, smoothed by a decaying render offset; a prediction the server never confirms disappears after max(1 s, 2 RTT + 0.5 s);
   - gun hits: the predicted gun collides with the other players where they are shown and its hits are predicted like own bullet hits (knockback offset, confirmed by `hits`). A gun hit id is the gun id tagged with `dropped_gun::hit_ref_tag` (never a bullet id; an unconfirmed prediction has its own tag and is re-keyed when the server's gun takes it over). The server tests the gun of a network thrower against the players rewound by lag + rewind (its gun is released lag after the thrower's, which saw the others rewind in the past) and applies the hit with `apply_hit_at` at the tick end, so both agree. A server state from before the prediction's last bounce does not correct it (it can't be forwarded past the bounce);
   - teleport counter;

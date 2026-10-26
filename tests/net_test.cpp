@@ -2480,6 +2480,23 @@ TEST_CASE("net: server bullets are drawn where they hit the remote and the local
     CHECK(*drawn_at_hit < right + 30.f);
 }
 
+TEST_CASE("net: the long shot (adjust) mode of remote players is shown") {
+    using namespace std::chrono_literals;
+    hit_fixture f{25, 25};
+    REQUIRE(f.gs_srv.game_mode_apply("gm_ballistic"));
+    f.run_for(500ms);
+    REQUIRE_FALSE(f.remote_bot().long_shot_enabled());
+
+    /* key_adjust_up held: the gun aims up, on the clients too */
+    f.bot->enable_long_shot();
+    f.run_for(300ms);
+    CHECK(f.remote_bot().long_shot_enabled());
+
+    f.bot->disable_long_shot();
+    f.run_for(300ms);
+    CHECK_FALSE(f.remote_bot().long_shot_enabled());
+}
+
 TEST_CASE("net: server bullets under gravity are drawn turned along their drawn path") {
     using namespace std::chrono_literals;
     hit_fixture f{25, 25};

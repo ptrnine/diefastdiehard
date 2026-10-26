@@ -263,6 +263,8 @@ private:
             flags |= state_player::flag_shooting;
         if (pl.throwing())
             flags |= state_player::flag_throwing;
+        if (pl.long_shot_enabled())
+            flags |= state_player::flag_long_shot;
         if (ready)
             flags |= state_player::flag_ready;
 

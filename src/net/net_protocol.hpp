@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 17;
+inline constexpr u16 protocol_version = 18;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -254,6 +254,7 @@ struct state_player {
     static constexpr u8 flag_shooting = 1 << 2; // trigger held
     static constexpr u8 flag_throwing = 1 << 3; // throwing the gun away (player::throwing)
     static constexpr u8 flag_ready    = 1 << 4; // ready in the lobby (lobby_state::ready)
+    static constexpr u8 flag_long_shot = 1 << 5; // the long shot (adjust) mode: aims up under bullet gravity
 
     u16 id = 0;
 
