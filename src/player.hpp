@@ -548,7 +548,7 @@ public:
         }
 
         auto f = std::min((time - windup) / (_throw->duration - windup), 1.f);
-        f *= f; /* ease in: speeds up to the release */
+        f *= f * f; /* ease in: a fast swing to the release */
         return {lerp(scaled(throw_windup_offset), scaled(throw_release_offset), f), lerp(throw_windup_angle, throw_release_angle, f)};
     }
 
@@ -1267,7 +1267,7 @@ private:
     drop_gun_fn_t _drop_gun_cb;
 
     /* Gun throw (drop_gun) */
-    static constexpr float throw_windup_part    = 0.6f;            /* the wind-up part of the throw duration */
+    static constexpr float throw_windup_part    = 0.75f;           /* the wind-up part of the throw duration */
     static constexpr float throw_release_hold   = 1.f;             /* seconds a released server-driven gun is hidden */
     static constexpr vec2f throw_windup_offset  = {-0.7f, -0.35f}; /* arm offset (player size factors), facing right */
     static constexpr vec2f throw_release_offset = {0.55f, -0.1f};

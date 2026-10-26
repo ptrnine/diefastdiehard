@@ -553,7 +553,7 @@ TEST_CASE("player: apply_input") {
     SECTION("throw pose") {
         REQUIRE(pl->drop_gun());
         auto d      = pl->throw_duration();
-        auto windup = pl->throw_pose(d * 0.6f);
+        auto windup = pl->throw_pose(d * 0.75f);
         auto end    = pl->throw_pose(d);
         auto dir    = pl->facing_dir().x;
 
