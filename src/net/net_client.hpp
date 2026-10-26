@@ -928,14 +928,25 @@ private:
     }
 
     /* The server's gun of the local player's throw arrived: the oldest unconfirmed prediction takes its id */
-    static dropped_gun* confirm_predicted_gun(game_state& gs, u32 id) {
+    dropped_gun* confirm_predicted_gun(game_state& gs, u32 id) {
         dropped_gun* oldest = nullptr;
         for (auto& g : gs.dropped_guns.guns())
             if (g->predicted() && !g->confirmed() && (!oldest || g->age() > oldest->age()))
                 oldest = g.get();
 
         if (oldest) {
+            /* Hits predicted for the gun can now be matched to the server's */
+            auto predicted_ref = oldest->hit_ref_id();
             oldest->confirm(id);
+            auto resolve = [&](auto& hit) {
+                if (hit.ref.id == predicted_ref)
+                    hit.ref.id = oldest->hit_ref_id();
+            };
+            for (auto& [_, kb] : _knockbacks)
+                kb.for_each_hit(resolve);
+            for (auto& [_, pl] : gs.players)
+                pl->for_each_predicted_hit(resolve);
+
             glog().info("net client: predicted dropped gun confirmed as {}", id);
         }
         return oldest;
@@ -945,9 +956,14 @@ private:
      * A predicted gun follows the server's one: the server state is
      * forwarded by the flight time the prediction is ahead of it (the local
      * throw was released that much earlier on the local timeline) along the
-     * ballistic path, the remaining difference is smoothed away
+     * ballistic path, the remaining difference is smoothed away. A state
+     * from before the prediction's last bounce can't be forwarded past it:
+     * the server bounces there too (rewound hits), or a later state corrects
      */
     void correct_predicted_gun(game_state& gs, dropped_gun& g, const gun_info& gi) {
+        if (auto hit_age = g.last_hit_age(); hit_age && float(gi.age_ms) / 1000.f < *hit_age)
+            return;
+
         auto lead = std::clamp(g.age() - float(gi.age_ms) / 1000.f, 0.f, game_state::max_lag_compensation);
         auto grav = gs.sim.gravity();
         auto vel  = vec2f{gi.vel_x, gi.vel_y};

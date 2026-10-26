@@ -1543,6 +1543,13 @@ public:
         return std::exchange(_predicted_hits, {});
     }
 
+    /* Predicted hits not taken yet (e.g. to resolve references) */
+    template <typename F>
+    void for_each_predicted_hit(F&& f) {
+        for (auto& hit : _predicted_hits)
+            f(hit);
+    }
+
     /* Ids of the bullets that hit this (authoritative) player in the last second */
     [[nodiscard]]
     std::vector<u32> recent_hit_ids() {

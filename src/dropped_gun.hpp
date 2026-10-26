@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,9 +27,12 @@ namespace dfdh {
  * only affects the sprite, not the physical bounding box.
  *
  * On a network client a gun thrown by the local player is predicted: it
- * flies right away with local physics (no collisions: the server decides
- * them), takes over the id of the server's gun when it arrives and is then
- * corrected towards it (see net_client)
+ * flies right away with local physics and collides with the players where
+ * they are shown (their knockback is predicted like a bullet hit), takes
+ * over the id of the server's gun when it arrives and is then corrected
+ * towards it (see net_client). The server tests the gun of a network
+ * thrower against the players as the thrower saw them (rewind), so both
+ * agree on the hits.
  */
 class dropped_gun {
 public:
@@ -102,13 +107,16 @@ public:
     }
 
     /**
-     * AABB collision against players. The player receives the gun's impulse
-     * (mass * velocity), the gun bounces off losing double of its velocity
-     * and is pushed out of the player. Returns true on a hit
+     * AABB collision against players, with each player's box player_bb(player,
+     * rewind) (rewound for a network thrower). The player receives the gun's
+     * impulse (mass * velocity) through on_hit(player, impulse, position), the
+     * gun bounces off losing double of its velocity and is pushed out of the
+     * player. Returns true on a hit
      */
-    bool collide_with(const std::map<player_name_t, std::shared_ptr<player>>& players) {
-        /* Ghost (net-synced) guns have no local physics or collisions, predicted ones no collisions */
-        if (_net_synced || _predicted || _hit_cooldown > 0 || _box->ready_delete_later())
+    template <typename FBB, typename FHit>
+    bool collide_with(const std::map<player_name_t, std::shared_ptr<player>>& players, FBB&& player_bb, FHit&& on_hit) {
+        /* Ghost (net-synced) guns have no local physics or collisions */
+        if (_net_synced || _hit_cooldown > 0 || _box->ready_delete_later())
             return false;
 
         auto pos = _box->get_position();
@@ -119,7 +127,7 @@ public:
             if (_group != -1 && p->get_group() == _group)
                 continue;
 
-            auto pbb = p->bb();
+            auto pbb = player_bb(*p, _rewind);
 
             float ox1 = gbb.left + gbb.width  - pbb.left;
             float ox2 = pbb.left + pbb.width  - gbb.left;
@@ -128,11 +136,9 @@ public:
             if (ox1 <= 0.f || ox2 <= 0.f || oy1 <= 0.f || oy2 <= 0.f)
                 continue;
 
-            auto& pbox = *p->collision_box();
-            auto  imp  = _box->get_velocity() * _box->get_mass(); /* mass * velocity */
-            if (pbox.is_lock_y() && imp.y < -180.f)
-                pbox.unlock_y();
-            pbox.apply_impulse(imp);
+            auto imp = _box->get_velocity() * _box->get_mass(); /* mass * velocity */
+            on_hit(*p, imp, pos);
+            _last_hit_age = _age;
 
             /* The gun loses double of its velocity (perfect bounce) */
             auto vel = _box->get_velocity();
@@ -303,6 +309,40 @@ public:
         return _render_offset;
     }
 
+    /* Flight time of the last player hit (bounce), if any */
+    [[nodiscard]]
+    const std::optional<float>& last_hit_age() const {
+        return _last_hit_age;
+    }
+
+    /* Server, gun of a network thrower: collide with the players as they were rewind seconds ago */
+    void rewind(float value) {
+        _rewind = value;
+    }
+
+    [[nodiscard]]
+    float rewind() const {
+        return _rewind;
+    }
+
+    /*
+     * Id of the gun's hits, reported like bullet ids (state_player::hits):
+     * tagged to never match a bullet id, an unconfirmed prediction (client
+     * side id) also never matches a server gun
+     */
+    static constexpr u32 hit_ref_tag            = 0x80000000u;
+    static constexpr u32 hit_ref_predicted_tag  = 0x40000000u;
+
+    [[nodiscard]]
+    static u32 hit_ref_id_of(u32 gun_id, bool unconfirmed_prediction = false) {
+        return hit_ref_tag | (unconfirmed_prediction ? hit_ref_predicted_tag : 0u) | (gun_id & ~(hit_ref_tag | hit_ref_predicted_tag));
+    }
+
+    [[nodiscard]]
+    u32 hit_ref_id() const {
+        return hit_ref_id_of(_id, _predicted && !_confirmed);
+    }
+
 private:
     static constexpr float render_offset_half_life = 0.05f;
 
@@ -323,6 +363,8 @@ private:
     bool                          _predicted    = false;
     bool                          _confirmed    = false;
     vec2f                         _render_offset = {0.f, 0.f};
+    float                         _rewind        = 0.f;
+    std::optional<float>          _last_hit_age;
 };
 
 class dropped_gun_mgr {
@@ -378,7 +420,9 @@ public:
             g->update(timestep);
 
         for (auto& g : _guns)
-            g->collide_with(_players);
+            g->collide_with(_players, _player_bb, [&](player& p, const vec2f& impulse, const vec2f& pos) {
+                _on_hit(*g, p, impulse, pos);
+            });
 
         /* Ghost and predicted guns are removed by the client when the server drops them */
         std::erase_if(_guns, [this](const auto& g) {
@@ -397,6 +441,15 @@ public:
         return _guns.size();
     }
 
+    using player_bb_fn_t = std::function<sf::FloatRect(const player&, float rewind)>;
+    using on_hit_fn_t    = std::function<void(dropped_gun&, player&, const vec2f& impulse, const vec2f& position)>;
+
+    /* Player boxes for the collisions (rewound ones) and what a gun hit does to the player */
+    void set_collision_handlers(player_bb_fn_t player_bb, on_hit_fn_t on_hit) {
+        _player_bb = std::move(player_bb);
+        _on_hit    = std::move(on_hit);
+    }
+
     [[nodiscard]]
     auto& guns() {
         return _guns;
@@ -408,6 +461,11 @@ private:
     vec2f                                           _level_size = {0.f, 0.f};
     std::vector<std::unique_ptr<dropped_gun>>       _guns;
     u32                                             _next_id = 1;
+
+    player_bb_fn_t _player_bb = [](const player& p, float) { return p.bb(); };
+    on_hit_fn_t    _on_hit    = [](dropped_gun&, player& p, const vec2f& impulse, const vec2f& pos) {
+        p.on_bullet_hit(impulse, pos);
+    };
 };
 
 } // namespace dfdh

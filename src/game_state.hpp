@@ -36,15 +36,29 @@ public:
         sim.add_tick_begin_callback("history", [this](const physic_simulation&, float) { history_tick_begin(); }, 10);
         sim.add_tick_end_callback("history", [this](const physic_simulation&, float) { history_tick_end(); }, 100);
 
-        /* Lag-compensated bullets hit the rewound players, before this tick's new shots */
+        /* Lag-compensated bullets and guns hit the rewound players, before this tick's new shots */
         sim.add_tick_end_callback(
             "rewound_bullets", [this](const physic_simulation&, float) { rewound_bullets_tick_update(); }, -1);
+        sim.add_tick_end_callback(
+            "rewound_gun_hits", [this](const physic_simulation&, float) { rewound_gun_hits_tick_update(); }, -1);
 
         /* Players (weapons, shots, recoil, death) are updated on every simulation tick */
         sim.add_tick_end_callback("players", [this](const physic_simulation&, float) {
             if (on_game)
                 players_tick_update();
         });
+
+        /* A gun hit is a hit like a bullet's: lag-compensated (rewound) for a network thrower */
+        dropped_guns.set_collision_handlers(
+            [this](const player& pl, float rewind) { return rewound_bb(pl, rewind); },
+            [this](dropped_gun& gun, player& victim, const vec2f& impulse, const vec2f& pos) {
+                auto ref = bullet_ref{gun.hit_ref_id(), {}};
+                if (gun.rewind() > 0.f)
+                    rewound_gun_hits.push_back(
+                        {victim.name(), impulse, pos, ref, sim.current_update_time() - to_duration(gun.rewind())});
+                else
+                    victim.on_bullet_hit(impulse, pos, ref);
+            });
 
         sim.add_platform_callback("player", [this](physic_point* pnt) {
             for (auto& [_, p] : players)
@@ -89,6 +103,16 @@ public:
                                            spec.angle);
             gun->owner(player_name);
             gun->predicted(spec.predicted);
+            /*
+             * A network thrower released the gun lag seconds after its screen
+             * did, where it saw the others rewind seconds in the past: the gun
+             * meets the players as the thrower saw them
+             */
+            if (auto* thrower = players.contains(player_name) ? players.at(player_name).get() : nullptr;
+                thrower && thrower->net_controlled()) {
+                auto& lc = thrower->lag_compensation();
+                gun->rewind(std::min(lc.lag + lc.rewind, max_lag_compensation));
+            }
             return gun;
         });
         auto [it, _] = players.emplace(player_name, player);
@@ -476,6 +500,18 @@ public:
         return hitscan(a, b, rewind_s, &owner, owner.get_group());
     }
 
+    /* Player box rewind_s seconds ago (position trace), the current one if there is no trace back then */
+    [[nodiscard]]
+    sf::FloatRect rewound_bb(const player& pl, float rewind_s) const {
+        auto bb = pl.bb();
+        if (rewind_s > 0.f)
+            if (auto past = pl.position_trace_lookup(sim.current_update_time(), rewind_s)) {
+                bb.left = past->x;
+                bb.top  = past->y - bb.height;
+            }
+        return bb;
+    }
+
     /* Owner may be gone (nullptr): only its group is skipped then */
     std::optional<hitscan_hit_t> hitscan(const vec2f& a, const vec2f& b, float rewind_s, const player* owner, int group) {
         std::optional<hitscan_hit_t> res;
@@ -488,12 +524,7 @@ public:
             if (group != -1 && pl->get_group() != -1 && pl->get_group() == group)
                 continue;
 
-            auto bb = pl->bb();
-            if (rewind_s > 0.f)
-                if (auto past = pl->position_trace_lookup(sim.current_update_time(), rewind_s)) {
-                    bb.left = past->x;
-                    bb.top  = past->y - bb.height;
-                }
+            auto bb = rewound_bb(*pl, rewind_s);
 
             /* Segment vs AABB (slabs) */
             float t0 = 0.f, t1 = 1.f;
@@ -579,6 +610,23 @@ public:
                 ph->delete_later();
             }
         }
+    }
+
+    /* A rewound gun hit, applied at the tick end (apply_hit_at re-simulates the victim) */
+    struct rewound_gun_hit_t {
+        player_name_t                         victim;
+        vec2f                                 impulse;
+        vec2f                                 position;
+        bullet_ref                            ref;
+        std::chrono::steady_clock::time_point when;
+    };
+
+    std::vector<rewound_gun_hit_t> rewound_gun_hits;
+
+    void rewound_gun_hits_tick_update() {
+        for (auto& hit : std::exchange(rewound_gun_hits, {}))
+            if (auto found = players.find(hit.victim); found != players.end())
+                apply_hit_at(*found->second, hit.impulse, hit.position, hit.ref, hit.when);
     }
 
     /*

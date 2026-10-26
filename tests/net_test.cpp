@@ -2606,4 +2606,55 @@ TEST_CASE("net: gun throws are shown on the client") {
         UNSCOPED_INFO("max gun correction: " << f.cli->max_gun_correction() << " px");
         CHECK(f.cli->max_gun_correction() < 10.f);
     }
+
+    SECTION("a predicted gun hits a remote player") {
+        /* The bot stands on the long platform right in front of the thrower (another group: guns skip the own one) */
+        bot->group(1);
+        f.server_side().teleport({1000.f, 900.f});
+        bot->teleport({1090.f, 900.f});
+        f.run_for(1000ms);
+        auto& remote = *f.gs_cli.players.at("bot");
+        REQUIRE(remote.get_group() == 1);
+        REQUIRE_FALSE(f.local().get_on_left());
+
+        auto predicted_gun = [&]() -> dropped_gun* {
+            for (auto& g : f.gs_cli.dropped_guns.guns())
+                if (g->predicted())
+                    return g.get();
+            return nullptr;
+        };
+
+        f.input = {.drop = true};
+        for (int i = 0; i < 20 && !f.local().throwing(); ++i)
+            f.frame();
+        f.input = {};
+        for (int i = 0; i < 200 && !predicted_gun(); ++i)
+            f.frame();
+        REQUIRE(predicted_gun());
+        REQUIRE(predicted_gun()->get_velocity().x > 0.f);
+        auto bot_x = remote.get_position().x;
+
+        /* The gun bounces off the bot where it is shown, the bot is knocked back right away */
+        bool bounced = false, server_hit_first = false;
+        for (int i = 0; i < 60 && !bounced; ++i) {
+            f.frame();
+            bounced          = predicted_gun() && predicted_gun()->get_velocity().x < 0.f;
+            server_hit_first = server_hit_first || !bot->recent_hit_ids().empty();
+        }
+        REQUIRE(bounced);
+        CHECK_FALSE(server_hit_first);
+        CHECK(remote.get_velocity().x > 0.f);
+
+        /* The server registers the hit where the thrower saw it, and reports it */
+        bool reported = false;
+        f.run_for(1000ms, [&] {
+            for (auto id : bot->recent_hit_ids())
+                reported = reported || (id & dropped_gun::hit_ref_tag) != 0;
+        });
+        CHECK(reported);
+        CHECK(bot->get_position().x > bot_x + 5.f);
+        CHECK(remote.get_position().x > bot_x + 5.f);
+        UNSCOPED_INFO("max gun correction: " << f.cli->max_gun_correction() << " px");
+        CHECK(f.cli->max_gun_correction() < 20.f);
+    }
 }
