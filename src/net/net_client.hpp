@@ -462,6 +462,26 @@ private:
             gs.blt_mgr.remove_dead();
     }
 
+    /**
+     * Hidden player that simulates the knockback ghosts of the remote player pl
+     * (same movement parameters). Not in the simulation and not a game player:
+     * stepping it never touches what is shown (legs, weapon bobbing, ...)
+     */
+    player& ghost_of(game_state& gs, const player& pl) {
+        if (!_ghost) {
+            _ghost = player::create(player_name_t("~knockback_ghost"), gs.sim, pl.get_size());
+            gs.sim.remove_primitive(_ghost->collision_box());
+            _ghost->replaying(true);
+            _ghost->set_server_driven(true);
+        }
+        _ghost->max_speed(pl.get_max_speed());
+        _ghost->x_accel(pl.get_x_accel());
+        _ghost->x_slowdown(pl.get_x_slowdown());
+        _ghost->jump_speed(pl.get_jump_speed());
+        _ghost->mass(pl.collision_box()->get_mass());
+        return *_ghost;
+    }
+
     /* Every frame: show remote players at the interpolated server time */
     void apply_remote_snapshots(game_state& gs) {
         if (!_clock.valid())
@@ -500,17 +520,16 @@ private:
              * them. The offset is simulated with the game physics, using the
              * player's own body as scratch (it is restored to the shown state below)
              */
-            auto make_pair = [&](const player::physic_state& base, const vec2f& impulse) {
-                pl.restore_physic_state(base);
-                pl.apply_hit_physics(impulse);
-                return knockback_t::pair_t{pl.get_physic_state(), base};
+            auto& ghost     = ghost_of(gs, pl);
+            auto  make_pair = [&](const player::physic_state& base, const vec2f& impulse) {
+                ghost.restore_physic_state(base);
+                ghost.apply_hit_physics(impulse);
+                return knockback_t::pair_t{ghost.get_physic_state(), base};
             };
             auto step_ghost = [&](player::physic_state& st, float timestep) {
-                pl.restore_physic_state(st);
-                pl.replaying(true);
-                gs.sim.step_isolated(pl.collision_box(), timestep, [&](float ts) { pl.physic_update(gs.sim, ts); });
-                pl.replaying(false);
-                st = pl.get_physic_state();
+                ghost.restore_physic_state(st);
+                gs.sim.step_isolated(ghost.collision_box(), timestep, [&](float ts) { ghost.physic_update(gs.sim, ts); });
+                st = ghost.get_physic_state();
             };
 
             /* The body is where the player was shown (and moved by the local simulation) when hit */
@@ -549,6 +568,7 @@ private:
             if (auto grounded = kb.grounded())
                 ph.lock_y = *grounded;
             pl.restore_physic_state(ph);
+            pl.place_legs();
             pl.on_left(snap->on_left);
 
             /*
@@ -791,6 +811,7 @@ private:
     server_clock _clock;
     std::map<player_name_t, snapshot_buffer<remote_player_snapshot>> _remote;
     using knockback_t = knockback_offset<bullet_ref, player::physic_state>;
+    std::shared_ptr<player>                                          _ghost;
     std::map<player_name_t, knockback_t>                             _knockbacks;
     std::map<player_name_t, std::optional<u16>>                      _remote_teleports;
     std::optional<u16>                                               _local_teleports;

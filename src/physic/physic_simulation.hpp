@@ -283,6 +283,12 @@ public:
             _pointonly.erase(primitive);
     }
 
+    void remove_primitive(const physic_point* primitive) {
+        auto is = [primitive](const std::shared_ptr<physic_point>& p) { return p.get() == primitive; };
+        std::erase_if(_lineonly, is);
+        std::erase_if(_pointonly, is);
+    }
+
     void add_platform(const physic_platform& platform) {
         _platforms.push_back(platform);
     }

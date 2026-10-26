@@ -185,8 +185,9 @@ bullet, resolved to the id when the bullet is confirmed).
   starts a `knockback_offset` on top of the interpolated snapshots,
   simulated with the game physics: two ghosts of the player start from
   its shown state, one with the hit applied and one without, stepped with
-  `physic_simulation::step_isolated` + `player::physic_update` (the
-  player's body is the scratch), and the offset is their difference, so
+  `physic_simulation::step_isolated` + `player::physic_update` on a
+  hidden ghost player (outside of the simulation, so the shown player's
+  legs and weapon bobbing are never touched), and the offset is their difference, so
   it follows the level geometry (slides off platform edges, falls, lands).
   When the rendered snapshots show the hit, a second pair starts from the
   last snapshot before the hit, brought to the render time, and is
@@ -194,6 +195,9 @@ bullet, resolved to the id when the bullet is confirmed).
   A hit the server did not register within
   `max(1 s, 2 * rtt + interp + 0.3 s)` fades out.
 * Player groups are synchronized, so client-side collisions respect teams.
+* Legs are placed by the physics in absolute coordinates: players moved
+  outside of it (snapshots) re-anchor them (`player::place_legs`), and they
+  are drawn with the correction render offset like the rest of the body.
 
 ### Testing with latency
 

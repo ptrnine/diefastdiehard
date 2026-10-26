@@ -1683,6 +1683,7 @@ TEST_CASE("net: predicted knockback follows the level geometry") {
 
     bool               server_off_edge = false, client_off_edge = false;
     int                inside_floor    = 0;
+    int                detached_legs   = 0;
     int                frames          = 0;
     std::vector<vec2f> srv_path, cli_path;
     f.input = {.shot = true};
@@ -1701,11 +1702,18 @@ TEST_CASE("net: predicted knockback follows the level geometry") {
         /* The drawn bot can leave the floor past its edge, never through it */
         if (pos.x + sz.x > 150.f && pos.x < 2450.f && pos.y > 1050.f + 2.f)
             ++inside_floor;
+
+        /* Its legs stay under it */
+        auto [l, r] = f.remote_bot().leg_positions();
+        for (auto leg : {l, r})
+            if (std::abs(leg.x - (pos.x + sz.x * 0.5f)) > sz.x * 0.5f || std::abs(leg.y - pos.y) > 20.f)
+                ++detached_legs;
     });
 
     REQUIRE(server_off_edge);
     CHECK(client_off_edge);
     CHECK(inside_floor == 0);
+    CHECK(detached_legs == 0);
 
     /*
      * The predicted knockback is ahead in time (the client sees its hit before

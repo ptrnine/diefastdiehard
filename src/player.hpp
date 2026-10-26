@@ -272,6 +272,17 @@ public:
         return _render_offset;
     }
 
+    /* Put the legs under the body at its current position (after moving it outside of the physics) */
+    void place_legs() {
+        leg_animation_update(0.f, get_position(), get_velocity());
+    }
+
+    /* Leg positions (absolute, set by the physics update) */
+    [[nodiscard]]
+    std::pair<vec2f, vec2f> leg_positions() const {
+        return {_left_leg.getPosition(), _right_leg.getPosition()};
+    }
+
     void reset_render_offset() {
         _render_offset = {0.f, 0.f};
     }
@@ -288,6 +299,7 @@ public:
         _position_trace.clear();
         _render_offset = {0.f, 0.f};
         ++_teleports;
+        place_legs();
     }
 
     /** Number of teleports so far (wraps around) */
@@ -661,16 +673,17 @@ public:
             wnd.draw(*sprite);
         }
 
+        /* Legs are positioned in absolute coordinates by the physics: shift them with the body */
         static constexpr auto draw_leg_lerp =
-            [](auto&& wnd, float timestep, float factor, auto&& leg, const vec2f& vel) {
+            [](auto&& wnd, float timestep, float factor, auto&& leg, const vec2f& vel, const vec2f& offset) {
                 vec2f pos      = leg.getPosition();
                 auto  next_pos = pos + vel * timestep;
-                leg.setPosition(lerp(pos, next_pos, factor));
+                leg.setPosition(lerp(pos, next_pos, factor) + offset);
                 wnd.draw(leg);
                 leg.setPosition(pos);
             };
-        draw_leg_lerp(wnd, timestep, interpolation_factor, _left_leg, _collision_box->get_velocity());
-        draw_leg_lerp(wnd, timestep, interpolation_factor, _right_leg, _collision_box->get_velocity());
+        draw_leg_lerp(wnd, timestep, interpolation_factor, _left_leg, _collision_box->get_velocity(), _render_offset);
+        draw_leg_lerp(wnd, timestep, interpolation_factor, _right_leg, _collision_box->get_velocity(), _render_offset);
 
         if (_pistol) {
             auto [lh, rh] = _pistol.draw(arm_position(pos),
