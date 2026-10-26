@@ -57,7 +57,13 @@ public:
         }
     }
 
+    void cmd_fps(cmd_opt<bool> opt) {
+        enable_fps_counter(opt ? opt.test() : !is_fps_counter_enabled());
+        glog().info("fps: {}", cmd_opt<bool>(is_fps_counter_enabled()));
+    }
+
     void init_commands() {
+        command_buffer().add_handler("fps", &diefastdiehard::cmd_fps, this);
         command_buffer().add_handler("log", &diefastdiehard::cmd_log, this);
         command_buffer().add_handler("log time", &diefastdiehard::cmd_log_time, this);
         command_buffer().add_handler("log level", &diefastdiehard::cmd_log_level, this);

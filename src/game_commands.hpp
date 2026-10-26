@@ -123,6 +123,10 @@ public:
             help = "Lua interpreter\n"
                    "lua [command]    - execute lua line";
         }
+        else if (cmd == "fps") {
+            help = "FPS counter in the top left corner\n"
+                   "fps [on/off]?  - toggle or enable/disable the fps counter";
+        }
         else if (cmd == "sound") {
             help = "Sound settings\n"
                    "sound volume [0 - 100]  - set or get sound volume";

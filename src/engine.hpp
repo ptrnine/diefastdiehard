@@ -105,6 +105,8 @@ public:
                 _wnd.display();
             }
 
+            fps_count_frame();
+
             {
                 auto prof = loop_prof.scope("commands");
                 command_buffer().run_handlers();
@@ -134,6 +136,8 @@ end:
     }
 
     virtual void ui_update() {
+        if (fps_show)
+            fps_draw();
         devcons().update_internal();
     }
 
@@ -151,6 +155,15 @@ end:
 
     void enable_profiler_print(bool value) {
         profiler_print = value;
+    }
+
+    void enable_fps_counter(bool value) {
+        fps_show = value;
+    }
+
+    [[nodiscard]]
+    bool is_fps_counter_enabled() const {
+        return fps_show;
     }
 
     vec2u window_size() const {
@@ -192,6 +205,31 @@ private:
         _wnd.setPosition(wnd_pos);
     }
 
+    /* Wall-clock rendering rate, not game time: averaged over fps_period */
+    void fps_count_frame() {
+        auto now = std::chrono::steady_clock::now();
+        ++fps_frames;
+        if (now - fps_start >= fps_period) {
+            fps_value  = float(fps_frames) / std::chrono::duration<float>(now - fps_start).count();
+            fps_frames = 0;
+            fps_start  = now;
+        }
+    }
+
+    void fps_draw() {
+        auto style = &ui.nk_ctx()->style;
+        ui.style_push_style_item(&style->window.fixed_background, nk_style_item_color(nk_rgba(0, 0, 0, 0)));
+
+        if (ui.begin("fps_counter", {4.f, 4.f, 100.f, 32.f}, NK_WINDOW_NO_INPUT | NK_WINDOW_NO_SCROLLBAR)) {
+            ui.layout_row_dynamic(20.f, 1);
+            auto text = "FPS: " + std::to_string(int(fps_value + 0.5f));
+            ui.label_colored(text.data(), NK_TEXT_LEFT, sf::Color(255, 255, 0));
+        }
+        ui.end();
+
+        ui.style_pop_style_item();
+    }
+
 protected:
     ui_ctx ui;
 
@@ -204,5 +242,11 @@ private:
     main_menu           _main_menu;
     profiler            loop_prof;
     bool                profiler_print = false;
+
+    static constexpr auto                 fps_period = std::chrono::milliseconds(500);
+    bool                                  fps_show   = false;
+    std::chrono::steady_clock::time_point fps_start  = std::chrono::steady_clock::now();
+    u32                                   fps_frames = 0;
+    float                                 fps_value  = 0.f;
 };
 }
