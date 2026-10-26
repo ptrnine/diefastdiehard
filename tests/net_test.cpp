@@ -1455,8 +1455,19 @@ TEST_CASE("game_state: local key events drive controlled players only") {
     SECTION("a deleted controller drives nothing") {
         REQUIRE(gs.controller_delete(0));
         CHECK_FALSE(gs.controlled_players.contains("lol"));
+        CHECK_FALSE(gs.locally_controlled(*pl));
         gs.handle_event(press);
         CHECK_FALSE(pl->shotting());
+    }
+
+    SECTION("the network client's predicted player is controlled from this PC (camera follows it)") {
+        REQUIRE(gs.controller_delete(0));
+        auto me = gs.player_create("me");
+        REQUIRE(me);
+        CHECK_FALSE(gs.locally_controlled(*me));
+        me->set_server_driven(true);
+        me->set_predicted(true);
+        CHECK(gs.locally_controlled(*me));
     }
 }
 

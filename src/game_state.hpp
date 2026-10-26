@@ -74,6 +74,15 @@ public:
         return it->second.get();
     }
 
+    /**
+     * Player driven from this PC: by an attached controller, or the network
+     * client's predicted local player (driven by per-tick input sampling)
+     */
+    [[nodiscard]]
+    bool locally_controlled(const player& pl) const {
+        return controlled_players.contains(pl.name()) || pl.predicted();
+    }
+
     [[nodiscard]]
     bool has_controller(u32 controller_id) const {
         return controllers.contains(controller_id);

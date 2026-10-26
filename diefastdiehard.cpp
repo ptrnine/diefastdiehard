@@ -211,8 +211,7 @@ private:
             center_min.x = std::min(center_min.x, pos.x);
             center_max.x = std::max(center_max.x, pos.x);
 
-            /* TODO: check all players that be controlled by this PC */
-            if (!gs.controlled_players.contains(pl->name()))
+            if (!gs.locally_controlled(*pl))
                 continue;
 
             center_min.y = std::min(center_min.y, pos.y);
@@ -220,10 +219,11 @@ private:
         }
         auto center = (center_min + center_max) / 2.f;
 
-        /* TODO: check this */
-        for (auto& [_, control_data] : gs.controlled_players) {
-            auto& this_player = control_data.this_player;
-            auto  pl_pos_x    = lerp(this_player->get_position().x,
+        for (auto& [_, this_player] : gs.players) {
+            if (!gs.locally_controlled(*this_player))
+                continue;
+
+            auto pl_pos_x = lerp(this_player->get_position().x,
                                  this_player->get_position().x +
                                      this_player->collision_box()->get_velocity().x * gs.sim.last_timestep(),
                                  gs.sim.interpolation_factor());
