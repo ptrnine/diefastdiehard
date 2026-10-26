@@ -1385,6 +1385,55 @@ TEST_CASE("game_state: lag-compensated bullets") {
     }
 }
 
+TEST_CASE("game_state: lag-compensated bullets hit rewound players for their whole flight") {
+    /*
+     * A target falls (no platforms); the shooter, 0.3 s behind in its view,
+     * aims at where it sees the target when the bullet arrives, far beyond
+     * the initial hit-scan segment (vel * lag = 180 px)
+     */
+    game_state gs;
+    gs.sim.gravity({0.f, 1200.f});
+    auto shooter = gs.player_create("shooter");
+    auto target  = gs.player_create("target");
+    REQUIRE(shooter);
+    REQUIRE(target);
+    shooter->group(1);
+    target->group(2);
+    shooter->collision_box()->enable_gravity(false);
+    shooter->position({0.f, -1000.f});
+    target->position({600.f, 0.f});
+    target->velocity({0.f, 0.f});
+
+    auto t    = std::chrono::steady_clock::now();
+    auto tick = [&] {
+        t += std::chrono::microseconds(16667);
+        gs.sim.update_immediate(1.f / 60.f, t);
+    };
+    for (int i = 0; i < 40; ++i)
+        tick();
+
+    /* Bullet arrives in ~14 ticks: the target as seen 0.3 s (18 ticks) earlier is ~4 ticks back in its fall */
+    auto fall_y = [](int n) { return float(n * (n - 1)) / 6.f; }; /* y after n ticks of 1200 px/s^2 */
+    auto aim_y  = fall_y(40 + 14 - 18) - 45.f;                     /* middle of its body */
+    REQUIRE(target->get_position().y > aim_y + 90.f);              /* the present target is already below */
+
+    SECTION("lag compensated: hits where the shooter saw the target") {
+        shooter->lag_compensation({0.1f, 0.3f});
+        gs.spawn_bullet(*shooter, {0.f, aim_y}, {1800.f, 0.f}, 1.f, false);
+        for (int i = 0; i < 30; ++i)
+            tick();
+        CHECK(target->pop_on_hit_event());
+        CHECK(target->get_velocity().x > 0.f);
+    }
+
+    SECTION("not compensated: misses the present target") {
+        gs.spawn_bullet(*shooter, {0.f, aim_y}, {1800.f, 0.f}, 1.f, false);
+        for (int i = 0; i < 30; ++i)
+            tick();
+        CHECK_FALSE(target->pop_on_hit_event());
+    }
+}
+
 TEST_CASE("net: clients see server bullets in present time") {
     using namespace std::chrono_literals;
     net_game_fixture f{80, 170};

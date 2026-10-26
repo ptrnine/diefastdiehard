@@ -115,6 +115,14 @@ tick begin/end callbacks that the network layer hooks into.
   (`game_state::hitscan`) against the other players **rewound** to where
   the shooter saw them (`player::position_trace_lookup`). A hit applies
   the bullet hit (`player::on_bullet_hit`) and consumes the bullet.
+* The compensation covers the bullet's whole flight, not only the skipped
+  segment: the shooter sees its bullet fly against the players drawn in
+  the past, so a lag-compensated bullet (`bullet::lag_compensate`) does not
+  collide with players physically; every tick the path it flew is swept
+  against the players rewound by the same amount
+  (`game_state::rewound_bullets_tick_update`). Without this, a falling
+  player (fast, accelerating) was already far below the spot the shooter
+  aimed at when the bullet arrived.
 * The broadcast carries the muzzle position. A client forwards a
   received bullet once more by the age of its state (half the fastest
   recent round trip plus this datagram's extra delay over the fastest

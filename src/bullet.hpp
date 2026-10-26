@@ -9,6 +9,7 @@
 #include <SFML/Graphics/Texture.hpp>
 
 #include "base/types.hpp"
+#include "base/fixed_string.hpp"
 #include "physic/physic_simulation.hpp"
 
 namespace dfdh {
@@ -157,6 +158,36 @@ public:
         _ph->user_any(bullet_ref{id, {}});
     }
 
+    /**
+     * Lag-compensated bullet (server, network shooter): it hits the players
+     * as they were rewind_s ago, as the shooter saw them, for its whole
+     * flight. Such a bullet does not collide with players physically, the
+     * game sweeps it against the rewound players every tick
+     */
+    void lag_compensate(const player_name_t& owner, float rewind_s) {
+        _owner      = owner;
+        _rewind     = rewind_s;
+        _swept_from = _ph->get_position();
+        _ph->set_collide_allower([](const physic_point*) { return false; });
+    }
+
+    [[nodiscard]]
+    float rewind() const {
+        return _rewind;
+    }
+
+    [[nodiscard]]
+    const player_name_t& owner() const {
+        return _owner;
+    }
+
+    /* Path since the last sweep (lag-compensated bullets) */
+    std::pair<vec2f, vec2f> take_swept_segment() {
+        auto from   = _swept_from;
+        _swept_from = _ph->get_position();
+        return {from, _swept_from};
+    }
+
     /* Predicted own bullet (client): referenced by its shot key until confirmed */
     void predicted_key(const shot_key_t& key) {
         _ph->user_any(bullet_ref{0, key});
@@ -172,6 +203,10 @@ private:
     sf::Color _color;
     int _group;
     u32 _net_id = 0;
+
+    player_name_t _owner;
+    float         _rewind     = 0.f;
+    vec2f         _swept_from = {0.f, 0.f};
 };
 
 class bullet_mgr {

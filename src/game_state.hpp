@@ -31,6 +31,10 @@ public:
                 p->physic_update(sim, timestep);
         });
 
+        /* Lag-compensated bullets hit the rewound players, before this tick's new shots */
+        sim.add_tick_end_callback(
+            "rewound_bullets", [this](const physic_simulation&, float) { rewound_bullets_tick_update(); }, -1);
+
         /* Players (weapons, shots, recoil, death) are updated on every simulation tick */
         sim.add_tick_end_callback("players", [this](const physic_simulation&, float) {
             if (on_game)
@@ -437,14 +441,19 @@ public:
      * like for bullets, the players of the owner's group are skipped
      */
     std::optional<hitscan_hit_t> hitscan(const vec2f& a, const vec2f& b, float rewind_s, const player& owner) {
+        return hitscan(a, b, rewind_s, &owner, owner.get_group());
+    }
+
+    /* Owner may be gone (nullptr): only its group is skipped then */
+    std::optional<hitscan_hit_t> hitscan(const vec2f& a, const vec2f& b, float rewind_s, const player* owner, int group) {
         std::optional<hitscan_hit_t> res;
         float                        best_t = std::numeric_limits<float>::max();
         auto                         d      = b - a;
 
         for (auto& [_, pl] : players) {
-            if (pl.get() == &owner)
+            if (pl.get() == owner)
                 continue;
-            if (owner.get_group() != -1 && pl->get_group() != -1 && pl->get_group() == owner.get_group())
+            if (group != -1 && pl->get_group() != -1 && pl->get_group() == group)
                 continue;
 
             auto bb = pl->bb();
@@ -510,7 +519,29 @@ public:
 
         auto& blt = blt_mgr.shot(sim, pos, mass, vel, owner.tracer_color(), gravity, owner.get_group(), player::player_group_getter);
         blt.net_id(id);
+        if (lag > 0.f)
+            blt.lag_compensate(owner.name(), rewind);
         cur_frame_bullets.push_back({owner.name(), id, key, start, pos, vel, mass, owner.tracer_color(), gravity, false, {}});
+    }
+
+    /**
+     * Sweep the path every lag-compensated bullet flew this tick against the
+     * players as its shooter saw them (rewound), for the bullet's whole flight
+     */
+    void rewound_bullets_tick_update() {
+        for (auto& blt : blt_mgr.bullets()) {
+            auto& ph = blt.physic();
+            if (blt.rewind() <= 0.f || ph->ready_delete_later())
+                continue;
+
+            auto [from, to] = blt.take_swept_segment();
+            auto found      = players.find(blt.owner());
+            auto owner      = found != players.end() ? found->second.get() : nullptr;
+            if (auto hit = hitscan(from, to, blt.rewind(), owner, blt.group())) {
+                hit->target->on_bullet_hit(ph->impulse(), hit->position, bullet_ref::of(ph.get()));
+                ph->delete_later();
+            }
+        }
     }
 
     /* Key of the owner's bullet being spawned: pellets of one shot are numbered in spawn order */
