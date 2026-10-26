@@ -443,9 +443,10 @@ private:
 
         /* Hits predicted for this bullet can now be matched to the server's */
         for (auto& [_, kb] : _knockbacks)
-            for (auto& hit : kb.hits())
+            kb.for_each_hit([&](auto& hit) {
                 if (hit.ref.key && *hit.ref.key == key)
                     hit.ref.id = b.id;
+            });
 
         _predicted.erase(found);
         return true;
@@ -512,24 +513,30 @@ private:
             auto& pl = *found->second;
             auto& kb = _knockbacks[name];
 
-            /* Teleported: the predicted knockbacks belong to the old position */
-            auto& seen = _remote_teleports[name];
+            /* Where the player is shown now: last frame's state moved on by the local simulation */
+            auto shown       = pl.get_physic_state();
+            auto& seen       = _remote_teleports[name];
+            bool  continuous = seen.has_value();
+
+            /* Teleported: jump there, the predicted knockbacks belong to the old position */
             if (seen != snap->teleports) {
-                seen = snap->teleports;
-                kb   = {};
+                seen       = snap->teleports;
+                kb         = {};
+                continuous = false;
                 (void)pl.take_predicted_hits();
+                pl.reset_render_offset();
             }
 
             /*
-             * Predicted hits: shown as a knockback offset until the snapshots show
-             * them. The offset is simulated with the game physics, using the
-             * player's own body as scratch (it is restored to the shown state below)
+             * Predicted hits: shown as a knockback offset until the snapshots
+             * report them. The offset is simulated with the game physics on a
+             * hidden ghost player (the shown one is never touched)
              */
             auto& ghost     = ghost_of(gs, pl);
-            auto  make_pair = [&](const player::physic_state& base, const vec2f& impulse) {
-                ghost.restore_physic_state(base);
+            auto  apply_hit = [&](player::physic_state& st, const vec2f& impulse) {
+                ghost.restore_physic_state(st);
                 ghost.apply_hit_physics(impulse);
-                return knockback_t::pair_t{ghost.get_physic_state(), base};
+                st = ghost.get_physic_state();
             };
             auto step_ghost = [&](player::physic_state& st, float timestep) {
                 ghost.restore_physic_state(st);
@@ -537,41 +544,29 @@ private:
                 st = ghost.get_physic_state();
             };
 
-            /* The body is where the player was shown (and moved by the local simulation) when hit */
-            auto shown = pl.get_physic_state();
-            for (auto& hit : pl.take_predicted_hits()) {
-                auto pair = make_pair(shown, hit.impulse);
-                kb.predict(hit.ref, hit.impulse, pair.without, pair.with);
-            }
-            /*
-             * The snapshots show a predicted hit: the opposite pair starts from the
-             * last snapshot before the hit and is brought to the render time, so it
-             * matches the motion the snapshots show from there on
-             */
+            for (auto& hit : pl.take_predicted_hits())
+                kb.predict(hit.ref, hit.impulse, shown, apply_hit);
             for (auto id : snap->hits)
-                kb.confirm([id](const bullet_ref& ref) { return ref.id == id; },
-                           [&](const vec2f& impulse) {
-                               auto has_hit = [id](const remote_player_snapshot& s) {
-                                   return std::ranges::find(s.hits, id) != s.hits.end();
-                               };
-                               auto pre  = snaps.last_before(has_hit);
-                               auto pair = make_pair(pre ? pre->second.ph : snap->ph, impulse);
-                               if (pre)
-                                   for (auto ts = gs.sim.last_timestep(), left = float(t - pre->first); left >= ts;
-                                        left -= ts) {
-                                       step_ghost(pair.with, ts);
-                                       step_ghost(pair.without, ts);
-                                   }
-                               return pair;
-                           });
-            kb.miss_older_than(std::max(1.f, 2.f * _rtt_s + float(_clock.interp_delay()) + 0.3f));
-            kb.step(dt, gs.sim.last_timestep(), step_ghost);
+                kb.confirm([id](const bullet_ref& ref) { return ref.id == id; }, snap->ph, apply_hit);
+
+            /* The snapshots report a registered hit about one view delay (lag + interpolation) after it */
+            auto view_delay = 0.5f * _rtt_s + float(_clock.interp_delay());
+            kb.step(dt, gs.sim.last_timestep(), std::clamp(1.5f * view_delay + 0.2f, 0.3f, 1.f), step_ghost);
 
             auto ph = snap->ph;
             ph.pos += kb.offset();
             ph.vel += kb.velocity();
             if (auto grounded = kb.grounded())
                 ph.lock_y = *grounded;
+
+            /*
+             * A jump of the shown position (a confirmed prediction handing over,
+             * the server's rewritten history of a retroactive hit) is smoothed
+             */
+            constexpr float max_continuous_step = 8.f;
+            if (continuous && magnitude(shown.pos - ph.pos) > max_continuous_step)
+                pl.add_render_offset(shown.pos - ph.pos);
+
             pl.restore_physic_state(ph);
             pl.place_legs();
             pl.on_left(snap->on_left);

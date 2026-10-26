@@ -246,28 +246,30 @@ private:
 /**
  * Visual knockback of a remote player, predicted on the client.
  *
- * Remote players are shown from server snapshots, so a hit predicted on the
- * client is shown as an offset on top of them. The offset is simulated with
- * the game's own physics (the caller's stepper): two ghosts start from the
- * player's state at the hit, one with the hit applied and one without, and
- * the offset is their difference, so it follows the level geometry (slides
- * off platform edges, falls, lands). When the snapshots start to show the
- * real hit (confirm), a second pair starts from the snapshot state and is
- * subtracted: the sum converges while the authoritative motion takes over,
- * without pushing twice. An unconfirmed hit (the server did not register it)
- * fades out.
+ * Remote players are shown from server snapshots, so hits predicted on the
+ * client are shown as an offset on top of them, simulated with the game's
+ * own physics (the caller's stepper and hit application): two ghosts start
+ * from the player's shown state, one with the hits applied and one without,
+ * and the offset is their difference, so it follows the level geometry.
+ * Hits in a row form one episode (they accumulate on the same ghost: the
+ * physics is not additive).
+ *
+ * The server applies a lag-compensated hit where the shooter saw it and
+ * re-simulates the victim (game_state::apply_hit_at), so the snapshots
+ * that report the hit already show the motion predicted here: confirmed
+ * hits are simply dropped from the prediction (the caller smooths the
+ * small difference). Hits the server did not register fade out.
  *
  * State needs pos, vel (vec2f) and lock_y (bool)
  */
 template <typename Ref, typename State>
 class knockback_offset {
 public:
-    static constexpr float fade_s         = 0.1f;
-    static constexpr float max_age_s      = 4.f;  /* e.g. knocked out of the level: never settles */
-    static constexpr float settled_vel    = 1.f;
-    static constexpr float remove_below   = 0.1f;
+    static constexpr float fade_s       = 0.15f;
+    static constexpr float max_offset   = 150.f;
+    static constexpr float remove_below = 0.05f; /* fade factor */
 
-    /* Ghosts with and without the hit, started from the same state */
+    /* Ghosts with and without the hits, started from the same state */
     struct pair_t {
         State with;
         State without;
@@ -281,142 +283,137 @@ public:
         vec2f velocity() const {
             return with.vel - without.vel;
         }
-
-        [[nodiscard]]
-        bool settled() const {
-            return magnitude(with.vel) < settled_vel && magnitude(without.vel) < settled_vel && with.lock_y &&
-                   without.lock_y;
-        }
     };
 
     struct hit_t {
-        Ref                   ref;
-        vec2f                 impulse;
-        pair_t                predicted;
-        std::optional<pair_t> authoritative;
-        float                 age    = 0.f;
-        float                 fade   = 1.f; /* < 1: fading out */
-        bool                  missed = false;
+        Ref   ref;
+        vec2f impulse;
+    };
+
+    struct episode_t {
+        std::vector<hit_t> hits;
+        pair_t             ghosts;
+        float              age  = 0.f;
+        float              fade = 1.f; /* < 1: fading out */
+
+        [[nodiscard]]
+        bool open() const {
+            return fade >= 1.f;
+        }
 
         [[nodiscard]]
         vec2f offset() const {
-            auto o = predicted.offset();
-            if (authoritative)
-                o -= authoritative->offset();
-            return o * fade;
+            return ghosts.offset() * fade;
         }
 
         [[nodiscard]]
         vec2f velocity() const {
-            auto v = predicted.velocity();
-            if (authoritative)
-                v -= authoritative->velocity();
-            return v * fade;
-        }
-
-        [[nodiscard]]
-        bool active() const {
-            return !missed && fade >= 1.f;
+            return ghosts.velocity() * fade;
         }
     };
 
-    /* A hit predicted now: ghosts started from the player's state with (with) and without (without) the hit */
-    void predict(const Ref& ref, const vec2f& impulse, const State& without, const State& with) {
-        _hits.push_back({ref, impulse, pair_t{with, without}, {}});
-    }
-
     /**
-     * The snapshots show the hit (matches(ref)): start the opposite pair,
-     * make_pair(impulse) -> pair_t from the snapshot state
+     * A hit predicted now on the player shown in state shown; apply_hit(State&,
+     * impulse) applies it to a ghost. Joins the open episode, if any
      */
-    template <typename F, typename FMakePair>
-    void confirm(F&& matches, FMakePair&& make_pair) {
-        for (auto& h : _hits)
-            if (!h.authoritative && !h.missed && matches(h.ref))
-                h.authoritative = make_pair(h.impulse);
-    }
-
-    /* Hits not confirmed for this long were not registered by the server */
-    void miss_older_than(float age_s) {
-        for (auto& h : _hits)
-            if (!h.authoritative && h.age > age_s)
-                h.missed = true;
+    template <typename FApply>
+    void predict(const Ref& ref, const vec2f& impulse, const State& shown, FApply&& apply_hit) {
+        if (_episodes.empty() || !_episodes.back().open())
+            _episodes.push_back({{}, {shown, shown}});
+        auto& ep = _episodes.back();
+        apply_hit(ep.ghosts.with, impulse);
+        ep.hits.push_back({ref, impulse});
     }
 
     /**
-     * Advance by dt in fixed physics steps of timestep;
-     * step_state(State&, float timestep) steps one ghost
+     * The snapshots (showing the player in state snapshot) report the hits
+     * matches(ref): they are no longer predicted. An episode with hits left
+     * restarts from the snapshot state with them
+     */
+    template <typename F, typename FApply>
+    void confirm(F&& matches, const State& snapshot, FApply&& apply_hit) {
+        for (auto& ep : _episodes) {
+            if (!ep.open())
+                continue;
+            auto confirmed = std::erase_if(ep.hits, [&](const hit_t& h) { return matches(h.ref); });
+            if (confirmed == 0 || ep.hits.empty())
+                continue;
+            ep.ghosts = {snapshot, snapshot};
+            for (auto& h : ep.hits)
+                apply_hit(ep.ghosts.with, h.impulse);
+        }
+        std::erase_if(_episodes, [](const episode_t& ep) { return ep.open() && ep.hits.empty(); });
+    }
+
+    /**
+     * Advance by dt in fixed physics steps of timestep (step_state(State&,
+     * float timestep) steps one ghost). Episodes older than
+     * unconfirmed_timeout_s were not registered by the server: they fade out
      */
     template <typename F>
-    void step(float dt, float timestep, F&& step_state) {
+    void step(float dt, float timestep, float unconfirmed_timeout_s, F&& step_state) {
         _accumulated += dt;
         while (_accumulated >= timestep) {
             _accumulated -= timestep;
-            for (auto& h : _hits) {
-                if (!h.active())
-                    continue;
-                step_state(h.predicted.with, timestep);
-                step_state(h.predicted.without, timestep);
-                if (h.authoritative) {
-                    step_state(h.authoritative->with, timestep);
-                    step_state(h.authoritative->without, timestep);
-                }
+            for (auto& ep : _episodes) {
+                step_state(ep.ghosts.with, timestep);
+                step_state(ep.ghosts.without, timestep);
             }
         }
 
-        for (auto& h : _hits) {
-            h.age += dt;
-            /* Missed, both motions are over (fade what is left), or too long */
-            bool done = h.missed || h.age > max_age_s ||
-                        (h.authoritative && h.predicted.settled() && h.authoritative->settled());
-            if (done)
-                h.fade *= std::exp(-dt / fade_s);
+        for (auto& ep : _episodes) {
+            ep.age += dt;
+            if (!ep.open() || ep.age > unconfirmed_timeout_s)
+                ep.fade *= std::exp(-dt / fade_s);
         }
 
-        std::erase_if(_hits, [](const hit_t& h) {
-            return !h.active() && magnitude(h.offset()) < remove_below && magnitude(h.velocity()) < remove_below;
-        });
-        if (_hits.empty())
+        std::erase_if(_episodes, [](const episode_t& ep) { return ep.fade < remove_below; });
+        if (_episodes.empty())
             _accumulated = 0.f;
     }
 
+    /* Total offset, limited: a hit the server may not register never takes the player far */
     [[nodiscard]]
     vec2f offset() const {
         vec2f o = {0.f, 0.f};
-        for (auto& h : _hits)
-            o += h.offset();
-        return o;
+        for (auto& ep : _episodes)
+            o += ep.offset() + ep.velocity() * _accumulated; /* in between the fixed steps */
+        auto len = magnitude(o);
+        return len > max_offset ? o * (max_offset / len) : o;
     }
 
     [[nodiscard]]
     vec2f velocity() const {
         vec2f v = {0.f, 0.f};
-        for (auto& h : _hits)
-            v += h.velocity();
+        for (auto& ep : _episodes)
+            v += ep.velocity();
         return v;
     }
 
-    /* Ground contact of the shown motion: of the newest active hit's ghost, if any */
+    /* Ground contact of the shown motion: of the open episode's ghost, if any */
     [[nodiscard]]
     std::optional<bool> grounded() const {
-        for (auto it = _hits.rbegin(); it != _hits.rend(); ++it)
-            if (it->active())
-                return it->predicted.with.lock_y;
+        if (!_episodes.empty() && _episodes.back().open())
+            return _episodes.back().ghosts.with.lock_y;
         return {};
     }
 
     [[nodiscard]]
     bool empty() const {
-        return _hits.empty();
+        return _episodes.empty();
     }
 
-    auto& hits() {
-        return _hits;
+    /* Every predicted hit (e.g. to resolve references) */
+    template <typename F>
+    void for_each_hit(F&& f) {
+        for (auto& ep : _episodes)
+            for (auto& h : ep.hits)
+                f(h);
     }
 
 private:
-    std::vector<hit_t> _hits;
-    float              _accumulated = 0.f;
+    std::vector<episode_t> _episodes;
+    float                  _accumulated = 0.f;
 };
 
 } // namespace dfdh::net

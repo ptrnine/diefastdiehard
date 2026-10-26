@@ -1019,6 +1019,7 @@ TEST_CASE("net_sync: server clock and snapshot interpolation") {
             vec2f vel;
             bool  lock_y;
         };
+        using kb_t        = knockback_offset<int, st_t>;
         constexpr float dt = 1.f / 60.f;
         auto stepper = [](st_t& st, float ts) {
             st.pos += st.vel * ts;
@@ -1030,59 +1031,53 @@ TEST_CASE("net_sync: server clock and snapshot interpolation") {
             else
                 st.vel.y += 1200.f * ts;
         };
-        auto pair_at = [](const st_t& base, const vec2f& impulse) {
-            auto with = base;
-            with.vel += impulse;
-            return std::pair{base, with};
-        };
-        auto run = [&](knockback_offset<int, st_t>& kb, float seconds) {
+        auto apply_hit = [](st_t& st, const vec2f& impulse) { st.vel += impulse; };
+        auto run = [&](kb_t& kb, float seconds, float timeout = 10.f) {
             for (float t = 0.f; t < seconds; t += dt)
-                kb.step(dt, dt, stepper);
+                kb.step(dt, dt, timeout, stepper);
         };
         auto standing = st_t{{0.f, 0.f}, {0.f, 0.f}, true};
 
         /* A push slides on the platform and stops: v^2 / (2 * friction) */
-        knockback_offset<int, st_t> push;
-        auto [w0, h0] = pair_at(standing, {200.f, 0.f});
-        push.predict(1, {200.f, 0.f}, w0, h0);
+        kb_t push;
+        push.predict(1, {200.f, 0.f}, standing, apply_hit);
         run(push, 1.f);
         CHECK(push.offset().x == Catch::Approx(200.f * 200.f / 1400.f).margin(4.f));
         CHECK(push.offset().y == Catch::Approx(0.f));
 
-        /* A hard push leaves the platform past its edge and falls: the geometry comes from the stepper */
-        knockback_offset<int, st_t> off_edge;
-        auto [w1, h1] = pair_at(standing, {600.f, 0.f});
-        off_edge.predict(1, {600.f, 0.f}, w1, h1);
-        run(off_edge, 0.5f);
+        /* A hard push leaves the platform past its edge and falls (geometry from the stepper), limited offset */
+        kb_t off_edge;
+        off_edge.predict(1, {600.f, 0.f}, standing, apply_hit);
+        run(off_edge, 0.35f); /* passes the edge at ~0.17 s */
         CHECK(off_edge.offset().x > 100.f);
-        CHECK(off_edge.offset().y > 20.f);
+        CHECK(off_edge.offset().y > 5.f);
         CHECK(off_edge.grounded() == false);
+        run(off_edge, 1.f);
+        CHECK(magnitude(off_edge.offset()) <= kb_t::max_offset + 0.01f);
 
-        /* Predicted + confirmed: the opposite pair cancels it out, nothing stays */
-        knockback_offset<int, st_t> confirmed;
-        auto [w2, h2] = pair_at(standing, {200.f, 0.f});
-        confirmed.predict(7, {200.f, 0.f}, w2, h2);
-        run(confirmed, 0.2f);
-        auto mid = confirmed.offset().x;
-        CHECK(mid > 20.f);
-        confirmed.confirm([](int ref) { return ref == 7; },
-                          [&](const vec2f& impulse) {
-                              auto [w, h] = pair_at(standing, impulse);
-                              return knockback_offset<int, st_t>::pair_t{h, w};
-                          });
-        run(confirmed, 0.02f);
-        CHECK(confirmed.offset().x < mid); /* hands over continuously, no jump */
-        CHECK(confirmed.offset().x > mid - 10.f);
-        run(confirmed, 2.f);
+        /* Hits in a row accumulate on one episode (one ghost) */
+        kb_t burst;
+        burst.predict(1, {100.f, 0.f}, standing, apply_hit);
+        burst.predict(2, {100.f, 0.f}, standing, apply_hit);
+        run(burst, 1.f);
+        CHECK(burst.offset().x == Catch::Approx(200.f * 200.f / 1400.f).margin(4.f));
+
+        /* Confirmed hits leave the prediction (the snapshots show them); the rest restarts from the snapshot */
+        kb_t confirmed;
+        confirmed.predict(1, {100.f, 0.f}, standing, apply_hit);
+        confirmed.predict(2, {100.f, 0.f}, standing, apply_hit);
+        run(confirmed, 0.1f);
+        confirmed.confirm([](int ref) { return ref == 1; }, standing, apply_hit);
+        CHECK_FALSE(confirmed.empty());
+        run(confirmed, 1.f);
+        CHECK(confirmed.offset().x == Catch::Approx(100.f * 100.f / 1400.f).margin(3.f));
+        confirmed.confirm([](int ref) { return ref == 2; }, standing, apply_hit);
         CHECK(confirmed.empty());
 
         /* Not confirmed in time: fades out */
-        knockback_offset<int, st_t> missed;
-        auto [w3, h3] = pair_at(standing, {200.f, 0.f});
-        missed.predict(1, {200.f, 0.f}, w3, h3);
-        run(missed, 0.3f);
-        missed.miss_older_than(0.25f);
-        run(missed, 1.f);
+        kb_t missed;
+        missed.predict(1, {200.f, 0.f}, standing, apply_hit);
+        run(missed, 1.5f, 0.3f);
         CHECK(missed.empty());
     }
 
@@ -1431,6 +1426,64 @@ TEST_CASE("bullets never hit their owner nor the owner's group") {
     CHECK((group == -1 ? mate->pop_on_hit_event() : enemy->pop_on_hit_event()));
 }
 
+TEST_CASE("game_state: retroactive hits rewrite the victim's history") {
+    /*
+     * Two identical worlds: in one the victim is hit live at tick 30, in the
+     * other the same hit arrives at tick 45 for time of tick 30 (lag
+     * compensated). Both must end in the same state
+     */
+    struct world {
+        game_state gs;
+        player*    victim;
+        std::chrono::steady_clock::time_point t;
+
+        world(std::chrono::steady_clock::time_point t0): t(t0) {
+            REQUIRE(gs.level_current("lvl_aes"));
+            gs.game_run(true);
+            victim = gs.player_create("victim");
+            REQUIRE(victim);
+            victim->teleport({1200.f, 1040.f});
+        }
+
+        void tick(int i) {
+            /* The victim runs right, then jumps: its controls must be replayed */
+            if (i == 10)
+                victim->move_right();
+            if (i == 40)
+                victim->jump();
+            t += std::chrono::microseconds(16667);
+            gs.sim.update_immediate(1.f / 60.f, t);
+        }
+    };
+
+    auto t0 = std::chrono::steady_clock::now();
+    world live{t0}, retro{t0};
+    std::chrono::steady_clock::time_point hit_time;
+
+    for (int i = 0; i < 70; ++i) {
+        live.tick(i);
+        retro.tick(i);
+        if (i == 30) {
+            hit_time = live.t;
+            live.victim->on_bullet_hit({-900.f, -400.f}, live.victim->get_position());
+        }
+        if (i == 45)
+            retro.gs.apply_hit_at(*retro.victim, {-900.f, -400.f}, retro.victim->get_position(), {}, hit_time);
+    }
+
+    CHECK(retro.victim->get_position().x == Catch::Approx(live.victim->get_position().x).margin(0.01f));
+    CHECK(retro.victim->get_position().y == Catch::Approx(live.victim->get_position().y).margin(0.01f));
+    CHECK(retro.victim->get_velocity().x == Catch::Approx(live.victim->get_velocity().x).margin(0.01f));
+    CHECK(retro.victim->get_velocity().y == Catch::Approx(live.victim->get_velocity().y).margin(0.01f));
+
+    /* The lag compensation history (position trace) is rewritten as well */
+    auto past_live  = live.victim->position_trace_lookup(live.t, 0.2f);
+    auto past_retro = retro.victim->position_trace_lookup(retro.t, 0.2f);
+    REQUIRE(past_live);
+    REQUIRE(past_retro);
+    CHECK(past_retro->x == Catch::Approx(past_live->x).margin(0.01f));
+}
+
 TEST_CASE("game_state: lag-compensated bullets hit rewound players for their whole flight") {
     /*
      * A target falls (no platforms); the shooter, 0.3 s behind in its view,
@@ -1561,7 +1614,8 @@ TEST_CASE("net: own bullets are predicted and confirmed by the server") {
 struct hit_fixture : net_game_fixture {
     player* bot;
 
-    hit_fixture(): net_game_fixture(80, 170) {
+    hit_fixture(double latency_min_ms = 80, double latency_max_ms = 170):
+        net_game_fixture(latency_min_ms, latency_max_ms) {
         using namespace std::chrono_literals;
         bot = gs_srv.player_create("bot");
         REQUIRE(bot);
@@ -1831,6 +1885,85 @@ TEST_CASE("net: predicted knockback follows the level geometry") {
     }
     UNSCOPED_INFO("max path error " << max_path_error);
     CHECK(max_path_error < 25.f);
+}
+
+/*
+ * Distance from p to the server path (a polyline, its position changes once
+ * per tick); the path is split at teleports (respawn)
+ */
+static float distance_to_path(const vec2f& p, const std::vector<std::pair<vec2f, u16>>& path) {
+    float d = std::numeric_limits<float>::max();
+    for (size_t i = 0; i < path.size(); ++i) {
+        auto a = path[i].first;
+        if (i == 0 || path[i - 1].second != path[i].second) {
+            d = std::min(d, magnitude(p - a));
+            continue;
+        }
+        auto from = path[i - 1].first, ab = a - from;
+        auto len2 = ab.x * ab.x + ab.y * ab.y;
+        auto k    = len2 > 0.f ? std::clamp(((p - from).x * ab.x + (p - from).y * ab.y) / len2, 0.f, 1.f) : 0.f;
+        d         = std::min(d, magnitude(p - (from + ab * k)));
+    }
+    return d;
+}
+
+TEST_CASE("net: remote knockback under sustained fire stays on the server's path (100 ms ping)") {
+    using namespace std::chrono_literals;
+    hit_fixture f{20, 30};
+
+    auto weapon = GENERATE(as<std::string>{}, "wpn_ak9", "wpn_sw500", "wpn_ss50");
+    auto moving = GENERATE(false, true);
+    CAPTURE(weapon, moving);
+
+    f.server_side().setup_pistol(weapon);
+    f.server_side().teleport({1100.f, 1040.f});
+    f.bot->teleport({1500.f, 1040.f});
+    f.run_for(1500ms);
+    REQUIRE(f.local().pistol_section() == weapon);
+
+    std::vector<std::pair<vec2f, u16>> srv_path;
+    std::vector<vec2f>                 cli_path;
+    size_t                             server_hits = 0;
+    int                                frames      = 0;
+    f.input = {.shot = true};
+    f.run_for(3000ms, [&] {
+        ++frames;
+        if (frames == 300)
+            f.input = {};
+        if (moving)
+            frames % 120 < 60 ? f.bot->move_left() : f.bot->move_right();
+        srv_path.push_back({f.bot->get_position(), f.bot->teleports()});
+        /* What is drawn: the position with the smoothing offset */
+        cli_path.push_back(f.remote_bot().get_position() + f.remote_bot().render_offset());
+        server_hits = std::max(server_hits, f.bot->recent_hit_ids().size());
+    });
+    REQUIRE(server_hits > 0);
+
+    /*
+     * The client shows the hits right away, the server applies them where the
+     * shooter saw them: the drawn motion stays on the server's path
+     */
+    float max_error = 0.f;
+    for (auto& p : cli_path)
+        if (p.y < 1800.f)
+            max_error = std::max(max_error, distance_to_path(p, srv_path));
+    UNSCOPED_INFO("max path error " << max_error);
+    CHECK(max_error < 40.f);
+
+    /* A standing target is only pushed along the shots: it never moves back against them */
+    if (!moving) {
+        float max_x = cli_path.front().x, max_back = 0.f;
+        for (size_t i = 1; i < cli_path.size(); ++i) {
+            auto& p = cli_path[i];
+            /* until it falls out of the level (respawn) */
+            if (p.y > 1800.f || magnitude(p - cli_path[i - 1]) > 200.f)
+                break;
+            max_x    = std::max(max_x, p.x);
+            max_back = std::max(max_back, max_x - p.x);
+        }
+        UNSCOPED_INFO("max move against the hits " << max_back);
+        CHECK(max_back < 5.f);
+    }
 }
 
 TEST_CASE("net: predicted hits the server did not register fade out") {

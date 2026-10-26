@@ -123,6 +123,19 @@ tick begin/end callbacks that the network layer hooks into.
   (`game_state::rewound_bullets_tick_update`). Without this, a falling
   player (fast, accelerating) was already far below the spot the shooter
   aimed at when the bullet arrived.
+* **Retroactive hits**: a lag-compensated hit is applied where the shooter
+  saw it, not to the victim's present state
+  (`game_state::apply_hit_at`). The server keeps a per tick history of
+  every player (`game_state::history`: movement controls, impulses before
+  and after the movement step, the state at the tick end); the victim's
+  state at the hit gets the knockback and the victim is re-simulated to
+  now with its recorded controls and impulses, rewriting its history and
+  its lag compensation position trace. The shooter's predicted knockback
+  is then the authoritative one; the victim and other clients see the
+  rewritten motion as a correction (smoothed). No history is kept across
+  a teleport. Physic state snapshots carry the raw velocity (the vertical
+  part a grounded player's `get_velocity()` hides), so restored states
+  behave exactly like the originals.
 * The broadcast carries the muzzle position. A client forwards a
   received bullet once more by the age of its state (half the fastest
   recent round trip plus this datagram's extra delay over the fastest
@@ -192,16 +205,19 @@ bullet, resolved to the id when the bullet is confirmed).
 * **Remote players** (own bullets, other players' bullets): the hit
   starts a `knockback_offset` on top of the interpolated snapshots,
   simulated with the game physics: two ghosts of the player start from
-  its shown state, one with the hit applied and one without, stepped with
-  `physic_simulation::step_isolated` + `player::physic_update` on a
-  hidden ghost player (outside of the simulation, so the shown player's
-  legs and weapon bobbing are never touched), and the offset is their difference, so
-  it follows the level geometry (slides off platform edges, falls, lands).
-  When the rendered snapshots show the hit, a second pair starts from the
-  last snapshot before the hit, brought to the render time, and is
-  subtracted: the offset converges while the server's motion takes over.
-  A hit the server did not register within
-  `max(1 s, 2 * rtt + interp + 0.3 s)` fades out.
+  its shown state, one with the hits applied and one without, stepped with
+  `physic_simulation::step_isolated` + `player::physic_update` on a hidden
+  ghost player (outside of the simulation, so the shown player's legs and
+  weapon bobbing are never touched); the offset is their difference, so it
+  follows the level geometry. Hits in a row accumulate on one episode (the
+  physics is not additive). The server applies the hit where the shooter
+  saw it (retroactive hits, above), so the snapshots that report a hit
+  already show the predicted motion: confirmed hits are dropped from the
+  prediction, the small remaining jump is smoothed by the render offset
+  (any jump of a remote player's shown position over 8 px is, which also
+  covers the rewritten history on third-party clients). Unconfirmed hits
+  fade out after `1.5 * view delay + 0.2 s` (0.3..1 s) and their offset is
+  limited to 150 px.
 * Player groups are synchronized, so client-side collisions respect teams.
 * Legs are placed by the physics in absolute coordinates: players moved
   outside of it (snapshots) re-anchor them (`player::place_legs`), and they

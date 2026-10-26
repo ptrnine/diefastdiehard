@@ -216,6 +216,12 @@ public:
         return vel;
     }
 
+    /* The velocity as stored: with the vertical part get_velocity() hides while locked on a platform */
+    [[nodiscard]]
+    vec2f get_raw_velocity() const {
+        return _dir * scalar_velocity();
+    }
+
     virtual void impulse(const vec2f& value) {
         velocity(value / get_mass());
     }

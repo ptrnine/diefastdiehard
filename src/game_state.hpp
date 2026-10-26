@@ -31,6 +31,10 @@ public:
                 p->physic_update(sim, timestep);
         });
 
+        /* Authoritative per tick history of the players, for retroactive hits */
+        sim.add_tick_begin_callback("history", [this](const physic_simulation&, float) { history_tick_begin(); }, 10);
+        sim.add_tick_end_callback("history", [this](const physic_simulation&, float) { history_tick_end(); }, 100);
+
         /* Lag-compensated bullets hit the rewound players, before this tick's new shots */
         sim.add_tick_end_callback(
             "rewound_bullets", [this](const physic_simulation&, float) { rewound_bullets_tick_update(); }, -1);
@@ -511,7 +515,8 @@ public:
 
         if (lag > 0.f) {
             if (auto hit = hitscan(start, pos, rewind, owner)) {
-                hit->target->on_bullet_hit(velocity * mass, hit->position, bullet_ref{id, {}});
+                apply_hit_at(*hit->target, velocity * mass, hit->position, bullet_ref{id, {}},
+                             sim.current_update_time() - to_duration(rewind));
                 cur_frame_bullets.push_back({owner.name(), id, key, start, start, velocity, mass, owner.tracer_color(), gravity, false, {}});
                 return;
             }
@@ -539,10 +544,120 @@ public:
             auto found      = players.find(blt.owner());
             auto owner      = found != players.end() ? found->second.get() : nullptr;
             if (auto hit = hitscan(from, to, blt.rewind(), owner, blt.group())) {
-                hit->target->on_bullet_hit(ph->impulse(), hit->position, bullet_ref::of(ph.get()));
+                apply_hit_at(*hit->target, ph->impulse(), hit->position, bullet_ref::of(ph.get()),
+                             sim.current_update_time() - to_duration(blt.rewind()));
                 ph->delete_later();
             }
         }
+    }
+
+    /*
+     * Authoritative history: per player and tick, the movement controls in
+     * effect, the impulses applied (hits before the movement step, others
+     * after it) and the state at the end of the tick
+     */
+    struct tick_record_t {
+        std::chrono::steady_clock::time_point time; /* the tick's (scheduled) time */
+        u16                                   teleports;
+        player::controls_t                    controls;
+        player::tick_impulses_t               impulses;
+        std::optional<player::physic_state>   end; /* empty while the tick runs */
+    };
+
+    static constexpr size_t history_ticks = 90; /* > max_lag_compensation */
+
+    std::map<player_name_t, std::deque<tick_record_t>> history;
+
+    static std::chrono::steady_clock::duration to_duration(float seconds) {
+        return std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<float>(seconds));
+    }
+
+    /* Tick begin, after the network inputs: the controls for the tick */
+    void history_tick_begin() {
+        std::erase_if(history, [this](const auto& h) { return !players.contains(h.first); });
+        for (auto& [name, pl] : players) {
+            if (pl->server_driven())
+                continue;
+            auto& h = history[name];
+            /* No history across a teleport (respawn) */
+            if (!h.empty() && h.back().teleports != pl->teleports())
+                h.clear();
+            pl->begin_tick_record();
+            h.push_back({sim.current_update_time(), pl->teleports(), pl->controls(), {}, {}});
+            if (h.size() > history_ticks)
+                h.pop_front();
+        }
+    }
+
+    /* Tick end, after everything: the impulses and the state */
+    void history_tick_end() {
+        for (auto& [name, h] : history) {
+            auto found = players.find(name);
+            if (h.empty() || found == players.end())
+                continue;
+            h.back().impulses = found->second->take_tick_impulses();
+            h.back().end      = found->second->get_physic_state();
+        }
+    }
+
+    /**
+     * A lag-compensated hit lands where the shooter saw it: at time when, in
+     * the past. The victim's recorded state at that moment gets the hit and
+     * the victim is re-simulated to now with its recorded controls and
+     * impulses (its history is rewritten), so the shooter's prediction and
+     * the server agree. Applied now if there is no history back then
+     */
+    void apply_hit_at(player& victim, const vec2f& impulse, const vec2f& hit_position, const bullet_ref& ref,
+                      std::chrono::steady_clock::time_point when) {
+        victim.hit_feedback(impulse, hit_position, ref);
+
+        auto found = history.find(victim.name());
+        if (found == history.end()) {
+            victim.apply_hit_physics(impulse);
+            return;
+        }
+        auto& h = found->second;
+
+        /* The last finished tick at or before the hit; the hit goes to the next one, before its movement */
+        std::optional<size_t> from;
+        for (size_t i = h.size(); i-- > 0;)
+            if (h[i].end && h[i].time <= when && h[i].teleports == victim.teleports()) {
+                from = i;
+                break;
+            }
+        if (!from || *from + 1 >= h.size()) {
+            victim.apply_hit_physics(impulse); /* no history back then, or not in the past */
+            return;
+        }
+
+        /* A running tick's impulses are still on the player (taken at the tick end) */
+        auto impulses_of = [&](tick_record_t& r) -> player::tick_impulses_t& {
+            return r.end ? r.impulses : victim.pending_tick_impulses();
+        };
+        auto& hit_list = impulses_of(h[*from + 1]).before_move;
+        hit_list.insert(hit_list.begin(), {true, impulse});
+
+        auto live_controls = victim.controls();
+        auto timestep      = sim.last_timestep();
+
+        victim.restore_physic_state(*h[*from].end);
+        victim.replaying(true);
+        for (size_t i = *from + 1; i < h.size(); ++i) {
+            auto& r = h[i];
+            victim.controls(r.controls);
+            for (auto& imp : impulses_of(r).before_move)
+                victim.apply_tick_impulse(imp);
+            sim.step_isolated(victim.collision_box(), timestep, [&](float ts) { victim.physic_update(sim, ts); });
+            for (auto& imp : impulses_of(r).after_move)
+                victim.apply_tick_impulse(imp);
+
+            if (r.end)
+                r.end = victim.get_physic_state();
+            victim.rewrite_position_trace(r.time, victim.get_position());
+        }
+        victim.replaying(false);
+        victim.controls(live_controls);
+        victim.place_legs();
     }
 
     /* Key of the owner's bullet being spawned: pellets of one shot are numbered in spawn order */

@@ -218,7 +218,9 @@ public:
 
     [[nodiscard]]
     physic_state get_physic_state() const {
-        return {get_position(), get_velocity(), _collision_box->is_lock_y(), jumps_left, _accel_left_f, _accel_right_f};
+        /* Raw velocity: a restored state must behave exactly like the original once unlocked from the ground */
+        return {get_position(), _collision_box->get_raw_velocity(), _collision_box->is_lock_y(), jumps_left,
+                _accel_left_f, _accel_right_f};
     }
 
     void restore_physic_state(const physic_state& st) {
@@ -248,6 +250,62 @@ public:
     void apply_logged_impulse(const vec2f& impulse) {
         _collision_box->apply_impulse(impulse);
         _pending_impulse += impulse;
+        record_tick_impulse(false, impulse);
+    }
+
+    /* Movement controls in effect for a tick (what physic_update consumes) */
+    struct controls_t {
+        float x_accel_l = 0.f;
+        float x_accel_r = 0.f;
+        bool  jump      = false;
+        bool  jump_down = false;
+    };
+
+    [[nodiscard]]
+    controls_t controls() const {
+        return {_cur_x_accel_l, _cur_x_accel_r, _jump_scheduled, _jump_down_scheduled};
+    }
+
+    void controls(const controls_t& c) {
+        _cur_x_accel_l       = c.x_accel_l;
+        _cur_x_accel_r       = c.x_accel_r;
+        _jump_scheduled      = c.jump;
+        _jump_down_scheduled = c.jump_down;
+    }
+
+    /**
+     * Impulses applied to the player during a tick, before or after its
+     * movement step: bullet hits (apply_hit_physics) and other impulses
+     * (recoil). Recorded for the authoritative history (retroactive hits)
+     */
+    struct tick_impulse_t {
+        bool  hit;
+        vec2f impulse;
+    };
+
+    struct tick_impulses_t {
+        std::vector<tick_impulse_t> before_move;
+        std::vector<tick_impulse_t> after_move;
+    };
+
+    void begin_tick_record() {
+        _tick_impulses = {};
+        _tick_moved    = false;
+    }
+
+    tick_impulses_t take_tick_impulses() {
+        return std::exchange(_tick_impulses, {});
+    }
+
+    tick_impulses_t& pending_tick_impulses() {
+        return _tick_impulses;
+    }
+
+    void apply_tick_impulse(const tick_impulse_t& imp) {
+        if (imp.hit)
+            apply_hit_physics(imp.impulse);
+        else
+            apply_impulse(imp.impulse);
     }
 
     void apply_impulse(const vec2f& impulse) {
@@ -260,16 +318,21 @@ public:
 
     /**
      * Visual-only displacement after a prediction correction: the drawn
-     * player moves smoothly to the corrected position. Large corrections
-     * (e.g. respawn) snap
+     * player moves smoothly to the corrected position. Huge corrections
+     * (over 400 px) snap, teleports reset it
      */
     void add_render_offset(const vec2f& offset) {
-        _render_offset = magnitude(_render_offset + offset) > 150.f ? vec2f{0.f, 0.f} : _render_offset + offset;
+        _render_offset = magnitude(_render_offset + offset) > 400.f ? vec2f{0.f, 0.f} : _render_offset + offset;
     }
 
     [[nodiscard]]
     const vec2f& render_offset() const {
         return _render_offset;
+    }
+
+    void record_tick_impulse(bool hit, const vec2f& impulse) {
+        if (!_replaying)
+            (_tick_moved ? _tick_impulses.after_move : _tick_impulses.before_move).push_back({hit, impulse});
     }
 
     /* Put the legs under the body at its current position (after moving it outside of the physics) */
@@ -513,6 +576,14 @@ public:
     }
 
     void physic_update(const physic_simulation& sim, float timestep) {
+        _tick_moved    = true; /* called right after the movement step */
+
+        /* The correction offset decays with the simulation (half-life ~50ms) */
+        if (!_replaying) {
+            _render_offset *= std::exp2(-timestep / sim.last_speed() / 0.05f);
+            if (magnitude(_render_offset) < 0.01f)
+                _render_offset = {0.f, 0.f};
+        }
         _accel_left_f  = std::min(_accel_left_f + timestep * 2.f, 1.f);
         _accel_right_f = std::min(_accel_right_f + timestep * 2.f, 1.f);
 
@@ -656,10 +727,6 @@ public:
 
         pos = lerp(pos, next_pos, interpolation_factor);
 
-        /* Decay the correction offset (half-life ~50ms) */
-        _render_offset *= std::exp2(-_render_offset_clock.restart().asSeconds() / 0.05f);
-        if (magnitude(_render_offset) < 0.01f)
-            _render_offset = {0.f, 0.f};
         pos += _render_offset;
 
         auto adj = sprite_size_adjust_factors();
@@ -849,6 +916,15 @@ public:
         return !is_float_zero(_cur_x_accel_l) ^ !is_float_zero(_cur_x_accel_r);
     }
 
+
+    /* Rewritten history (retroactive hit): the position at the tick of time t */
+    void rewrite_position_trace(std::chrono::steady_clock::time_point t, const vec2f& pos) {
+        for (auto it = _position_trace.rbegin(); it != _position_trace.rend(); ++it)
+            if (it->first == t) {
+                it->second = pos;
+                return;
+            }
+    }
 
     [[nodiscard]]
     std::optional<vec2f> position_trace_lookup(std::chrono::steady_clock::time_point now, float latency_offset) const {
@@ -1068,11 +1144,12 @@ private:
     bool                 _step_sound_active = false;
     std::optional<float> _fall_velocity;
     sf::Clock _step_sound_timer;
-    sf::Clock _render_offset_clock;
 
     drop_gun_fn_t _drop_gun_cb;
 
     vec2f              _pending_impulse = {0.f, 0.f};
+    tick_impulses_t    _tick_impulses;
+    bool               _tick_moved      = false;
     u16                _teleports       = 0;
 
     std::vector<predicted_hit_t>                                  _predicted_hits;
@@ -1284,6 +1361,15 @@ public:
             _collision_box->unlock_y();
         _collision_box->apply_impulse(impulse);
         reset_accel_f(impulse.x < 0.f);
+        record_tick_impulse(true, impulse);
+    }
+
+    /* Hit feedback without the knockback (the knockback is applied separately, e.g. retroactively) */
+    void hit_feedback(const vec2f& impulse, const vec2f& hit_position, const bullet_ref& ref = {}) {
+        if (!_server_driven && ref.id != 0)
+            _recent_hits.push_back({ref.id, std::chrono::steady_clock::now()});
+        set_on_hit_event();
+        play_hit_sound(hit_position, magnitude(impulse) > 2200.f);
     }
 
     /**
@@ -1297,19 +1383,14 @@ public:
      *   visual knockback until the server state has it
      */
     void on_bullet_hit(const vec2f& impulse, const vec2f& hit_position, const bullet_ref& ref = {}) {
-        if (!_server_driven) {
+        if (!_server_driven)
             apply_hit_physics(impulse);
-            if (ref.id != 0)
-                _recent_hits.push_back({ref.id, std::chrono::steady_clock::now()});
-        }
         else {
             if (_predicted)
                 apply_hit_physics(impulse);
             _predicted_hits.push_back({ref, impulse, _collision_box->is_lock_y()});
         }
-
-        set_on_hit_event();
-        play_hit_sound(hit_position, magnitude(impulse) > 2200.f);
+        hit_feedback(impulse, hit_position, ref);
     }
 
     std::vector<predicted_hit_t> take_predicted_hits() {
