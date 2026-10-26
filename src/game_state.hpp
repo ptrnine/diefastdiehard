@@ -464,23 +464,46 @@ public:
         for (auto& [name, text] : ammo)
             lines.push_back(ammo.size() > 1 ? name + ": " + text : text);
 
-        constexpr float row_height = 22.f;
-        constexpr float width      = 260.f;
-        auto            height     = row_height * float(lines.size()) + 12.f;
+        constexpr int   outline    = 3; /* black outline thickness, px */
+        constexpr float row_height = ui_ctx::hud_font_size + 2.f * float(outline);
+        constexpr float width      = 400.f;
+        constexpr float margin     = 12.f;
+        auto            height     = row_height * float(lines.size()) + 2.f * margin;
 
         auto style = &ui.nk_ctx()->style;
         ui.style_push_style_item(&style->window.fixed_background, nk_style_item_color(nk_rgba(0, 0, 0, 0)));
+        ui.style_push_vec2(&style->window.padding, {0.f, 0.f});
+        ui.style_push_vec2(&style->window.spacing, {0.f, 0.f});
 
         /* Nuklear takes the bounds of a new window only: keep it in the corner (window resize, more lines) */
-        auto bounds = nk_rect(window_size.x - width - 4.f, window_size.y - height - 4.f, width, height);
+        auto bounds = nk_rect(window_size.x - width - margin, window_size.y - height, width, height);
         ui.window_set_bounds("ammo_hud", bounds);
         if (ui.begin("ammo_hud", bounds, NK_WINDOW_NO_INPUT | NK_WINDOW_NO_SCROLLBAR)) {
-            ui.layout_row_dynamic(row_height - 2.f, 1);
-            for (auto& line : lines)
-                ui.label_colored(line.data(), NK_TEXT_RIGHT, sf::Color(255, 255, 255));
+            auto* font   = ui.hud_font();
+            auto* canvas = ui.window_get_canvas();
+            ui.layout_row_dynamic(row_height, 1);
+            for (auto& line : lines) {
+                struct nk_rect row;
+                if (nk_widget(&row, ui.nk_ctx()) == NK_WIDGET_INVALID)
+                    continue;
+
+                /* Right-aligned: the text is drawn several times around its place for the outline */
+                auto len   = int(line.size());
+                auto tw    = font->width(font->userdata, font->height, line.data(), len);
+                auto place = nk_rect(row.x + row.w - tw - float(outline), row.y + float(outline), tw + 1.f, font->height);
+                for (int dx = -outline; dx <= outline; ++dx)
+                    for (int dy = -outline; dy <= outline; ++dy)
+                        if ((dx != 0 || dy != 0) && dx * dx + dy * dy <= outline * outline + 1)
+                            nk_draw_text(canvas,
+                                         nk_rect(place.x + float(dx), place.y + float(dy), place.w, place.h),
+                                         line.data(), len, font, nk_rgba(0, 0, 0, 0), nk_rgba(0, 0, 0, 255));
+                nk_draw_text(canvas, place, line.data(), len, font, nk_rgba(0, 0, 0, 0), nk_rgba(255, 255, 255, 255));
+            }
         }
         ui.end();
 
+        ui.style_pop_vec2();
+        ui.style_pop_vec2();
         ui.style_pop_style_item();
     }
 

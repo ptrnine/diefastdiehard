@@ -47,6 +47,10 @@ public:
         cfg.range = glyph_ranges;
         fonts.pt17 = nk_font_atlas_add_from_file(&_sfml.atlas, "data/font/RobotoMono-Regular.ttf", 17.f, &cfg);
 
+        auto hud_cfg  = nk_font_config(hud_font_size);
+        hud_cfg.range = glyph_ranges;
+        fonts.hud = nk_font_atlas_add_from_file(&_sfml.atlas, "data/font/RobotoMono-Regular.ttf", hud_font_size, &hud_cfg);
+
         nk_sfml_font_stash_end(&_sfml);
         //nk_style_load_all_cursors(&_sfml.ctx, _sfml.atlas.cursors);
         nk_style_set_font(&_sfml.ctx, &fonts.pt17->handle);
@@ -57,7 +61,7 @@ public:
             nk_sfml_shutdown(&_sfml);
     }
 
-    ui_ctx(ui_ctx&& ui) noexcept: ui_nuklear_base(), _sfml(ui._sfml) {
+    ui_ctx(ui_ctx&& ui) noexcept: ui_nuklear_base(), _sfml(ui._sfml), fonts(ui.fonts) {
         std::memset(&_sfml, 0, sizeof(_sfml));
 
         _ctx = &_sfml.ctx;
@@ -68,6 +72,7 @@ public:
         std::memset(&_sfml, 0, sizeof(_sfml));
 
         _sfml = ui._sfml;
+        fonts = ui.fonts;
         _ctx = &_sfml.ctx;
         ui._sfml.window = nullptr;
         return *this;
@@ -90,10 +95,18 @@ public:
         return &_sfml.ctx;
     }
 
+    /* Large font of the in-game HUD (ammo) */
+    [[nodiscard]]
+    const nk_user_font* hud_font() const {
+        return &fonts.hud->handle;
+    }
+
+    static constexpr float hud_font_size = 40.f;
+
 private:
     nk_sfml _sfml;
     struct fonts_t {
-        struct nk_font* pt16, *pt17, *pt18, *pt20, *pt22;
+        struct nk_font* pt16, *pt17, *pt18, *pt20, *pt22, *hud;
     } fonts = {};
 };
 
