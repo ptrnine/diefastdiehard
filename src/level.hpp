@@ -201,7 +201,7 @@ public:
      * 200 units above the top platform */
     vec2f pick_player_spawn() const {
         if (!_player_spawn_points.empty())
-            return _player_spawn_points[rand_num<u32>(0, _player_spawn_points.size() - 1)];
+            return _player_spawn_points[rand_num<u32>(0, u32(_player_spawn_points.size() - 1))];
 
         float top_y = _platforms.empty() ? 0.f : _platforms.front().ph.get_position().y;
         for (auto& p : _platforms)

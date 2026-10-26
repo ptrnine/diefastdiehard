@@ -61,6 +61,14 @@ inline std::ostream& operator<<(std::ostream& o, const sf::FloatRect& r) {
     return o;
 }
 
+/* Intentional exact comparison: bitwise deterministic values (sim state, wire round trips) */
+inline bool exactly_equal(float a, float b) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wfloat-equal"
+    return a == b;
+#pragma GCC diagnostic pop
+}
+
 inline bool approx_equal(float a, float b, float epsilon) {
     return fabsf(a - b) <= ((fabsf(a) < fabsf(b) ? fabsf(b) : fabsf(a)) * epsilon);
 }

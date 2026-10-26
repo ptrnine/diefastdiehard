@@ -40,14 +40,14 @@ enum class msg_type : u16 {
 };
 
 /* Input bits */
-inline constexpr u16 in_bit_left         = 1 << 0;
-inline constexpr u16 in_bit_right        = 1 << 1;
-inline constexpr u16 in_bit_jump         = 1 << 2;
-inline constexpr u16 in_bit_jump_down    = 1 << 3;
-inline constexpr u16 in_bit_shot         = 1 << 4;
-inline constexpr u16 in_bit_long_shot    = 1 << 6;
-inline constexpr u16 in_bit_drop         = 1 << 7;
-inline constexpr u16 in_edge_bits        = in_bit_jump | in_bit_jump_down | in_bit_drop;
+inline constexpr u8  in_bit_left         = 1 << 0;
+inline constexpr u8  in_bit_right        = 1 << 1;
+inline constexpr u8  in_bit_jump         = 1 << 2;
+inline constexpr u8  in_bit_jump_down    = 1 << 3;
+inline constexpr u8  in_bit_shot         = 1 << 4;
+inline constexpr u8  in_bit_long_shot    = 1 << 6;
+inline constexpr u8  in_bit_drop         = 1 << 7;
+inline constexpr u8  in_edge_bits        = in_bit_jump | in_bit_jump_down | in_bit_drop;
 
 /**
  * Per-tick player input state (held state + one-tick edges)
@@ -219,7 +219,7 @@ struct state_player {
     u16   accel_rf   = 65535;
     u16   teleports  = 0; // player::teleports: a change means "jump there, don't interpolate"
 
-    std::vector<u32> hits; // ids of the bullets that hit the player in the last second
+    std::vector<u32> hits = {}; // ids of the bullets that hit the player in the last second
 
     void serialize(auto& s) const {
         s.write(id, pos_x, pos_y, vel_x, vel_y, flags, jumps_left, accel_lf, accel_rf, teleports, hits);

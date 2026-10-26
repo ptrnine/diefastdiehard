@@ -59,7 +59,7 @@ inline void lua_ai_init(luacpp::luactx& ctx) {
         lua_getez(x_accel),
         lua_getez(x_slowdown),
     });
-    ctx.provide_member<ai_player_t>(LUA_TNAME("__tostring"), [](const ai_player_t& pl) {
+    ctx.provide_member<ai_player_t>(LUA_TNAME("__tostring"), [](const ai_player_t&) {
         std::string res;
         /* XXX: implement me */
         return res;

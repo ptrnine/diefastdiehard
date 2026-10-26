@@ -304,7 +304,7 @@ public:
             auto& blt_sprite = sprites.sprite(b.color());
             blt_sprite.setScale(xf, yf);
             blt_sprite.setPosition(pos);
-            blt_sprite.setRotation(angle * 180.f / M_PIf32);
+            blt_sprite.setRotation(angle * 180.f / float(M_PI));
             wnd.draw(blt_sprite);
         }
     }

@@ -62,15 +62,15 @@ public:
 
         /* Received, not yet applied input ticks (seq -> bits), applied one per tick in seq order */
         struct queued_input {
-            u16               bits;
+            u8                bits;
             clock::time_point received; // first arrival (the wait in the queue is part of the shooter's lag)
         };
         std::map<u32, queued_input> inputs;
         float                       input_wait_s = 0.f; // time the last applied input tick waited in the queue
         u32                next_seq      = 0; // first seq not applied yet, 0 = none received yet
         u32                ack_seq       = 0; // last applied seq
-        u16                held_bits     = 0; // held part of the last applied input
-        u16                pending_edges = 0; // edges of inputs merged away, applied with the next one
+        u8                 held_bits     = 0; // held part of the last applied input
+        u8                 pending_edges = 0; // edges of inputs merged away, applied with the next one
         bool               buffering     = true; // refilling the jitter buffer
         clock::time_point  last_input_time;
 
@@ -237,8 +237,9 @@ private:
             bool  same = last && last->owner == owner && last->pull_seq == be.key.pull_seq &&
                         last->shot_index == u16(be.key.shot_index) &&
                         last->first_id + u32(last->pellets.size()) == be.id &&
-                        last->first_pellet + last->pellets.size() == be.key.pellet && last->start_x == be.start.x &&
-                        last->start_y == be.start.y && last->forward == forward && last->hit_mass == be.hit_mass &&
+                        last->first_pellet + last->pellets.size() == be.key.pellet && exactly_equal(last->start_x, be.start.x) &&
+                        exactly_equal(last->start_y, be.start.y) && last->forward == forward &&
+                        exactly_equal(last->hit_mass, be.hit_mass) &&
                         last->flags == flags;
             if (!same)
                 st.shots.push_back(shot_info{owner,
@@ -359,7 +360,7 @@ private:
 
             /* Too many queued ticks (client clock runs faster, burst after a stall): merge the oldest */
             while (q.size() > max_queued_inputs) {
-                client.pending_edges |= u16(q.begin()->second.bits & in_edge_bits);
+                client.pending_edges |= u8(q.begin()->second.bits & in_edge_bits);
                 q.erase(q.begin());
             }
 
@@ -368,14 +369,14 @@ private:
             else if (q.size() >= target_queued_inputs)
                 client.buffering = false;
 
-            u16 bits;
+            u8  bits;
             if (!client.buffering) {
                 /* Missing seqs before the head are lost for good (they would be in every newer window) */
                 auto head            = q.begin();
                 bits                 = head->second.bits | client.pending_edges;
                 client.ack_seq       = head->first;
                 client.next_seq      = head->first + 1;
-                client.held_bits     = u16(head->second.bits & ~in_edge_bits);
+                client.held_bits     = u8(head->second.bits & ~in_edge_bits);
                 client.pending_edges = 0;
                 /* Measured at the tick's time (catch-up ticks run late) */
                 client.input_wait_s =

@@ -9,7 +9,12 @@
 #define NK_SFML_GL3_IMPLEMENTATION
 
 #include <SFML/Window.hpp>
+
+/* Third-party implementation: false positive at -O2 */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #include <nuklear.h>
+#pragma GCC diagnostic pop
 #include "nuklear_sfml_gl3.h"
 
 NK_LIB void nk_draw_selectable_icon(struct nk_command_buffer*         out,

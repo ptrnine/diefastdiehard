@@ -68,7 +68,7 @@ namespace ss {
 template <auto N>
 struct nttp {
     constexpr auto operator+() const noexcept { return N; }
-    constexpr operator auto() const noexcept { return N; }
+    constexpr operator decltype(N)() const noexcept { return N; }
 };
 
 template <typename T>

@@ -193,7 +193,7 @@ public:
 
     vec2f long_shot_dir(const vec2f& dir) const {
         auto shot_angle = dir.x < 0.f ? -_long_shot_angle : _long_shot_angle;
-        shot_angle *= M_PIf32 / 180.f;
+        shot_angle *= float(M_PI) / 180.f;
         return rotate_vec(dir, shot_angle);
     }
 
@@ -704,7 +704,7 @@ public:
                               const vec2f&      shell_additional_vel = {0.f, 0.f}) {
         float                 LF       = left_dir ? -1.f : 1.f;
         auto shot_angle_deg = enable_long_shot ? _wpn->_long_shot_angle : 0.f;
-        auto shot_angle_rad = shot_angle_deg * M_PIf32 / 180.f;
+        auto shot_angle_rad = shot_angle_deg * float(M_PI) / 180.f;
 
         static constexpr auto leftyfix = [](const vec2f& v, float invert) {
             return vec2f(v.x * invert, v.y);
@@ -831,7 +831,7 @@ public:
                 auto addition = i == _wpn->_arm2_bone ? _wpn->_arm2_idle_pos : vec2f(0.f, 0.f);
                 layers[i].setPosition(position + leftyfix(main_layer_keys.position, LF) +
                                       rotate_vec(leftyfix(keys[i].position, LF) + leftyfix(addition, LF),
-                                                 M_PIf32 * main_layer_keys.angle * LF / 180.f + shot_angle_rad * LF));
+                                                 float(M_PI) * main_layer_keys.angle * LF / 180.f + shot_angle_rad * LF));
                 /* TODO: fix scale with rotations */
                 layers[i].setScale({LF * xf * main_layer_keys.scale.x * keys[i].scale.x,
                                     yf * main_layer_keys.scale.y * keys[i].scale.y});
@@ -968,7 +968,7 @@ private:
               rand_float_pool*   rand_pool             = nullptr) {
         auto shot_angle =
             enable_long_shot ? (direction.x < 0.f ? -_wpn->_long_shot_angle : _wpn->_long_shot_angle) : 0.f;
-        shot_angle *= M_PIf32 / 180.f;
+        shot_angle *= float(M_PI) / 180.f;
 
         auto pos   = position + rotate_vec(shot_displacement(direction), shot_angle);
         direction  = normalize(rotate_vec(direction, shot_angle));

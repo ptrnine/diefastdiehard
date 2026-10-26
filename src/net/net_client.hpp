@@ -345,7 +345,7 @@ private:
     static vec2f recoil_dir(const player& pl, const Entry& e) {
         if (e.input.left != e.input.right)
             return {e.input.left ? -1.f : 1.f, 0.f};
-        if (e.extra.impulse.x != 0.f)
+        if (!exactly_equal(e.extra.impulse.x, 0.f))
             return {e.extra.impulse.x > 0.f ? -1.f : 1.f, 0.f};
         return pl.facing_dir();
     }
@@ -428,7 +428,7 @@ private:
                     e.extra.weapon   = gun.get_sync_state();
                 }
                 /* Only a real impulse, like the live tick: applying one rebuilds the velocity without its hidden part */
-                if (e.extra.impulse.x != 0.f || e.extra.impulse.y != 0.f)
+                if (!exactly_equal(e.extra.impulse.x, 0.f) || !exactly_equal(e.extra.impulse.y, 0.f))
                     pl.apply_impulse(e.extra.impulse);
                 e.state = pl.get_physic_state();
             }
@@ -897,8 +897,8 @@ private:
         if (!pl)
             return;
 
-        auto face = "player/face" + std::to_string(cfg.face_id) + ".png";
-        auto body = "player/body" + std::to_string(cfg.body_id) + ".png";
+        auto face = "player/face" + std::to_string(u32(cfg.face_id)) + ".png";
+        auto body = "player/body" + std::to_string(u32(cfg.body_id)) + ".png";
         if (pl->body_texture_path() != body || pl->body_color() != unpack_color(cfg.body_color))
             pl->set_body(body, unpack_color(cfg.body_color));
         if (pl->face_texture_path() != face)

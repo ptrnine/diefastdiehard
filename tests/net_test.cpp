@@ -1,3 +1,6 @@
+/* Exact float checks are intended here: serialization round trips and deterministic sim state */
+#pragma GCC diagnostic ignored "-Wfloat-equal"
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -199,7 +202,7 @@ TEST_CASE("protocol: message round-trips") {
 
         /* Configs ride along only when a client may not know them */
         for (u16 id = 1; id <= 4; ++id)
-            st.configs.push_back(player_config{.id = id, .name = "client" + std::to_string(id), .pistol = "wpn_1887"});
+            st.configs.push_back(player_config{.id = id, .name = "client" + std::to_string(u32(id)), .pistol = "wpn_1887"});
         CHECK(encode_msg(msg_type::state, st).size() <= 360 + 4 * 40);
     }
 
@@ -747,7 +750,7 @@ TEST_CASE("net_server: handshake, rename and leave") {
 
         auto R = net::in_bit_right;
         REQUIRE(cli.send(net::encode_msg(net::msg_type::input,
-                                         net::input{.last_seq = 3, .bits = {R | net::in_bit_jump, R, R}})));
+                                         net::input{.last_seq = 3, .bits = {u8(R | net::in_bit_jump), R, R}})));
         srv.update(gs);
         sim_tick(gs);
         CHECK(pl.is_walking());
