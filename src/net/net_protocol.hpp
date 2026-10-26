@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 13;
+inline constexpr u16 protocol_version = 14;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -430,6 +430,8 @@ struct state {
     u32 echo_client_time_ms = 0; // client_time_ms of the client's newest input
     u16 echo_hold_ms        = 0; // time since that input was received
     std::optional<weapon_sync> own_weapon; // the client's player's weapon (if it has a gun)
+    u16 own_lag    = 0; // the client's lag compensation: its shots are forwarded by lag (shot_info::forward units)
+    u16 own_rewind = 0; // ... and hit the players rewind ago (same units)
     std::optional<game_mode_info> mode;    // only when the client may not know it (see net_server)
 
     std::vector<player_config> configs; // only those the client may not know (see net_server)
@@ -445,12 +447,12 @@ struct state {
     alive_set alive_bullets;
 
     void serialize(auto& s) const {
-        s.write(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, mode,
+        s.write(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, own_lag, own_rewind, mode,
                 configs, players, shots, crates, guns, alive_bullets);
     }
 
     void deserialize(auto& d) {
-        d.read(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, mode,
+        d.read(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, own_lag, own_rewind, mode,
                configs, players, shots, crates, guns, alive_bullets);
     }
 };

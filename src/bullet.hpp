@@ -185,6 +185,7 @@ public:
         float rewind;        // the server tests it against the players this long ago (0: collides physically), s
         float flight;        // flight time along the trajectory now, s
         float shown_flight;  // flight time the shown players were tested up to, s
+        bool  own = false;   // the local player's predicted bullet: swept against the remote players only
     };
 
     /**
@@ -207,6 +208,11 @@ public:
     [[nodiscard]]
     std::optional<framed_t>& framed() {
         return _framed;
+    }
+
+    /* The next sweep starts where the bullet is now (it was moved, e.g. corrected) */
+    void restart_sweep() {
+        _swept_from = _ph->get_position();
     }
 
     [[nodiscard]]

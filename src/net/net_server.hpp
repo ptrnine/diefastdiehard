@@ -344,6 +344,10 @@ private:
 
             auto own      = gs.players.find(client.player_name);
             st.own_weapon = own != gs.players.end() ? make_weapon_sync(*own->second) : std::nullopt;
+            /* What the client's shots are compensated by (game_state::spawn_bullet): it predicts their hits with it */
+            auto lc       = own != gs.players.end() ? own->second->lag_compensation() : player::lag_compensation_t{};
+            st.own_lag    = shot_info::pack_forward(std::min(lc.lag, game_state::max_lag_compensation));
+            st.own_rewind = shot_info::pack_forward(std::min(lc.rewind, game_state::max_lag_compensation));
 
             /* The configs the client may not know */
             bool new_client = now - client.joined_time < config_resend;

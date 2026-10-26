@@ -4,6 +4,7 @@
 #include <chrono>
 #include <deque>
 #include <functional>
+#include <set>
 #include <string>
 
 #include <SFML/Network/IpAddress.hpp>
@@ -224,10 +225,7 @@ public:
             /* After the game's tick end callbacks (player updates: shots, recoil) */
             gs.sim.add_tick_end_callback(
                 "net_client",
-                [this](const physic_simulation&, float timestep) {
-                    advance_framed_bullets(*_gs, timestep);
-                    record_prediction(*_gs);
-                },
+                [this](const physic_simulation&, float) { record_prediction(*_gs); },
                 100);
         }
 
@@ -285,6 +283,12 @@ public:
     [[nodiscard]]
     u32 input_seq() const {
         return _input_seq;
+    }
+
+    /** Ids of the recent own bullets predicted to hit remote players (once the server confirmed the bullets) */
+    [[nodiscard]]
+    const std::vector<u32>& own_hit_ids() const {
+        return _own_hit_ids;
     }
 
     /** Own bullets predicted locally and not confirmed by the server yet */
@@ -799,17 +803,65 @@ private:
         return std::clamp(float(*local - *_shown_time), 0.f, game_state::max_lag_compensation);
     }
 
-    /* Tick end: framed bullets flew one more tick in the local player's frame */
-    void advance_framed_bullets(game_state& gs, float timestep) {
-        for (auto& blt : gs.blt_mgr.bullets())
-            if (auto& fr = blt.framed())
-                fr->flight += timestep;
+    /**
+     * Where an own predicted bullet flying a -> b in the last tick, flight
+     * seconds after the shot, hits a remote player, like the server tests it
+     * (game_state::spawn_bullet, rewound_bullets_tick_update): the server
+     * applies the shot tick k at S_k, forwarded by lag (the skipped path is
+     * hit-scanned against the players at S_k - rewind), then sweeps each
+     * tick's path against the players rewind ago. So the players are tested
+     * at S_k - rewind + max(flight - lag, 0), where
+     * S_k = local_frame_time() - flight: about the shown time, so it is in
+     * the snapshots. Plus the knockbacks predicted on top of them
+     */
+    std::optional<std::pair<player*, vec2f>> own_bullet_hit(game_state& gs, const vec2f& a, const vec2f& b, float flight,
+                                                            const player* local, int group) {
+        auto frame = local_frame_time();
+        if (!frame && !_shown_time)
+            return {};
+        auto t = frame ? *frame - double(_own_rewind_s + std::min(flight, _own_lag_s)) : *_shown_time;
+
+        std::optional<std::pair<player*, vec2f>> res;
+        auto best = std::numeric_limits<float>::max();
+        for (auto& [name, snaps] : _remote) {
+            auto found = gs.players.find(name);
+            if (found == gs.players.end() || found->second.get() == local)
+                continue;
+            auto& pl = *found->second;
+            if (group != -1 && pl.get_group() != -1 && pl.get_group() == group)
+                continue;
+            auto snap = snaps.sample(t);
+            if (!snap)
+                continue;
+
+            /*
+             * Teleported since: the server clears the position trace on a
+             * teleport, so rewinding across it finds the first position after
+             * the teleport (the server has it by the time it sweeps)
+             */
+            auto newest = snaps.newest();
+            if (newest->teleports != snap->teleports)
+                snap = snaps.first_where([&](const remote_player_snapshot& s) { return s.teleports == newest->teleports; });
+
+            /* The knockbacks predicted on top of the shown snapshots (they are dropped on a teleport) */
+            auto pos = snap->ph.pos;
+            if (auto kb = _knockbacks.find(name); kb != _knockbacks.end() && _remote_teleports[name] == snap->teleports)
+                pos += kb->second.offset();
+            auto size = pl.get_size();
+            if (auto hit = game_state::segment_hit(a, b, {pos.x, pos.y - size.y, size.x, size.y}); hit && *hit < best) {
+                best = *hit;
+                res  = std::pair{&pl, a + (b - a) * *hit};
+            }
+        }
+        return res;
     }
 
     /**
      * Tick begin: sweep the path every framed bullet flew last tick against
      * the local player (like the server tests it: tick_hit, apply_tick_hit),
-     * and the delayed path against the remote players where they are shown
+     * and the delayed path against the remote players where they are shown.
+     * Own predicted bullets are swept against the remote players
+     * (own_bullet_hit). Then the bullets fly the tick starting now
      */
     void sweep_framed_bullets(game_state& gs) {
         auto local = local_player(gs);
@@ -829,6 +881,16 @@ private:
 
             /* The path flown in the last tick (_input_seq) */
             auto [from, to] = blt.take_swept_segment();
+            auto flight     = std::exchange(fr->flight, fr->flight + _tick_dt);
+
+            if (fr->own) {
+                if (auto hit = own_bullet_hit(gs, from, to, flight, local, blt.group())) {
+                    hit->first->on_bullet_hit(ph->impulse(), hit->second, bullet_ref::of(ph.get()));
+                    ph->delete_later();
+                }
+                continue;
+            }
+
             if (local && may_hit(*local, owner, blt.group())) {
                 auto test = hit_test_t::of(fr->rewind, _tick_dt);
                 if (auto hit = tick_hit(*local, _input_seq, from, to, test)) {
@@ -838,7 +900,7 @@ private:
                 }
             }
 
-            auto shown = std::max(fr->flight - hit_test_t::of(fr->rewind, _tick_dt).rewind_lead * _tick_dt - delay, 0.f);
+            auto shown = std::max(flight - hit_test_t::of(fr->rewind, _tick_dt).rewind_lead * _tick_dt - delay, 0.f);
             if (shown <= fr->shown_flight)
                 continue;
             auto a = gs.ballistic_forward(fr->start, fr->velocity, fr->gravity, fr->shown_flight).first;
@@ -887,14 +949,20 @@ private:
                 ph->position(pos);
                 ph->velocity(fwd_vel);
                 for (auto& blt : gs.blt_mgr.bullets())
-                    if (blt.physic() == ph)
+                    if (blt.physic() == ph) {
                         blt.net_id(id);
+                        blt.restart_sweep(); /* not across the correction */
+                    }
             }
             else
                 ph->delete_later(); /* it hit something on the server */
         }
 
         /* Hits predicted for this bullet can now be matched to the server's */
+        if (std::erase(_own_hit_keys, key) != 0)
+            _own_hit_ids.push_back(id);
+        _own_bullet_ids.insert(id);
+        trim_own_hit_stats();
         for (auto& [_, kb] : _knockbacks)
             kb.for_each_hit([&](auto& hit) {
                 if (hit.ref.key && *hit.ref.key == key)
@@ -903,6 +971,17 @@ private:
 
         _predicted.erase(found);
         return true;
+    }
+
+    /* The own hit stats keep the recent bullets only */
+    void trim_own_hit_stats() {
+        constexpr size_t keep = 1024;
+        while (_own_bullet_ids.size() > keep)
+            _own_bullet_ids.erase(_own_bullet_ids.begin());
+        if (_own_hit_ids.size() > keep)
+            _own_hit_ids.erase(_own_hit_ids.begin(), _own_hit_ids.end() - keep);
+        if (_own_hit_keys.size() > keep)
+            _own_hit_keys.erase(_own_hit_keys.begin(), _own_hit_keys.end() - keep);
     }
 
     /* Predictions the server never confirmed (the server did not fire that shot) */
@@ -998,8 +1077,14 @@ private:
                 st = ghost.get_physic_state();
             };
 
-            for (auto& hit : pl.take_predicted_hits())
+            for (auto& hit : pl.take_predicted_hits()) {
+                if (hit.ref.key)
+                    _own_hit_keys.push_back(*hit.ref.key);
+                else if (_own_bullet_ids.contains(hit.ref.id))
+                    _own_hit_ids.push_back(hit.ref.id);
                 kb.predict(hit.ref, hit.impulse, shown, apply_hit);
+            }
+            trim_own_hit_stats();
             for (auto id : snap->hits)
                 kb.confirm([id](const bullet_ref& ref) { return ref.id == id; }, snap->ph, apply_hit);
 
@@ -1148,8 +1233,11 @@ private:
 
         /* States may arrive out of order: only the newest one updates the world state */
         bool newest = st.tick > _last_state_tick;
-        if (newest)
+        if (newest) {
             _last_state_tick = st.tick;
+            _own_lag_s       = float(st.own_lag) / shot_info::forward_scale;
+            _own_rewind_s    = float(st.own_rewind) / shot_info::forward_scale;
+        }
 
         /* The server sets the game mode: only the newest state changes it */
         if (st.mode && newest) {
@@ -1430,6 +1518,12 @@ private:
         u32 confirm_seq; /* the first acknowledged tick whose state has it */
     };
     std::map<u32, rewound_hit_t> _rewound_hits;
+
+    std::vector<shot_key_t> _own_hit_keys; // own bullets predicted to hit remote players, not confirmed yet
+    std::vector<u32>        _own_hit_ids;  // ... and confirmed
+    std::set<u32>           _own_bullet_ids; // confirmed own bullets
+    float                   _own_lag_s    = 0.f; // the server's lag compensation of the local player's shots
+    float                   _own_rewind_s = 0.f;
 };
 
 } // namespace dfdh::net

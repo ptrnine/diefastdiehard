@@ -686,6 +686,8 @@ public:
             auto& blt = blt_mgr.shot(sim, start, mass, velocity, owner.tracer_color(), gravity, owner.get_group(),
                                      player::player_group_getter, player::owner_checker(&owner));
             blt.predicted_key(key);
+            /* Its hits on the remote players are tested like the server does (net_client) */
+            blt.frame_on_client({start, velocity, gravity, 0.f, 0.f, 0.f, true}, start);
             cur_frame_bullets.push_back(
                 {owner.name(), 0, key, start, start, velocity, velocity, 0.f, 0.f, mass, owner.tracer_color(), gravity, true, blt.physic()});
             return;

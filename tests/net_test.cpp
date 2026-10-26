@@ -6,6 +6,7 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include <chrono>
+#include <set>
 #include <string>
 #include <thread>
 
@@ -218,7 +219,7 @@ TEST_CASE("protocol: message round-trips") {
 
         auto size = encode_msg(msg_type::state, st).size();
         UNSCOPED_INFO("state datagram: " << size << " bytes");
-        CHECK(size <= 370);
+        CHECK(size <= 374);
 
         /* Configs ride along only when a client may not know them */
         for (u16 id = 1; id <= 4; ++id)
@@ -1886,7 +1887,8 @@ TEST_CASE("game_state: lag-compensated bullets hit rewound players for their who
 
 TEST_CASE("net: clients see server bullets in the local player's frame") {
     using namespace std::chrono_literals;
-    net_game_fixture f{80, 170};
+    /* Steady latency: with jitter the server merges queued input ticks, which shifts the tick times */
+    net_game_fixture f{40, 40};
     f.run_for(3000ms);
 
     /* A server-side player (like the host's) fires */
@@ -2237,6 +2239,48 @@ TEST_CASE("net: own bullet hits on remote players are predicted") {
     f.run_for(2500ms);
     CHECK(f.remote_bot().get_position().x == Catch::Approx(f.bot->get_position().x).margin(1.f));
     CHECK(f.remote_bot().get_position().y == Catch::Approx(f.bot->get_position().y).margin(1.f));
+}
+
+TEST_CASE("net: own bullet hits on a falling remote player are predicted as the server has them (100 ms ping)") {
+    using namespace std::chrono_literals;
+    hit_fixture f{25, 25};
+
+    auto weapon = GENERATE(as<std::string>{}, "wpn_ak9", "wpn_glk17");
+    auto drop_y = GENERATE(905.f, 940.f); /* the stream flies at ~990..1030 */
+    CAPTURE(weapon, drop_y);
+
+    f.server_side().setup_pistol(weapon);
+    f.run_for(1000ms);
+    REQUIRE(f.local().pistol_section() == weapon);
+
+    /*
+     * Bursts at the bot dropped from above across the stream. It is dropped
+     * before the burst and the bullets are gone before the next drop (a
+     * teleport clears the server's position trace: a bullet rewound across
+     * it is not predictable)
+     */
+    std::set<u32> server_hits;
+    auto collect = [&] {
+        for (auto id : f.bot->recent_hit_ids())
+            server_hits.insert(id);
+    };
+    for (int i = 0; i < 8; ++i) {
+        f.bot->teleport({1100.f, drop_y});
+        f.input = {.shot = true};
+        f.run_for(500ms, collect);
+        f.input = {};
+        f.run_for(700ms, collect);
+    }
+    REQUIRE(server_hits.size() > 3);
+
+    std::set<u32> client_hits(f.cli->own_hit_ids().begin(), f.cli->own_hit_ids().end());
+    std::vector<u32> missed, extra;
+    std::ranges::set_difference(server_hits, client_hits, std::back_inserter(missed));
+    std::ranges::set_difference(client_hits, server_hits, std::back_inserter(extra));
+    /* The client tests its bullets like the server: they hit the falling bot's head and feet alike */
+    UNSCOPED_INFO("server hits " << server_hits.size());
+    CHECK(missed.empty());
+    CHECK(extra.empty());
 }
 
 TEST_CASE("net: predicted knockback follows the level geometry") {

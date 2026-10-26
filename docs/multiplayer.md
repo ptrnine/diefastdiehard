@@ -54,7 +54,7 @@ Every datagram has a header `u16 type, u16 payload_size`, then an
 `ss::serializer` payload: little endian, with **u16** string and vector
 length prefixes (`net::wire_size_type`; the serializer default is u64).
 **Bump `net::protocol_version`** on any wire change: a HELLO with another
-version is answered with ERROR. The current version is 13.
+version is answered with ERROR. The current version is 14.
 
 | id | dir | payload |
 |----|-----|---------|
@@ -67,6 +67,7 @@ version is answered with ERROR. The current version is 13.
 
 STATE contains:
 - **Header:** `tick` (broadcast sequence number), `server_time_ms` (time of the simulated tick), `ack_seq` (the last input tick applied to this client's player), and `echo_client_time_ms` + `echo_hold_ms` (RTT echo of the newest input).
+- **`own_lag`, `own_rewind`:** the lag compensation of the client's shots (u16, 1/32768 s, see Input), for its hit prediction.
 - **`own_weapon`:** the client's own player's weapon logic state (`weapon_sync`: ammo, logic animation id and time, time since the last shot, reloading/trigger flags, shot index and seed), if it holds a gun. Only the recipient's player is reconciled, so other players' weapons are not sent.
 - **`mode`, the game mode, only when the client may not know it:** section name, bullet gravity, crate drop period (see `src/game_mode.hpp`). It is sent with the same policy as the player configs (1 s after the join or a change, every 30th broadcast); the client applies the newest one with `game_state::game_mode_set` and sets `game_mode_networked`, so its console cannot change the game mode.
 - **`player_config`, only the ones the client may not know:**
@@ -85,7 +86,7 @@ STATE contains:
 - **`shot_info`, per shot spawned since the last broadcast:** owner id, first bullet id, shot key (`pull_seq`, `shot_index`, first pellet), muzzle start, forward time and rewind (u16, 1/32768 s; rewind 0: the bullet collides physically), hit_mass, gravity flag, and the muzzle velocity of each pellet. Pellet `i` has the id `first_id + i` and the pellet number `first_pellet + i`; pellets of one shot share everything but the velocity. The server keeps spawned bullets in a pending list until the next broadcast.
 - **Other world state:** crates (id, pos, vel, landed); dropped guns (id, section, pos, vel, angle, on_left, long_shot, owner: the id of the player who threw it, age: flight time in ms); `alive_set`: the ids of all bullets alive on the server, as a bitmap from the smallest one.
 
-Typical sizes: the example in `tests/net_test.cpp` (4 players, a 7 pellet shot, 30 live bullets, 2 crates, 1 dropped gun) is 367 bytes (1131 in version 6). In a loopback fight with two players and a shotgun, a state averages ~150 bytes and an input ~28 bytes (`udp_channel::bytes_sent`). Keep a STATE well below the ~1470 byte MTU.
+Typical sizes: the example in `tests/net_test.cpp` (4 players, a 7 pellet shot, 30 live bullets, 2 crates, 1 dropped gun) is 373 bytes (1131 in version 6). In a loopback fight with two players and a shotgun, a state averages ~150 bytes and an input ~28 bytes (`udp_channel::bytes_sent`). Keep a STATE well below the ~1470 byte MTU.
 
 Input bits are held states, except edges (`in_edge_bits`), which are set only on the tick of the press:
 
@@ -380,6 +381,21 @@ with its player.
 
 Own-bullet hits on remote players carry a shot key, which is resolved to
 the server id when the bullet is confirmed.
+
+**Own bullets vs. remote players** (`own_bullet_hit`): own predicted
+bullets don't collide with players physically. Every tick their path is
+swept against the remote players where the server tests it: the server
+applies the shot tick `k` at `S_k`, forwarded by `lag` (the skipped path is
+hit-scanned against the players at `S_k − rewind`), then sweeps each tick's
+path against the players `rewind` ago. So the remote players are taken
+from their snapshots at `S_k − rewind + max(flight − lag, 0)` (about the
+shown time), plus the predicted knockback offset, with the server's `lag`
+and `rewind` from STATE. Testing them where they are drawn instead missed
+the server's hits on fast-falling players by up to a tick of fall: a hit in
+the head the server did not have, or a bullet under the feet that the
+server registered. A teleport clears the server's position trace: a newer
+teleport in the snapshots makes the test use the first snapshot after it
+(a teleport the client doesn't know yet is not predictable).
 
 ## Weapons
 

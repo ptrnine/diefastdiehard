@@ -158,6 +158,23 @@ public:
         return _snaps.size();
     }
 
+    [[nodiscard]]
+    std::optional<T> newest() const {
+        if (_snaps.empty())
+            return {};
+        return _snaps.back().value;
+    }
+
+    /** The oldest snapshot matching pred */
+    template <typename F>
+    [[nodiscard]]
+    std::optional<T> first_where(F&& pred) const {
+        for (auto& snap : _snaps)
+            if (pred(snap.value))
+                return snap.value;
+        return {};
+    }
+
     /**
      * The newest snapshot before the first one matching pred (e.g. the state
      * right before an event the snapshots report), with its time
