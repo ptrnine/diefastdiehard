@@ -936,7 +936,10 @@ public:
      * the past. The victim's recorded state at that moment gets the hit and
      * the victim is re-simulated to now with its recorded controls and
      * impulses (its history is rewritten), so the shooter's prediction and
-     * the server agree. Applied now if there is no history back then
+     * the server agree. Applied now if there is no history back then.
+     * The jump to the rewritten present is drawn smoothly (render offset):
+     * on the server's screen the victim is shown in the present, so it would
+     * teleport by the knockback of the rewound time
      */
     void apply_hit_at(player& victim, const vec2f& impulse, const vec2f& hit_position, const bullet_ref& ref,
                       std::chrono::steady_clock::time_point when) {
@@ -970,6 +973,7 @@ public:
 
         auto live_controls = victim.controls();
         auto timestep      = sim.last_timestep();
+        auto old_pos       = victim.get_position();
 
         victim.restore_physic_state(*h[*from].end);
         victim.replaying(true);
@@ -989,6 +993,7 @@ public:
         victim.replaying(false);
         victim.controls(live_controls);
         victim.place_legs();
+        victim.add_render_offset(old_pos - victim.get_position());
     }
 
     /* Key of the owner's bullet being spawned: pellets of one shot are numbered in spawn order */

@@ -1828,8 +1828,13 @@ TEST_CASE("game_state: retroactive hits rewrite the victim's history") {
             hit_time = live.t;
             live.victim->on_bullet_hit({-900.f, -400.f}, live.victim->get_position());
         }
-        if (i == 45)
+        if (i == 45) {
+            /* Drawn smoothly from where it was: the rewritten present is a jump of the knockback so far */
+            auto drawn = retro.victim->drawn_position(0.f, 1.f / 60.f);
             retro.gs.apply_hit_at(*retro.victim, {-900.f, -400.f}, retro.victim->get_position(), {}, hit_time);
+            CHECK(magnitude(retro.victim->get_position() - drawn) > 50.f);
+            CHECK(magnitude(retro.victim->drawn_position(0.f, 1.f / 60.f) - drawn) < 0.01f);
+        }
     }
 
     CHECK(retro.victim->get_position().x == Catch::Approx(live.victim->get_position().x).margin(0.01f));

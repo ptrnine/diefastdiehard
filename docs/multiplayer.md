@@ -315,7 +315,10 @@ tick N: X px`, `weapon correction ...`).
   now.
 - **Effect:** the shooter's predicted knockback becomes the authoritative
   one. The victim and third-party clients see the rewrite as a smoothed
-  correction.
+  correction. On the server's screen, the victim jumps to the rewritten
+  present by the knockback of the rewound time: the jump goes into its
+  render offset, so the host sees it pushed away smoothly instead of
+  teleporting.
 
 **Server bullets on clients** (`spawn_server_bullet`): simulated in the
 frame of the predicted local player (`bullet::frame_on_client`), so the
