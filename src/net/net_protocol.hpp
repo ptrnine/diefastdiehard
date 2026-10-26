@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 10;
+inline constexpr u16 protocol_version = 11;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -235,8 +235,10 @@ struct state_player {
 struct weapon_sync {
     static constexpr u8 flag_reloading = 1 << 0;
     static constexpr u8 flag_trigger   = 1 << 1;
+    static constexpr u16 unlimited_reserve = 0xffff;
 
     u16   ammo       = 0;
+    u16   reserve    = unlimited_reserve; // ammo left beyond the magazine
     u8    anim       = 0;
     float anim_time  = 0.f;
     float since_shot = 0.f;
@@ -245,11 +247,11 @@ struct weapon_sync {
     u32   seed_base  = 0;
 
     void serialize(auto& s) const {
-        s.write(ammo, anim, anim_time, since_shot, flags, shot_index, seed_base);
+        s.write(ammo, reserve, anim, anim_time, since_shot, flags, shot_index, seed_base);
     }
 
     void deserialize(auto& d) {
-        d.read(ammo, anim, anim_time, since_shot, flags, shot_index, seed_base);
+        d.read(ammo, reserve, anim, anim_time, since_shot, flags, shot_index, seed_base);
     }
 };
 
@@ -399,13 +401,14 @@ struct game_mode_info {
     std::string section;
     float       bullet_gravity    = 0.f; // 0: off
     float       crate_drop_period = 0.f; // 0: crates never drop
+    u32         magazines_count   = 0;   // 0: unlimited
 
     void serialize(auto& s) const {
-        s.write(section, bullet_gravity, crate_drop_period);
+        s.write(section, bullet_gravity, crate_drop_period, magazines_count);
     }
 
     void deserialize(auto& d) {
-        d.read(section, bullet_gravity, crate_drop_period);
+        d.read(section, bullet_gravity, crate_drop_period, magazines_count);
     }
 };
 

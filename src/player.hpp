@@ -702,6 +702,10 @@ public:
                                              _group,
                                              player_group_getter))
                 apply_logged_impulse(-dir * *recoil);
+
+            /* Out of ammo: the gun is thrown away (a server-driven gun by the server, unless predicted) */
+            if (_pistol.out_of_ammo() && (!server_driven() || predicted()))
+                drop_gun();
         }
     }
 
@@ -921,8 +925,9 @@ public:
         set_some(path, _hat_txtr, _hat, _size, color);
     }
 
-    void setup_pistol(const std::string& section) {
-        _pistol = weapon_instance(section);
+    /* magazines_count: ammo limit of a non-pistol gun (see game_mode::magazines_count) */
+    void setup_pistol(const std::string& section, u32 magazines_count = 0) {
+        _pistol = weapon_instance(section, magazines_count);
         _pistol_section = section;
         _throw.reset();
     }

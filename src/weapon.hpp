@@ -473,6 +473,7 @@ inline weapon_storage_singleton& weapon_mgr() {
 class weapon_instance {
 public:
     static constexpr vec2f shot_flash_scale = {55.f, 55.f};
+    static constexpr u32   unlimited_ammo   = std::numeric_limits<u32>::max();
 
     struct remote_shot_params_t {
         instant_kick_mgr* kick_mgr;
@@ -501,18 +502,21 @@ public:
         bool  on_shot    = false;
         u32   shot_index = 0;
         u32   seed_base  = 0; /* 0: not seeded */
+        u32   reserve    = unlimited_ammo;
 
         [[nodiscard]]
         bool diverged(const sync_state& s) const {
             constexpr float time_eps = 0.001f;
-            return ammo != s.ammo || anim != s.anim || on_reload != s.on_reload || on_shot != s.on_shot ||
+            return ammo != s.ammo || reserve != s.reserve || anim != s.anim || on_reload != s.on_reload || on_shot != s.on_shot ||
                    shot_index != s.shot_index || seed_base != s.seed_base ||
                    std::abs(anim_time - s.anim_time) > time_eps || std::abs(since_shot - s.since_shot) > time_eps;
         }
     };
 
     weapon_instance() = default;
-    weapon_instance(weapon* wpn): _ammo_elapsed(wpn->mag_size()), _wpn(wpn) {
+    /* magazines_count: the ammo is limited to mag_size * magazines_count, 0 or a pistol: unlimited */
+    weapon_instance(weapon* wpn, u32 magazines_count = 0):
+        _ammo_elapsed(wpn->mag_size()), _ammo_reserve(initial_reserve(*wpn, magazines_count)), _wpn(wpn) {
         if (_wpn->_shot_flash) {
             auto& txtr = texture_mgr().load("wpn/shot.png");
             auto  txtr_sz = txtr.getSize();
@@ -526,7 +530,15 @@ public:
         }
     }
 
-    weapon_instance(const std::string& section): weapon_instance(&weapon_mgr().load(section)) {}
+    weapon_instance(const std::string& section, u32 magazines_count = 0):
+        weapon_instance(&weapon_mgr().load(section), magazines_count) {}
+
+    [[nodiscard]]
+    static u32 initial_reserve(const weapon& wpn, u32 magazines_count) {
+        if (magazines_count == 0 || wpn.wpn_class() == weapon::pistol)
+            return unlimited_ammo;
+        return wpn.mag_size() * (magazines_count - 1);
+    }
 
     [[nodiscard]]
     weapon* wpn() {
@@ -565,7 +577,15 @@ public:
 
     [[nodiscard]]
     sync_state get_sync_state() const {
-        sync_state s{_ammo_elapsed, 0, 0.f, _since_shot, _on_reload, _on_shot, _shot_index, _seed_base.value_or(0)};
+        sync_state s{_ammo_elapsed,
+                     0,
+                     0.f,
+                     _since_shot,
+                     _on_reload,
+                     _on_shot,
+                     _shot_index,
+                     _seed_base.value_or(0),
+                     _ammo_reserve};
         if (_current_anim) {
             auto found = std::ranges::find(anim_names, std::string_view(_current_anim->_name));
             if (found != anim_names.end()) {
@@ -579,6 +599,7 @@ public:
     /* Restore the weapon logic state, as it was after the input tick input_seq */
     void restore_sync_state(const sync_state& s, u32 input_seq) {
         _ammo_elapsed = s.ammo;
+        _ammo_reserve = s.reserve;
         if (s.anim != 0 && s.anim < anim_names.size()) {
             if (!_current_anim || _current_anim->_name != anim_names[s.anim])
                 play_animation(std::string(anim_names[s.anim]));
@@ -870,7 +891,7 @@ private:
         _anim_tick_dt = timestep;
         advance_animation(timestep);
 
-        if (_ammo_elapsed == 0 && !_current_anim && !_on_reload) {
+        if (_ammo_elapsed == 0 && _ammo_reserve != 0 && !_current_anim && !_on_reload) {
             _on_reload = true;
             play_animation(_wpn->_wpn_class == weapon::shotgun ? "load_start" : "reload");
             return false;
@@ -881,7 +902,7 @@ private:
             return true;
 
         if (_on_reload && !_current_anim) {
-            _ammo_elapsed = _wpn->mag_size();
+            refill();
             _on_reload    = false;
         }
         return false;
@@ -897,7 +918,7 @@ private:
             auto found_anim = _wpn->_animations.find(_current_anim->_name);
             if (found_anim == _wpn->_animations.end()) {
                 glog().error("Animation '{}' not found in weapon [{}]", _current_anim->_name, _wpn->_section);
-                _ammo_elapsed = _wpn->_mag_size;
+                refill();
                 if (_current_anim->_name == "shell")
                     _current_anim = anim_spec_t{"load_end"};
                 else
@@ -917,12 +938,27 @@ private:
             if (_current_anim->_name == "load_start")
                 _current_anim = anim_spec_t{"shell", overshoot};
             else if (_current_anim->_name == "shell") {
-                ++_ammo_elapsed;
-                _current_anim = anim_spec_t{_ammo_elapsed >= _wpn->_mag_size ? "load_end" : "shell", overshoot};
+                load_from_reserve(1);
+                auto full     = _ammo_elapsed >= _wpn->_mag_size || _ammo_reserve == 0;
+                _current_anim = anim_spec_t{full ? "load_end" : "shell", overshoot};
             }
             else
                 _current_anim.reset();
         }
+    }
+
+    /* Move up to count rounds from the reserve to the magazine */
+    void load_from_reserve(u32 count) {
+        count = std::min(count, _ammo_reserve);
+        if (_ammo_reserve != unlimited_ammo)
+            _ammo_reserve -= count;
+        _ammo_elapsed += count;
+    }
+
+    /* Fill the magazine up from the reserve */
+    void refill() {
+        if (_ammo_elapsed < _wpn->_mag_size)
+            load_from_reserve(_wpn->_mag_size - _ammo_elapsed);
     }
 
     void draw_shells(sf::RenderWindow& wnd) {
@@ -1047,6 +1083,7 @@ private:
 
 private:
     u32                        _ammo_elapsed = 0;
+    u32                        _ammo_reserve = unlimited_ammo; /* rounds beyond the magazine */
     weapon*                    _wpn          = nullptr;
     std::optional<anim_spec_t> _current_anim;
 
@@ -1105,6 +1142,17 @@ public:
 
     void ammo_elapsed(u32 value) {
         _ammo_elapsed = value;
+    }
+
+    [[nodiscard]]
+    u32 ammo_reserve() const {
+        return _ammo_reserve;
+    }
+
+    /* The magazine and the reserve are empty (and the last shot is played) */
+    [[nodiscard]]
+    bool out_of_ammo() const {
+        return _wpn && _ammo_elapsed == 0 && _ammo_reserve == 0 && !_current_anim;
     }
 };
 

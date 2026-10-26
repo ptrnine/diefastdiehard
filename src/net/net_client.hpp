@@ -71,7 +71,10 @@ inline player::physic_state to_physic_state(const state_player& sp) {
 }
 
 inline game_mode to_game_mode(const game_mode_info& gmi) {
-    return {.section = gmi.section, .bullet_gravity = gmi.bullet_gravity, .crate_drop_period = gmi.crate_drop_period};
+    return {.section           = gmi.section,
+            .bullet_gravity    = gmi.bullet_gravity,
+            .crate_drop_period = gmi.crate_drop_period,
+            .magazines_count   = gmi.magazines_count};
 }
 
 inline weapon_instance::sync_state to_weapon_state(const weapon_sync& ws) {
@@ -82,7 +85,8 @@ inline weapon_instance::sync_state to_weapon_state(const weapon_sync& ws) {
             (ws.flags & weapon_sync::flag_reloading) != 0,
             (ws.flags & weapon_sync::flag_trigger) != 0,
             ws.shot_index,
-            ws.seed_base};
+            ws.seed_base,
+            ws.reserve == weapon_sync::unlimited_reserve ? weapon_instance::unlimited_ammo : u32(ws.reserve)};
 }
 
 /**
@@ -414,7 +418,8 @@ private:
             if (replay_weapon) {
                 gun.restore_sync_state(*server_wpn, ack_seq);
                 ++_weapon_corrections;
-                glog().detail("net client: weapon correction at tick {}: ammo {}", ack_seq, server_wpn->ammo);
+                glog().detail("net client: weapon correction at tick {}: ammo {} (reserve {})", ack_seq, server_wpn->ammo,
+                              server_wpn->reserve);
             }
 
             pl.replaying(true);
@@ -997,7 +1002,7 @@ private:
             if (cfg.pistol.empty())
                 pl->clear_pistol_on_release();
             else
-                pl->setup_pistol(cfg.pistol);
+                pl->setup_pistol(cfg.pistol, gs.cur_game_mode.magazines_count);
         }
         pl->tracer_color(unpack_color(cfg.tracer_color));
         pl->group(cfg.group);

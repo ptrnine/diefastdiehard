@@ -64,7 +64,7 @@ instead of sleeping. Use it for any new gameplay/network timer.
   `game_state::gravity_for_bullets` references (toggle from Lua:
   `GS.gravity_for_bullets`).
 - `src/game_mode.hpp` — game mode: game rules (bullet gravity, crate drop
-  period) from the `gm_` sections of `data/game_mode.cfg`, not from the
+  period, magazines count: non-pistol ammo limit, emptied guns are dropped) from the `gm_` sections of `data/game_mode.cfg`, not from the
   level. `gm_default` is applied on start; console `game mode [name|list]`
   (`game_state::game_mode_apply`). The server sends it to clients in STATE.
 - `src/net/` — multiplayer: authoritative UDP server. Protocol in
@@ -95,6 +95,8 @@ instead of sleeping. Use it for any new gameplay/network timer.
 - `args_view`: `get(name)`, `next(err)`, `try_next()`, `by_key_opt<T>(name)` —
   there is **no** `has()`. Key strings include the leading dash.
 - `player_name_t = fixed_str<23>`: 22 chars max + nul, 24-byte aligned buffer.
+- cfg comments start with `#`: a `//` line is parsed as a `key = value`
+  (silently, if it has a `=`).
 - `cfg::mutable_global()` loads `fs.cfg`; section hot-reload goes through the
   cfg watcher (`replace_changed_sections` in `game_state::game_update`).
 

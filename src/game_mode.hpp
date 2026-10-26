@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "base/cfg.hpp"
+#include "base/types.hpp"
 #include "base/vec_math.hpp"
 
 namespace dfdh {
@@ -19,10 +20,11 @@ struct game_mode {
     std::string section;
     float       bullet_gravity    = 0.f; /* bullet gravity y value, 0 = off */
     float       crate_drop_period = 0.f; /* crate drop cooldown period (seconds), 0 = crates never drop */
+    u32         magazines_count   = 0;   /* magazines of a gun (pistols are unlimited), 0 = unlimited */
 
     bool operator==(const game_mode& gm) const {
         return section == gm.section && exactly_equal(bullet_gravity, gm.bullet_gravity) &&
-               exactly_equal(crate_drop_period, gm.crate_drop_period);
+               exactly_equal(crate_drop_period, gm.crate_drop_period) && magazines_count == gm.magazines_count;
     }
 
     /* Accepts the name with or without the gm_ prefix ("default" -> "gm_default") */
@@ -39,6 +41,7 @@ struct game_mode {
         gm.section           = sect_name;
         gm.bullet_gravity    = sect.value_or_default("bullet_gravity", 0.f);
         gm.crate_drop_period = std::max(sect.value_or_default("crate_drop_period", 0.f), 0.f);
+        gm.magazines_count   = u32(std::max(sect.value_or_default("magazines_count", 0), 0));
         return gm;
     }
 

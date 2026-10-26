@@ -472,10 +472,11 @@ public:
     void cmd_game_mode(const std::optional<std::string>& value) {
         auto& gm = gs.cur_game_mode;
         if (!value) {
-            glog().info("game mode: {} (bullet_gravity = {}, crate_drop_period = {})",
+            glog().info("game mode: {} (bullet_gravity = {}, crate_drop_period = {}, magazines_count = {})",
                         gm.section,
                         gm.bullet_gravity,
-                        gm.crate_drop_period);
+                        gm.crate_drop_period,
+                        gm.magazines_count);
         }
         else if (*value == "list") {
             glog().detail("Available game modes: {}", game_mode::list_available());

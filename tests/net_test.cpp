@@ -154,7 +154,7 @@ TEST_CASE("protocol: message round-trips") {
 
     SECTION("state with the game mode") {
         state st;
-        st.mode = game_mode_info{"gm_ballistic", 500.f, 5.f};
+        st.mode = game_mode_info{"gm_ballistic", 500.f, 5.f, 3};
 
         auto data = encode_msg(msg_type::state, st);
         auto r    = read_msg<state>(decode_msg({data.data(), data.size()}).payload);
@@ -162,6 +162,7 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(r.mode->section == "gm_ballistic");
         CHECK(r.mode->bullet_gravity == 500.f);
         CHECK(r.mode->crate_drop_period == 5.f);
+        CHECK(r.mode->magazines_count == 3);
 
         st.mode.reset();
         data = encode_msg(msg_type::state, st);
@@ -362,6 +363,44 @@ TEST_CASE("dropped guns: unique ids and the thrower") {
     CHECK(thrown.owner() == pl->name());
     CHECK_FALSE(thrown.predicted());
     CHECK(thrown.id() != b->id());
+}
+
+TEST_CASE("game mode: limited magazines, an emptied gun is dropped") {
+    game_state gs;
+    REQUIRE(gs.level_current("lvl_aes"));
+    auto pl = gs.player_create("shooter");
+    REQUIRE(pl != nullptr);
+    gs.game_run(true);
+    pl->teleport({1300.f, 1040.f});
+
+    SECTION("pistols are unlimited") {
+        pl->setup_pistol("wpn_glk17", 2);
+        CHECK(pl->get_gun().ammo_reserve() == weapon_instance::unlimited_ammo);
+    }
+
+    SECTION("no magazines count: unlimited") {
+        pl->setup_pistol("wpn_ak9", 0);
+        CHECK(pl->get_gun().ammo_reserve() == weapon_instance::unlimited_ammo);
+    }
+
+    SECTION("mag_size * magazines_count rounds, then the gun is dropped") {
+        auto wpn = GENERATE(as<std::string>{}, "wpn_ak9", "wpn_1887"); /* magazine and shell by shell reloads */
+        pl->setup_pistol(wpn, 2);
+        auto mag_size = pl->get_gun().get_weapon()->mag_size();
+        CHECK(pl->get_gun().ammo_elapsed() == mag_size);
+        CHECK(pl->get_gun().ammo_reserve() == mag_size);
+
+        u32 shots = 0;
+        pl->shot();
+        for (int i = 0; i < 60 * 60 && !pl->pistol_section().empty(); ++i) {
+            sim_tick(gs);
+            if (!pl->pistol_section().empty())
+                shots = pl->get_gun().get_sync_state().shot_index;
+        }
+        CHECK(pl->pistol_section().empty());
+        CHECK(shots == mag_size * 2);
+        CHECK(gs.dropped_guns.size() == 1);
+    }
 }
 
 TEST_CASE("udp channel: loopback") {
@@ -1517,6 +1556,40 @@ TEST_CASE("net: ammo and reloads are predicted and synced") {
         settle();
         CHECK(f.cli->weapon_corrections() > 0);
     }
+}
+
+TEST_CASE("net: limited ammo is synced and an emptied gun is dropped") {
+    using namespace std::chrono_literals;
+    auto wpn = GENERATE(as<std::string>{}, "wpn_ak9", "wpn_1887");
+    net_game_fixture f{100, 100};
+
+    auto gm            = f.gs_srv.cur_game_mode;
+    gm.magazines_count = 2;
+    f.gs_srv.game_mode_set(gm);
+    f.server_side().setup_pistol(wpn, gm.magazines_count);
+    f.server_side().teleport({1300.f, 1040.f});
+    f.run_for(2000ms);
+    REQUIRE(f.gs_cli.cur_game_mode.magazines_count == 2);
+    REQUIRE(f.local().pistol_section() == wpn);
+    CHECK(f.local().get_gun().ammo_reserve() == f.server_side().get_gun().ammo_reserve());
+
+    /* (the dropped gun may fly off the level later: watch for it while shooting; the client predicts its throw) */
+    size_t srv_dropped = 0;
+    bool   cli_confirmed = false;
+    f.cli->reset_correction_stats();
+    f.input = {.shot = true};
+    f.run_for(15000ms, [&] {
+        srv_dropped = std::max(srv_dropped, f.gs_srv.dropped_guns.size());
+        for (auto& g : f.gs_cli.dropped_guns.guns())
+            cli_confirmed = cli_confirmed || (g->predicted() && g->confirmed());
+    });
+    f.input = {};
+
+    CHECK(f.server_side().pistol_section().empty());
+    CHECK(f.local().pistol_section().empty());
+    CHECK(f.cli->weapon_corrections() == 0);
+    CHECK(srv_dropped == 1);
+    CHECK(cli_confirmed);
 }
 
 TEST_CASE("net: server-only knockback is reconciled on the client") {

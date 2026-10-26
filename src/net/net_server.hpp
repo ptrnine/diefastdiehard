@@ -25,7 +25,7 @@ inline sf::Color unpack_color(u32 v) {
 }
 
 inline game_mode_info to_game_mode_info(const game_mode& gm) {
-    return {gm.section, gm.bullet_gravity, gm.crate_drop_period};
+    return {gm.section, gm.bullet_gravity, gm.crate_drop_period, gm.magazines_count};
 }
 
 /**
@@ -224,6 +224,7 @@ private:
             return {};
         auto ws = gun.get_sync_state();
         return weapon_sync{u16(ws.ammo),
+                           u16(std::min<u32>(ws.reserve, weapon_sync::unlimited_reserve)),
                            ws.anim,
                            ws.anim_time,
                            ws.since_shot,
