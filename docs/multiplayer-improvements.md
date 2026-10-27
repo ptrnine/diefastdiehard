@@ -66,17 +66,34 @@ fails with 7 ms). The hit predictions no longer depend on the margin (they
 use the exact view time). Blending the hand-over over a few frames would
 let the margin drop to ~3 ms.
 
-### 4. A higher tick rate, e.g. 120 Hz (~15–20 ms, bigger change)
+### 4. A higher tick rate, 120 Hz (~15–20 ms at ≥ 120 Hz frames, bigger change) — done
 
-Everything quantized to ticks halves: input sampling, the queue wait, the
-state interval in the interpolation delay. Costs:
+`physic_simulation::tick_rate` = 120. Everything quantized to ticks halves:
+input sampling, the queue wait, the state interval in the interpolation
+delay. **Only with frames as short as the ticks:** the ticks run in the
+frame loop, so 60 Hz frames (the default vsync and `framerate_limit`) run
+two ticks back to back. Both sample the same polled input, the server
+reads and sends both at once, and the states still arrive ~17 ms apart.
+At 60 fps the gain is close to none. Running the network part of a tick
+at its real time (a sim/net thread, or sleeping within the frame) would
+lift that; not done.
 
-- about twice the physics CPU and twice the STATE traffic (~150 B per
-  state, still small);
-- the server must send a state per tick, not once per frame (a 60 Hz frame
-  would run two ticks);
-- the physics must be checked at the new timestep (jumps, knockback, gun
-  timings tuned at 60 Hz).
+- About twice the physics and AI CPU, twice the STATE datagrams, and
+  slightly bigger INPUT ones (more unacknowledged ticks in a window, the
+  window is now up to 64 ticks): ~51 B a datagram in the
+  `net: traffic in a fight` test (it checked < 40 B at 60 Hz).
+- The server already sent a state per tick (change 1).
+- Tick counts that stand for a time derive from `tick_rate`: the lag
+  compensation histories (`history_ticks`, `acked_ticks_kept`: at 120 Hz
+  the old counts were shorter than the 1 s `max_lag_compensation`), the
+  input queue (default 6 ticks, up to 16), the drain window (0.5 s: the
+  same ~17 ms of queue drained a second), the position trace, the gun
+  hit cooldown. `protocol_version` 21.
+- The weapon bobbing filter (tuned per 60 Hz tick) is scaled to the tick
+  length. The explicit Euler steps make a jump slightly higher (estimated
+  ~1.7 %, 155 → 158 px).
+- The 20 ms interpolation minimum (`net interp min`) caps the gain on the
+  interpolation delay (~14 ms computed with 120 Hz frames).
 
 ### Expected result
 
@@ -84,7 +101,7 @@ state interval in the interpolation delay. Costs:
 |---|---|
 | now | ~60 ms |
 | 1 + 2 + 3 | ~40 ms |
-| 1 + 2 + 3 + 4 | ~25–30 ms |
+| 1 + 2 + 3 + 4 | ~25–30 ms with ≥ 120 Hz frames (and a lower `net interp min`); ~40 ms at 60 fps |
 
 Suggested order: 1, then 2 (each contained and measurable with `hud net`),
 then 3; 4 last.

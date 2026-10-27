@@ -55,8 +55,9 @@ instead of sleeping. Use it for any new gameplay/network timer.
 - `src/game_state.hpp` — the central game object: players, `sim`
   (physic_simulation), `blt_mgr` (bullets), `kick_mgr`, camera, AI manager,
   config watcher. **Entirely public** — no private sections.
-- `src/physic/physic_simulation.hpp` — fixed 60 Hz sim (ticks exactly 1/60 s apart; a network
-  client slews the real period by ≤ 0.5 %, `tick_period_scale`, the timestep stays); extensible via
+- `src/physic/physic_simulation.hpp` — fixed 120 Hz sim (`physic_simulation::tick_rate`, ticks
+  exactly 1/120 s apart; a network client slews the real period by ≤ 0.5 %, `tick_period_scale`,
+  the timestep stays). Tick counts that mean a time derive from `tick_rate`; extensible via
   `add_update_callback` / `add_platform_callback` / `add_bounce_callback`.
   Default gravity is **zero**.
 - `src/player.hpp`, `src/weapon.hpp`, `src/bullet.hpp` — player, pistol,

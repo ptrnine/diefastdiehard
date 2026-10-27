@@ -796,7 +796,7 @@ public:
         leg_animation_update(timestep, _collision_box->get_position(), vel);
 
         if (!_replaying) {
-            if (_position_trace.size() > 300)
+            if (_position_trace.size() > physic_simulation::tick_rate * 5) /* 5 s */
                 _position_trace.pop_front();
             _position_trace.emplace_back(sim.current_update_time(), get_position());
         }
@@ -1161,12 +1161,22 @@ private:
         if (_collision_box->is_lock_y())
             gforce += sim.gravity();
 
-        auto  c1       = std::pow(float(sim.last_rps()) / sim.last_speed(), 1.5f) * 0.010758287f;
+        /*
+         * A low-pass filter of the g-force, tuned per 60 Hz tick (c2: the
+         * decay of a tick, gforce / c1: the input of a tick); a tick of
+         * another rate is the fraction n of a 60 Hz tick: the same decay
+         * per second and the same steady state
+         */
+        auto  c1       = std::pow(60.f / sim.last_speed(), 1.5f) * 0.010758287f;
         auto  c2       = c1 / (c1 + 1.f);
+        auto  n        = 60.f / float(sim.last_rps());
+        auto  decay    = std::pow(c2, n);
         auto  scalar_g = magnitude(sim.gravity());
         float minmax   = bobbing_minmax * scalar_g / bobbing_coef;
 
-        _bobbing_accel = clamp(_bobbing_accel * c2 + gforce / c1, vec2f::filled(-minmax), vec2f::filled(minmax));
+        _bobbing_accel = clamp(_bobbing_accel * decay + gforce * ((1.f - decay) * (c1 + 1.f) / c1),
+                               vec2f::filled(-minmax),
+                               vec2f::filled(minmax));
 
         bool bobbing_x_on = std::abs(_bobbing_accel.x) > 0.5f;
         bool bobbing_y_on = std::abs(_bobbing_accel.y) > 0.5f;

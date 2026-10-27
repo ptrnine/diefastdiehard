@@ -151,7 +151,7 @@ public:
                 pos.y += oy1 < oy2 ? -oy1 : oy2;
             _box->position(pos);
 
-            _hit_cooldown = 6; /* 0.1 s immunity while still overlapping */
+            _hit_cooldown = physic_simulation::tick_rate / 10; /* 0.1 s immunity while still overlapping */
             return true;
         }
         return false;

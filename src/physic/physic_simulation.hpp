@@ -87,6 +87,14 @@ public:
     };
 
     /*
+     * The game's tick rate: everything quantized to ticks (input sampling,
+     * the server's input queue, the state interval) is half as long as at
+     * 60 Hz. Counts of ticks that stand for a time derive from it
+     */
+    static constexpr u32   tick_rate = 120;
+    static constexpr float tick_s    = 1.f / float(tick_rate);
+
+    /*
      * Real time between ticks at rps ticks per second, exact to the
      * nanosecond: whole milliseconds made 60 rps tick at 62.5 Hz (16 ms),
      * so a 60 Hz frame ran two ticks every 25 frames (bursts of inputs and
@@ -97,7 +105,7 @@ public:
         return duration_cast<steady_clock::duration>(std::chrono::nanoseconds(1'000'000'000LL / std::max(rps, 1u)));
     }
 
-    void update(uint rps = 60, float speed = 1.f) {
+    void update(uint rps = tick_rate, float speed = 1.f) {
         auto min_timestep = period_of(rps);
         auto real_period  = real_period_of(rps);
         _last_speed = speed;
@@ -562,10 +570,10 @@ private:
     float                                   _collide_dist = 0.001f;
     vec2f                                   _gravity      = {0.f, 0.f};
     vec2f                                   _bullet_gravity = {0.f, 0.f};
-    float                                   _last_timestep        = 1.f / 60.f;
+    float                                   _last_timestep        = tick_s;
     double                                  _tick_period_scale    = 1.0;
-    float                                   _prev_timestep        = 1.f / 60.f;
-    u32                                     _last_rps             = 60;
+    float                                   _prev_timestep        = tick_s;
+    u32                                     _last_rps             = tick_rate;
     float                                   _last_speed           = 1.f;
     steady_clock::time_point                _next_update_time     = game_clock::now();
     float                                   _interpolation_factor = 0.f;

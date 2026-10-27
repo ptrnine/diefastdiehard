@@ -10,6 +10,7 @@
 #include "base/types.hpp"
 #include "base/vec2.hpp"
 #include "base/vec_math.hpp"
+#include "physic/physic_simulation.hpp"
 
 namespace dfdh::net {
 
@@ -22,7 +23,8 @@ namespace dfdh::net {
  * server time; the spread of the offsets in the window is the latency
  * jitter, which the interpolation delay has to cover, plus the longest
  * interval between the states (the next snapshot must be there: the
- * sender sends once per frame, which can run more than one tick).
+ * sender sends once per tick, but the ticks of a frame run back to back,
+ * so a frame slower than a tick sends them in bursts).
  */
 class server_clock {
 public:
@@ -31,7 +33,7 @@ public:
     static constexpr double min_interp_s       = 0.020;
     static constexpr double max_interp_s       = 0.3;
     static constexpr double interp_margin_s    = 0.005;
-    static constexpr double default_interval_s = 1.0 / 60.0; /* the state interval before it is measured (a tick) */
+    static constexpr double default_interval_s = physic_simulation::tick_s; /* the state interval before it is measured (a tick) */
     static constexpr double max_interval_s     = 0.1;   /* longer pauses (e.g. a paused game) are not a state rate */
     static constexpr double max_slew         = 0.1;  /* render clock speed deviation */
     static constexpr double snap_threshold_s = 0.5;
@@ -273,7 +275,7 @@ private:
 template <typename Input, typename State, typename Extra>
 class input_history {
 public:
-    static constexpr size_t max_size = 512;
+    static constexpr size_t max_size = physic_simulation::tick_rate * 8; /* 8 s */
 
     struct entry_t {
         u32   seq;

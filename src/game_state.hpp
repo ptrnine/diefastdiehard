@@ -912,7 +912,8 @@ public:
         std::optional<player::physic_state>   end; /* empty while the tick runs */
     };
 
-    static constexpr size_t history_ticks = 90; /* > max_lag_compensation */
+    static constexpr size_t history_ticks = physic_simulation::tick_rate * 3 / 2; /* > max_lag_compensation */
+    static_assert(float(history_ticks) * physic_simulation::tick_s > max_lag_compensation);
 
     std::map<player_name_t, std::deque<tick_record_t>> history;
 
@@ -1045,7 +1046,7 @@ public:
                 dropped_guns.set_level_size(cur_level->level_size());
 
             cur_frame_bullets.clear();
-            sim.update(60, game_speed); /* players_tick_update() on every tick */
+            sim.update(physic_simulation::tick_rate, game_speed); /* players_tick_update() on every tick */
 
             kick_mgr.update();
             adj_box_mgr.update(sim);

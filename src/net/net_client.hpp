@@ -613,7 +613,8 @@ private:
     }
 
     /* Acknowledged ticks kept in the history: more than the longest rewind (max_lag_compensation) */
-    static constexpr u32 acked_ticks_kept = 64;
+    static constexpr u32 acked_ticks_kept = physic_simulation::tick_rate * 17 / 16;
+    static_assert(acked_ticks_kept * physic_simulation::tick_s > game_state::max_lag_compensation);
 
     /**
      * Re-simulate the local player from its current state over the history
@@ -1785,7 +1786,7 @@ private:
     static constexpr float max_hit_lead_s = 0.1f;
 
     /* Input ticks the server's switch to the secondary gun may lag behind the predicted one */
-    static constexpr u32 predicted_switch_confirm_ticks = 30;
+    static constexpr u32 predicted_switch_confirm_ticks = physic_simulation::tick_rate / 2; /* 0.5 s */
 
     udp_channel     _sock;
     sf::IpAddress   _server_ip;
@@ -1826,7 +1827,7 @@ private:
     std::deque<predicted_bullet_t>                                   _predicted;
     float                                                            _max_bullet_correction = 0.f;
     float                                                            _max_gun_correction    = 0.f;
-    float                                                            _tick_dt               = 1.f / 60.f;
+    float                                                            _tick_dt               = physic_simulation::tick_s;
     std::optional<double>                                            _tick_time_offset; // server time of input tick 0, s
     u32                                                              _tick_time_ack = 0;
     std::optional<double>                                            _shown_time; // server time the remote players are shown at, s

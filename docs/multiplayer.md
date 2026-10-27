@@ -86,14 +86,14 @@ version is answered with ERROR. The current version is 20.
 |----|-----|---------|
 | 1 HELLO | C → S | `u16 version`, name, pistol section, face_id, body_id, body color, tracer color |
 | 2 WELCOME | S → C | player name |
-| 3 INPUT | C → S | `u32 last_seq`, `u32 client_time_ms`, `u16 rtt_ms`, `vector<u8> bits`: the input ticks not acknowledged yet (up to 32), where `bits[i]` belongs to tick `last_seq - size + 1 + i`; `u32 view_base`, then (if not 0) `size − 1` raw `u8` view steps: the views (see Lag) |
+| 3 INPUT | C → S | `u32 last_seq`, `u32 client_time_ms`, `u16 rtt_ms`, `vector<u8> bits`: the input ticks not acknowledged yet (up to 64), where `bits[i]` belongs to tick `last_seq - size + 1 + i`; `u32 view_base`, then (if not 0) `size − 1` raw `u8` view steps: the views (see Lag) |
 | 4 STATE | S → C | see below; encoded per client, sent once per server tick (every 100 ms while paused) |
 | 5 LEAVE | C → S | player name |
 | 6 ERROR | S → C | message (duplicate name, version mismatch, ...) |
 | 7 LOBBY | C → S | `u32 session`, `u32 seq`, `i16 group`, `u8 ready`: the client's lobby choice (see Lobby; seqs restart with a new random session) |
 
 STATE contains:
-- **Header:** `tick` (broadcast sequence number), `server_time` (time of the simulated tick, 1/10000 s: ticks are 1/60 s apart, so whole ms were up to 0.67 ms early), `ack_seq` (the last input tick applied to this client's player), `echo_client_time_ms` + `echo_hold_ms` (RTT echo of the newest input), and `input_margin` (`i16`, 1/10 ms: how long before the server needed it the tick `ack_seq` arrived, negative if the queue ran dry waiting for it; see Tick alignment).
+- **Header:** `tick` (broadcast sequence number), `server_time` (time of the simulated tick, 1/10000 s: ticks are 1/120 s apart; at 60 Hz whole ms were up to 0.67 ms early), `ack_seq` (the last input tick applied to this client's player), `echo_client_time_ms` + `echo_hold_ms` (RTT echo of the newest input), and `input_margin` (`i16`, 1/10 ms: how long before the server needed it the tick `ack_seq` arrived, negative if the queue ran dry waiting for it; see Tick alignment).
 - **`own_weapon`:** the client's own player's weapon logic state (`weapon_sync`: ammo, logic animation id and time, time since the last shot, reloading/trigger flags, shot index and seed), if it holds a gun. Only the recipient's player is reconciled, so other players' weapons are not sent.
 - **`mode`, the game mode, only when the client may not know it:** section name, bullet gravity, crate drop period (see `src/game_mode.hpp`). It is sent with the same policy as the player configs (1 s after the join or a change, every 30th broadcast); the client applies the newest one with `game_state::game_mode_set` and sets `game_mode_networked`, so its console cannot change the game mode.
 - **`lobby`, only when the client may not know it (the same policy as `mode`):** `u8 active`, level and game mode sections. While active, these are the owner's choices; in game, what is played.
@@ -131,9 +131,16 @@ the client: the old player is deleted.
 
 ## Time and ticks
 
-- `physic_simulation` runs fixed 60 Hz ticks, exactly 1/60 s apart
-  (`period_of`, nanoseconds). Each tick is stamped with its scheduled time
-  (`current_update_time`), not the catch-up time.
+- `physic_simulation` runs fixed 120 Hz ticks (`physic_simulation::tick_rate`),
+  exactly 1/120 s apart (`period_of`, nanoseconds). Each tick is stamped
+  with its scheduled time (`current_update_time`), not the catch-up time.
+  Tick counts that stand for a time (histories, buffers, windows) derive
+  from `tick_rate`.
+  - It was 60 Hz: 120 Hz halves what is quantized to ticks (input
+    sampling, the input queue, the state interval), but only when the
+    frames are as short: the ticks run in the frame loop, so 60 Hz frames
+    (the default vsync / `framerate_limit`) run two ticks back to back,
+    which sample the same input and are sent at once.
   - It used to round the period down to whole milliseconds: 16 ms, 62.5 Hz.
     Against 60 Hz frames (vsync), every 25th frame ran two ticks. The
     server then sent one state for both (a 32 ms gap) and the client sent
@@ -189,16 +196,16 @@ the client: the old player is deleted.
     time` over 2 s, restarted after 0.5 s without input; it was
     `arrival − seq·tick`, which takes the client's tick alignment for
     jitter):
-    `ceil(jitter / tick − 0.1) + 1` ticks (`adaptive_target`, 1..8). Each
+    `ceil(jitter / tick − 0.1) + 1` ticks (`adaptive_target`, 1..16). Each
     queued tick is a tick of input latency and of the client's shot
-    forwarding (`lag`). Until 1 s is measured, the target is 3;
+    forwarding (`lag`). Until 1 s is measured, the target is 6 (50 ms);
   - drains a queue that stayed deeper than the target for a whole window
-    of 60 ticks (`drain_window_ticks`): merges its oldest tick, once the
+    of 60 ticks (`drain_window_ticks`, 0.5 s): merges its oldest tick, once the
     next tick repeats it (the same held bits, no edges; a merged trigger
     pull would fire a tick later, seeded by another tick, unlike the
     client's prediction). Without it, the backlog of a client hitch (a
     stall, then the ticks at once) stayed queued for good;
-  - above `max(8, target + 4)` queued ticks, merges the oldest ticks away,
+  - above `max(16, target + 8)` queued ticks, merges the oldest ticks away,
     keeping their edges. Merged ticks are not simulated, so the client's
     prediction of them diverges and gets corrected (physics and weapon);
   - after 0.5 s without input, applies a neutral input.
@@ -230,7 +237,7 @@ the client: the old player is deleted.
 The jitter buffer counts whole ticks, and an input can arrive anywhere
 within a tick: on average it waited half a tick more than needed. The
 client slews its real tick period instead (`physic_simulation::
-tick_period_scale`, at most ±0.5 %; the simulated timestep stays 1/60 s),
+tick_period_scale`, at most ±0.5 %; the simulated timestep stays 1/120 s),
 so its inputs arrive `input_margin` (2 ms) before the server applies them
 (`net_client::align_ticks`, every frame):
 - **Measured by the server:** every STATE carries the margin of the tick
@@ -275,9 +282,11 @@ input margin with the tick rate adjustment (client). `hud net
 fps counter), every frame.
 
 The interpolation delay is the state jitter + the longest state interval
-in the window (a tick, ~17 ms; two when a server frame runs two ticks, a
-dropped frame) + the margin: ~23 ms on a steady link (it was max(jitter +
-26 ms, 33 ms), then ~28 ms with a 10 ms margin). The hit predictions do not
+in the window (a tick, ~8.3 ms, with server frames as short; 60 Hz server
+frames send two ticks at once, ~17 ms) + the margin: ~23 ms on a steady
+link with 60 Hz server frames, ~14 ms with 120 Hz ones, which the 20 ms
+minimum raises (it was max(jitter + 26 ms, 33 ms), then ~28 ms with a
+10 ms margin). The hit predictions do not
 need it (they use the exact view), nor does the hand-over of a predicted
 knockback since it starts where the server's does (see Hit prediction;
 it jumped by up to ~100 px of a hard hit before, whatever the margin, which
@@ -412,7 +421,7 @@ tick N: X px`, `weapon correction ...`).
 
 **Retroactive hits** (`game_state::apply_hit_at`):
 - A lag-compensated hit lands on the victim's state at the time the shooter
-  saw. `game_state::history` keeps 90 ticks per player: time, teleport
+  saw. `game_state::history` keeps 1.5 s of ticks per player (`history_ticks`): time, teleport
   counter, controls, impulses before and after the move (hits and recoil:
   `player::begin_tick_record` / `take_tick_impulses`) and the end state.
 - `apply_hit_at` steps:
@@ -476,7 +485,7 @@ with its player.
   flight. Its path through the ticks it already crossed is tested against
   their states at once (`predict_past_hit`), the next ticks are swept at
   every tick begin (`sweep_framed_bullets`).
-  - The history keeps 64 acknowledged ticks (`acked_ticks_kept`, more than
+  - The history keeps ~1.07 s of acknowledged ticks (`acked_ticks_kept`, more than
     the longest rewind); the acknowledged tick holds the server's state.
     A teleport drops them.
   - An acknowledged tick `k` can still be hit by a lag-compensated bullet:
@@ -693,7 +702,7 @@ across a teleport.
   hit that the server's lag compensation registered, it shows up as a
   smoothed correction about one view delay later. With fast-falling or
   moving targets, the drawn path can briefly leave the server's (≈20 px).
-- **History limits:** retroactive hits reach back at most 90 ticks, and never
+- **History limits:** retroactive hits reach back at most 1.5 s of ticks, and never
   across a teleport. Older hits apply in the present.
 - **Bots:** exist on the server only and are synced like other players.
   Levels must match by name.

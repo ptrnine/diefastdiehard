@@ -21,9 +21,16 @@
 
 using namespace dfdh;
 
+/* The game's tick (the tests step the simulation by hand) */
+constexpr u32   sim_tick_rate   = physic_simulation::tick_rate;
+constexpr float sim_tick_s      = physic_simulation::tick_s;
+static const auto sim_tick_period = physic_simulation::period_of(sim_tick_rate);
+/* Ticks per 60 Hz tick: the tests written for 60 Hz ticks count in these */
+constexpr int per60 = int(sim_tick_rate / 60);
+
 /* One simulation tick (inputs are applied by the network layer on ticks) */
 static void sim_tick(game_state& gs) {
-    gs.sim.update_immediate(1.f / 60.f, game_clock::now());
+    gs.sim.update_immediate(sim_tick_s, game_clock::now());
 }
 
 static u16 free_udp_port() {
@@ -388,7 +395,7 @@ TEST_CASE("dropped guns: unique ids and the thrower") {
     gs.game_run(true);
     pl->setup_pistol("wpn_ak9");
     REQUIRE(pl->drop_gun());
-    for (int i = 0; i < 60 && pl->pistol_section() == "wpn_ak9"; ++i)
+    for (u32 i = 0; i < sim_tick_rate && pl->pistol_section() == "wpn_ak9"; ++i)
         sim_tick(gs);
     REQUIRE(gs.dropped_guns.size() == 3);
     auto& thrown = *gs.dropped_guns.guns().back();
@@ -448,7 +455,7 @@ TEST_CASE("game mode: limited magazines, an emptied gun is dropped") {
 
         u32 shots = 0;
         pl->shot();
-        for (int i = 0; i < 60 * 60 && pl->pistol_section() == wpn; ++i) {
+        for (u32 i = 0; i < sim_tick_rate * 60 && pl->pistol_section() == wpn; ++i) {
             sim_tick(gs);
             if (pl->pistol_section() == wpn)
                 shots = pl->get_gun().get_sync_state().shot_index;
@@ -624,7 +631,7 @@ TEST_CASE("player: apply_input") {
         pl->velocity({0.f, 0.f});
 
         pl->apply_input(net::player_input_state{.jump = true});
-        gs.sim.update_immediate(1.f / 60.f, game_clock::now());
+        gs.sim.update_immediate(sim_tick_s, game_clock::now());
         CHECK(pl->get_velocity().y < -500.f);
     }
 
@@ -664,7 +671,7 @@ TEST_CASE("player: apply_input") {
         CHECK_FALSE(pl->shot()); /* no shots while throwing */
         CHECK_FALSE(pl->drop_gun()); /* already throwing */
 
-        auto ticks = int(pl->throw_duration() * 60.f);
+        auto ticks = int(pl->throw_duration() * float(sim_tick_rate));
         for (int i = 0; i < ticks - 1; ++i)
             sim_tick(gs);
         CHECK(pl->throwing());
@@ -713,8 +720,8 @@ TEST_CASE("player: physic state snapshot and isolated re-simulation") {
     auto t = game_clock::now();
     for (auto& in : inputs) {
         pl->apply_movement_input(in);
-        t += std::chrono::milliseconds(16);
-        gs.sim.update_immediate(1.f / 60.f, t);
+        t += sim_tick_period;
+        gs.sim.update_immediate(sim_tick_s, t);
     }
     auto simulated = pl->get_physic_state();
 
@@ -723,7 +730,7 @@ TEST_CASE("player: physic state snapshot and isolated re-simulation") {
     pl->replaying(true);
     for (auto& in : inputs) {
         pl->apply_movement_input(in);
-        gs.sim.step_isolated(pl->collision_box(), 1.f / 60.f, [&](float dt) { pl->physic_update(gs.sim, dt); });
+        gs.sim.step_isolated(pl->collision_box(), sim_tick_s, [&](float dt) { pl->physic_update(gs.sim, dt); });
     }
     pl->replaying(false);
     auto resimulated = pl->get_physic_state();
@@ -763,7 +770,7 @@ TEST_CASE("player: position_trace_lookup") {
     for (int i = 0; i < 3; ++i) {
         pl->position({float(i) * 100.f, 0.f});
         pl->velocity({0.f, 0.f});
-        gs.sim.update_immediate(1.f / 60.f, t0 + i * 100ms); /* records a trace sample */
+        gs.sim.update_immediate(sim_tick_s, t0 + i * 100ms); /* records a trace sample */
     }
 
     auto now = t0 + 200ms;
@@ -861,21 +868,23 @@ TEST_CASE("net_server: handshake, rename and leave") {
         auto& pl = *gs.players.at("test1");
 
         /* Fill the input jitter buffer */
+        constexpr auto n = u32(net::net_server::target_queued_inputs);
         auto L = net::in_bit_left;
         net::input in;
-        in.last_seq = 3;
-        in.bits     = {L, L, L};
+        in.last_seq = n;
+        in.bits     = std::vector<u8>(n, L);
         REQUIRE(cli.send(net::encode_msg(net::msg_type::input, in)));
 
         srv.update(gs);
         sim_tick(gs);
         CHECK(pl.is_walking());
 
-        in.last_seq = 6;
-        in.bits     = {L, L, L, 0, 0, 0};
+        /* The rest of the walk, then a stop */
+        in.last_seq = 2 * n;
+        in.bits.resize(2 * n, 0);
         REQUIRE(cli.send(net::encode_msg(net::msg_type::input, in)));
         srv.update(gs);
-        for (int i = 0; i < 3; ++i)
+        for (u32 i = 0; i < n; ++i)
             sim_tick(gs);
         CHECK_FALSE(pl.is_walking());
     }
@@ -907,9 +916,12 @@ TEST_CASE("net_server: handshake, rename and leave") {
         };
         auto S = net::in_bit_shot;
 
-        /* Ticks 1-2 shoot, tick 3 releases the trigger */
-        auto press   = window(2, {S, S});
-        auto release = window(3, {S, S, 0});
+        /* Ticks 1..n-1 shoot, tick n (a full jitter buffer) releases the trigger */
+        constexpr auto n = u32(net::net_server::target_queued_inputs);
+        auto shots   = std::vector<u8>(n - 1, S);
+        auto press   = window(n - 1, shots);
+        shots.push_back(0);
+        auto release = window(n, shots);
 
         /* The release window arrives first, the stale press window arrives late */
         REQUIRE(cli.send(release));
@@ -917,10 +929,10 @@ TEST_CASE("net_server: handshake, rename and leave") {
         REQUIRE(cli.send(press));
         srv.update(gs);
 
-        sim_tick(gs);
-        CHECK(pl.shotting());
-        sim_tick(gs);
-        CHECK(pl.shotting());
+        for (u32 i = 0; i < n - 1; ++i) {
+            sim_tick(gs);
+            CHECK(pl.shotting());
+        }
         sim_tick(gs);
         CHECK_FALSE(pl.shotting());
 
@@ -940,17 +952,17 @@ TEST_CASE("net_server: handshake, rename and leave") {
         auto& pl = *gs.players.at("test1");
 
         auto R = net::in_bit_right;
-        REQUIRE(cli.send(net::encode_msg(net::msg_type::input,
-                                         net::input{.last_seq = 3, .bits = {u8(R | net::in_bit_jump), R, R}})));
+        constexpr auto n = u32(net::net_server::target_queued_inputs);
+        auto bits = std::vector<u8>(n, R);
+        bits[0] |= net::in_bit_jump;
+        REQUIRE(cli.send(net::encode_msg(net::msg_type::input, net::input{.last_seq = n, .bits = bits})));
         srv.update(gs);
         sim_tick(gs);
         CHECK(pl.is_walking());
 
         /* Not enough queued after running dry (jitter buffer): the held movement repeats */
-        sim_tick(gs);
-        sim_tick(gs);
-
-        sim_tick(gs);
+        for (u32 i = 0; i < n; ++i)
+            sim_tick(gs);
         CHECK(pl.is_walking());
 
         game_clock::advance(net::net_server::input_timeout + std::chrono::milliseconds(50));
@@ -1013,8 +1025,11 @@ TEST_CASE("net_server: handshake, rename and leave") {
         run_ticks(10);
         CHECK(stats().target == net::net_server::target_queued_inputs);
 
-        /* A steady client (no jitter): one tick, no wait (the ticks queued by the default buffer drain) */
-        run_ticks(int(4 * net::net_server::drain_window_ticks));
+        /*
+         * A steady client (no jitter): one tick, no wait (the ticks queued by
+         * the default buffer drain, one per window)
+         */
+        run_ticks(int((net::net_server::target_queued_inputs + 1) * net::net_server::drain_window_ticks));
         CHECK(stats().target == 1);
         CHECK(stats().wait_s < 0.001f);
 
@@ -1059,9 +1074,10 @@ TEST_CASE("net_server: handshake, rename and leave") {
         game_clock::advance(gs.sim.tick_period());
         auto next_s = *server_s + std::chrono::duration<double>(gs.sim.tick_period()).count();
 
-        /* It showed the server 70 ms before the tick; its RTT estimate (300 ms) does not matter */
-        net::input in{.last_seq = 3, .rtt_ms = 300, .bits = {0, 0, 0}};
-        in.set_views({next_s - 0.07, next_s - 0.07, next_s - 0.07});
+        /* It showed the server 70 ms before the tick (a full jitter buffer); its RTT estimate (300 ms) does not matter */
+        constexpr auto n = u32(net::net_server::target_queued_inputs);
+        net::input in{.last_seq = n, .rtt_ms = 300, .bits = std::vector<u8>(n, 0)};
+        in.set_views(std::vector<double>(n, next_s - 0.07));
         REQUIRE(cli.send(net::encode_msg(net::msg_type::input, in)));
         srv.update(gs);
         sim_tick(gs);
@@ -1395,7 +1411,7 @@ TEST_CASE("net_sync: server clock and snapshot interpolation") {
             bool  lock_y;
         };
         using kb_t        = knockback_offset<int, st_t>;
-        constexpr float dt = 1.f / 60.f;
+        constexpr float dt = sim_tick_s;
         auto stepper = [](st_t& st, float ts) {
             st.pos += st.vel * ts;
             st.lock_y = st.lock_y && st.pos.x < 100.f;
@@ -1477,7 +1493,7 @@ TEST_CASE("net_sync: server clock and snapshot interpolation") {
     SECTION("input history") {
         input_history<int, int, int> h;
         for (u32 seq = 1; seq <= 10; ++seq)
-            h.push({seq, int(seq), 0, 1.f / 60.f});
+            h.push({seq, int(seq), 0, sim_tick_s});
         REQUIRE(h.find(5));
         CHECK(h.find(5)->input == 5);
         CHECK_FALSE(h.find(11));
@@ -1591,8 +1607,8 @@ TEST_CASE("net: client-side prediction under ~500ms ping") {
         prev_visual = visual;
     });
 
-    /* A 5ms frame can contain at most a couple of 60Hz ticks of movement at max speed */
-    CHECK(max_step < 2.f * f.local().get_max_speed() / 60.f + 1.f);
+    /* A 5ms frame can contain at most a couple of ticks of movement at max speed */
+    CHECK(max_step < 2.f * f.local().get_max_speed() * sim_tick_s + 1.f);
     /*
      * Mispredictions are rare and small: a few ticks of movement when the
      * server input queue ran dry or merged ticks after a burst. They are
@@ -1741,7 +1757,7 @@ TEST_CASE("net: ammo and reloads are predicted and synced") {
     settle();
 
     SECTION("a diverged weapon is corrected") {
-        cli_gun.ammo_elapsed(1);
+        cli_gun.ammo_elapsed(cli_gun.ammo_elapsed() == 1 ? 2 : 1);
         f.input.shot = true;
         f.run_for(300ms);
         f.input = {};
@@ -1820,7 +1836,7 @@ TEST_CASE("physic_simulation: a bullet hits a player whose side crosses x = 0") 
     auto& blt = gs.blt_mgr.shot(gs.sim, {shift + 10.f, 300.f - size.y * 0.5f}, 1.f, {-1500.f, 0.f}, sf::Color::White, false);
     auto  ph  = blt.physic();
 
-    gs.sim.update_immediate(1.f / 60.f, game_clock::now());
+    gs.sim.update_immediate(sim_tick_s, game_clock::now());
     CHECK(ph->ready_delete_later());
     CHECK(target->get_velocity().x < -600.f - 100.f); /* pushed on by the bullet */
 }
@@ -1837,13 +1853,13 @@ TEST_CASE("game_state: lag-compensated bullets") {
     shooter->position({0.f, 100.f});
     shooter->velocity({0.f, 0.f});
 
-    /* The target moves down along x = 500 at 600 px/s; 30 ticks of position trace */
+    /* The target moves down along x = 500 at 600 px/s; 0.5 s of position trace */
     auto t = game_clock::now();
-    for (int i = 0; i < 30; ++i) {
-        target->position({500.f, float(i) * 10.f});
+    for (int i = 0; i < 30 * per60; ++i) {
+        target->position({500.f, float(i) * 10.f / float(per60)});
         target->velocity({0.f, 0.f});
-        t += std::chrono::microseconds(16667);
-        gs.sim.update_immediate(1.f / 60.f, t);
+        t += sim_tick_period;
+        gs.sim.update_immediate(sim_tick_s, t);
     }
     /* Now at y ~= 290, 0.25 s ago at y ~= 140 (box spans y - 90 .. y) */
     auto now_y = target->get_position().y;
@@ -1950,9 +1966,9 @@ TEST_CASE("bullets never hit their owner nor the owner's group") {
 
     auto t = game_clock::now();
     auto run = [&] {
-        for (int i = 0; i < 30; ++i) {
-            t += std::chrono::microseconds(16667);
-            gs.sim.update_immediate(1.f / 60.f, t);
+        for (int i = 0; i < 30 * per60; ++i) {
+            t += sim_tick_period;
+            gs.sim.update_immediate(sim_tick_s, t);
         }
     };
 
@@ -1973,8 +1989,8 @@ TEST_CASE("bullets never hit their owner nor the owner's group") {
 
 TEST_CASE("game_state: retroactive hits rewrite the victim's history") {
     /*
-     * Two identical worlds: in one the victim is hit live at tick 30, in the
-     * other the same hit arrives at tick 45 for time of tick 30 (lag
+     * Two identical worlds: in one the victim is hit live at 0.5 s, in the
+     * other the same hit arrives at 0.75 s for the time of 0.5 s (lag
      * compensated). Both must end in the same state
      */
     struct world {
@@ -1992,12 +2008,12 @@ TEST_CASE("game_state: retroactive hits rewrite the victim's history") {
 
         void tick(int i) {
             /* The victim runs right, then jumps: its controls must be replayed */
-            if (i == 10)
+            if (i == 10 * per60)
                 victim->move_right();
-            if (i == 40)
+            if (i == 40 * per60)
                 victim->jump();
-            t += std::chrono::microseconds(16667);
-            gs.sim.update_immediate(1.f / 60.f, t);
+            t += sim_tick_period;
+            gs.sim.update_immediate(sim_tick_s, t);
         }
     };
 
@@ -2005,19 +2021,19 @@ TEST_CASE("game_state: retroactive hits rewrite the victim's history") {
     world live{t0}, retro{t0};
     game_clock::time_point hit_time;
 
-    for (int i = 0; i < 70; ++i) {
+    for (int i = 0; i < 70 * per60; ++i) {
         live.tick(i);
         retro.tick(i);
-        if (i == 30) {
+        if (i == 30 * per60) {
             hit_time = live.t;
             live.victim->on_bullet_hit({-900.f, -400.f}, live.victim->get_position());
         }
-        if (i == 45) {
+        if (i == 45 * per60) {
             /* Drawn smoothly from where it was: the rewritten present is a jump of the knockback so far */
-            auto drawn = retro.victim->drawn_position(0.f, 1.f / 60.f);
+            auto drawn = retro.victim->drawn_position(0.f, sim_tick_s);
             retro.gs.apply_hit_at(*retro.victim, {-900.f, -400.f}, retro.victim->get_position(), {}, hit_time);
             CHECK(magnitude(retro.victim->get_position() - drawn) > 50.f);
-            CHECK(magnitude(retro.victim->drawn_position(0.f, 1.f / 60.f) - drawn) < 0.01f);
+            CHECK(magnitude(retro.victim->drawn_position(0.f, sim_tick_s) - drawn) < 0.01f);
         }
     }
 
@@ -2055,21 +2071,24 @@ TEST_CASE("game_state: lag-compensated bullets hit rewound players for their who
 
     auto t    = game_clock::now();
     auto tick = [&] {
-        t += std::chrono::microseconds(16667);
-        gs.sim.update_immediate(1.f / 60.f, t);
+        t += sim_tick_period;
+        gs.sim.update_immediate(sim_tick_s, t);
     };
-    for (int i = 0; i < 40; ++i)
+    for (int i = 0; i < 40 * per60; ++i)
         tick();
 
-    /* Bullet arrives in ~14 ticks: the target as seen 0.3 s (18 ticks) earlier is ~4 ticks back in its fall */
-    auto fall_y = [](int n) { return float(n * (n - 1)) / 6.f; }; /* y after n ticks of 1200 px/s^2 */
-    auto aim_y  = fall_y(40 + 14 - 18) - 45.f;                     /* middle of its body */
+    /*
+     * Bullet arrives in ~0.23 s (14 60 Hz ticks): the target as seen 0.3 s
+     * (18 60 Hz ticks) earlier is ~4 60 Hz ticks back in its fall
+     */
+    auto fall_y = [](int n) { return 1200.f * sim_tick_s * sim_tick_s * float(n * (n - 1)) / 2.f; }; /* y after n ticks */
+    auto aim_y  = fall_y((40 + 14 - 18) * per60) - 45.f; /* middle of its body */
     REQUIRE(target->get_position().y > aim_y + 90.f);              /* the present target is already below */
 
     SECTION("lag compensated: hits where the shooter saw the target") {
         shooter->lag_compensation({0.1f, 0.3f});
         gs.spawn_bullet(*shooter, {0.f, aim_y}, {1800.f, 0.f}, 1.f, false);
-        for (int i = 0; i < 30; ++i)
+        for (int i = 0; i < 30 * per60; ++i)
             tick();
         CHECK(target->pop_on_hit_event());
         CHECK(target->get_velocity().x > 0.f);
@@ -2077,7 +2096,7 @@ TEST_CASE("game_state: lag-compensated bullets hit rewound players for their who
 
     SECTION("not compensated: misses the present target") {
         gs.spawn_bullet(*shooter, {0.f, aim_y}, {1800.f, 0.f}, 1.f, false);
-        for (int i = 0; i < 30; ++i)
+        for (int i = 0; i < 30 * per60; ++i)
             tick();
         CHECK_FALSE(target->pop_on_hit_event());
     }
@@ -2125,7 +2144,7 @@ TEST_CASE("net: clients see server bullets in the local player's frame") {
 
     auto srv_x = srv_blt->physic()->get_position().x;
     auto speed = srv_blt->physic()->scalar_velocity();
-    CHECK(std::abs(cli_x - srv_x) < speed * 0.035f); /* ~2 ticks */
+    CHECK(std::abs(cli_x - srv_x) < speed * 0.035f); /* ~4 ticks */
 }
 
 TEST_CASE("net: own bullets are predicted and confirmed by the server") {
@@ -2252,8 +2271,8 @@ TEST_CASE("player: teleport") {
 
     auto t = game_clock::now();
     for (int i = 0; i < 10; ++i) {
-        t += std::chrono::milliseconds(16);
-        gs.sim.update_immediate(1.f / 60.f, t);
+        t += sim_tick_period;
+        gs.sim.update_immediate(sim_tick_s, t);
     }
     REQUIRE(pl->position_trace_lookup(gs.sim.current_update_time(), 0.05f));
 
@@ -2340,7 +2359,7 @@ TEST_CASE("net: the input buffer of a steady client is short") {
     net_game_fixture f{25, 25};
     f.run_for(3000ms);
 
-    /* Frames of 5 ms: the inputs arrive up to a frame late, a tick of buffer covers it (the default was 3) */
+    /* Frames of 5 ms: the inputs arrive up to a frame late, a tick of buffer covers it (the default was 6) */
     auto st = f.srv.input_stats();
     REQUIRE(st.size() == 1);
     CHECK(st.front().target <= 2);
@@ -2358,8 +2377,8 @@ TEST_CASE("physic_simulation: the tick period scale slows the real ticks, not th
         game_clock::advance(std::chrono::milliseconds(5));
         sim.update();
     }
-    CHECK(sim.tick() - t0 == 59); /* 60 / 1.01 in a second */
-    CHECK(sim.last_timestep() == Catch::Approx(1.f / 60.f));
+    CHECK(sim.tick() - t0 == u32(sim_tick_rate / 1.01)); /* 120 / 1.01 in a second */
+    CHECK(sim.last_timestep() == Catch::Approx(sim_tick_s));
 }
 
 TEST_CASE("net: the client aligns its ticks, its inputs arrive just before the server needs them") {
@@ -2368,7 +2387,7 @@ TEST_CASE("net: the client aligns its ticks, its inputs arrive just before the s
     CAPTURE(latency.first, latency.second);
     net_game_fixture f{latency.first, latency.second};
 
-    /* The default buffer (3 ticks) queues the first inputs ~2 ticks early: the client slows its ticks down */
+    /* The default buffer (50 ms) queues the first inputs ~40 ms early: the client slows its ticks down */
     f.run_for(6000ms);
     auto margin = f.cli->input_margin_estimate();
     REQUIRE(margin);
@@ -2379,7 +2398,7 @@ TEST_CASE("net: the client aligns its ticks, its inputs arrive just before the s
     auto st = f.srv.input_stats();
     REQUIRE(st.size() == 1);
     REQUIRE(st.front().margin_s);
-    CHECK(*st.front().margin_s < 0.012f); /* it was ~2 ticks */
+    CHECK(*st.front().margin_s < 0.012f); /* it was ~5 ticks */
 
     /* Aligned: it stays so, the server never runs dry (a misprediction) */
     f.cli->reset_correction_stats();
@@ -2717,12 +2736,18 @@ TEST_CASE("net: own bullet hits on a falling remote player are predicted as the 
      * Bursts at the bot dropped from above across the stream. It is dropped
      * before the burst and the bullets are gone before the next drop (a
      * teleport clears the server's position trace: a bullet rewound across
-     * it is not predictable)
+     * it is not predictable). One that missed or caught up with the
+     * knocked back bot late is removed
      */
     std::set<u32> server_hits;
     auto collect = [&] {
         for (auto id : f.bot->recent_hit_ids())
             server_hits.insert(id);
+    };
+    auto clear_bullets = [&] {
+        for (auto* gs : {&f.gs_srv, &f.gs_cli})
+            for (auto& blt : gs->blt_mgr.bullets())
+                blt.physic()->delete_later();
     };
     for (int i = 0; i < 8; ++i) {
         f.bot->teleport({1100.f, drop_y});
@@ -2730,6 +2755,7 @@ TEST_CASE("net: own bullet hits on a falling remote player are predicted as the 
         f.run_for(500ms, collect);
         f.input = {};
         f.run_for(700ms, collect);
+        clear_bullets();
     }
     REQUIRE(server_hits.size() > 3);
 
@@ -2854,7 +2880,7 @@ TEST_CASE("net: remote knockback under sustained fire stays on the server's path
 
     auto weapon   = GENERATE(as<std::string>{}, "wpn_ak9", "wpn_sw500", "wpn_ss50");
     auto moving   = GENERATE(false, true);
-    auto frame_ms = GENERATE(4, 10, 16); /* frames shorter and as long as a tick */
+    auto frame_ms = GENERATE(4, 8, 10, 16); /* frames shorter than, as long as and longer than a tick (16: two) */
     CAPTURE(weapon, moving, frame_ms);
 
     f.server_side().setup_pistol(weapon);
@@ -2943,9 +2969,9 @@ TEST_CASE("net: traffic in a fight") {
     CHECK(states <= ticks);
     CHECK(states >= ticks * 9 / 10);
     CHECK(state_avg < 200.0);
-    /* Inputs carry the unacknowledged ticks only (~100 ms ping: a handful) */
+    /* Inputs carry the unacknowledged ticks only (~50 ms RTT + the queue: about a dozen ticks, 2 bytes each) */
     CHECK(inputs <= ticks);
-    CHECK(input_avg < 40.0);
+    CHECK(input_avg < 60.0);
 }
 
 TEST_CASE("net: a hard hit on a remote player flies smoothly") {
@@ -3350,8 +3376,8 @@ TEST_CASE("game_state: score of kills and suicides") {
     REQUIRE((a && b && c));
 
     auto tick = [&] {
-        game_clock::advance(std::chrono::microseconds(16667));
-        gs.sim.update_immediate(1.f / 60.f, game_clock::now());
+        game_clock::advance(sim_tick_period);
+        gs.sim.update_immediate(sim_tick_s, game_clock::now());
     };
     auto hit_by = [](player* victim, player* attacker, const vec2f& impulse) {
         victim->on_bullet_hit(impulse, victim->get_position(), bullet_ref{1, {}, attacker->name()});
@@ -3389,7 +3415,7 @@ TEST_CASE("game_state: score of kills and suicides") {
 
     SECTION("the attacker is forgotten on the ground after the hit cooldown") {
         b->teleport({1200.f, 1040.f});
-        for (int i = 0; i < 60 && !b->collision_box()->is_lock_y(); ++i)
+        for (u32 i = 0; i < sim_tick_rate && !b->collision_box()->is_lock_y(); ++i)
             tick();
         REQUIRE(b->collision_box()->is_lock_y());
 
@@ -3401,7 +3427,7 @@ TEST_CASE("game_state: score of kills and suicides") {
         REQUIRE(b->collision_box()->is_lock_y());
         CHECK(b->attacker() == a->name());
 
-        auto ticks = int(cooldown * 60.f) + 2;
+        auto ticks = int(cooldown * float(sim_tick_rate)) + 2;
         for (int i = 0; i < ticks; ++i)
             tick();
         REQUIRE(b->collision_box()->is_lock_y());
@@ -3444,7 +3470,7 @@ TEST_CASE("game_state: lives score system") {
         CHECK(a->eliminated());
 
         /* Parked, never respawned nor dead again */
-        for (int i = 0; i < 120; ++i)
+        for (u32 i = 0; i < 2 * sim_tick_rate; ++i)
             sim_tick(gs);
         CHECK(a->eliminated());
         CHECK(a->score() == 0);

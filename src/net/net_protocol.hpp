@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 20;
+inline constexpr u16 protocol_version = 21;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -135,12 +135,12 @@ struct welcome {
 
 /**
  * Client input: a window of the per-tick input states the server did not
- * acknowledge yet, up to the last 32 (redundant, so a lost or reordered
+ * acknowledge yet, up to the last 64 (~0.53 s of 120 Hz ticks; redundant, so a lost or reordered
  * datagram costs nothing: every datagram repeats them until they are
  * acknowledged). bits[i] is the input of tick seq first_seq() + i
  */
 struct input {
-    static constexpr size_t max_window = 32;
+    static constexpr size_t max_window = 64;
 
     /* View times: server time in 1/view_scale s */
     static constexpr double view_scale = 4000.0;
@@ -152,7 +152,7 @@ struct input {
     /*
      * The server time the client was showing (its render time) at each tick
      * of bits: the newest one (view_base, 0: unknown, nothing shown yet),
-     * and view_steps[i] from tick i to i + 1 (a tick ~16.7 ms, the ticks of
+     * and view_steps[i] from tick i to i + 1 (a tick ~8.3 ms, the ticks of
      * one frame 0; sent without a length: bits.size() - 1 of them). The
      * server tests the client's shots against the players at that time
      */
@@ -514,7 +514,7 @@ struct lobby_request {
 };
 
 struct state {
-    /* server_time units: 1/10000 s (ticks are 1/60 s apart: whole ms were up to 0.67 ms early) */
+    /* server_time units: 1/10000 s (ticks are 1/120 s apart: whole ms were up to 0.67 ms early at 60 Hz) */
     static constexpr double server_time_scale = 10000.0;
 
     u32 tick        = 0; // broadcast sequence number

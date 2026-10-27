@@ -47,11 +47,12 @@ public:
      * measured arrival jitter (adaptive_target), this is the target until
      * there are input_jitter_warmup_s of measurements
      */
-    static constexpr size_t target_queued_inputs  = 3;
-    static constexpr size_t max_target_inputs     = 8;
+    static constexpr size_t target_queued_inputs  = physic_simulation::tick_rate / 20;     /* 50 ms */
+    static constexpr size_t max_target_inputs     = physic_simulation::tick_rate * 2 / 15; /* ~133 ms */
     static constexpr double input_jitter_warmup_s = 1.0;
-    /* Queued input ticks above max(this, target + 4) are merged to bound the input latency */
-    static constexpr size_t max_queued_inputs = 8;
+    /* Queued input ticks above max(this, target + excess) are merged to bound the input latency */
+    static constexpr size_t max_queued_inputs    = max_target_inputs;
+    static constexpr size_t max_queued_excess    = physic_simulation::tick_rate / 15; /* ~67 ms */
     /*
      * A queue deeper than the target for this many ticks (a burst after a
      * client hitch, a target that dropped) merges its oldest tick: once per
@@ -60,7 +61,7 @@ public:
      * pull would fire the shot a tick later, seeded by another input tick,
      * so it would not match the client's predicted bullets
      */
-    static constexpr u32 drain_window_ticks = 60;
+    static constexpr u32 drain_window_ticks = physic_simulation::tick_rate / 2; /* 0.5 s: drains ~17 ms of queue a second */
 
     /**
      * Ticks to buffer for an input arrival jitter of jitter_s: a tick is
@@ -80,7 +81,7 @@ public:
      * config_refresh broadcasts (lost datagrams cost nothing)
      */
     static constexpr auto config_resend  = std::chrono::seconds(1);
-    static constexpr u32  config_refresh = 30;
+    static constexpr u32  config_refresh = physic_simulation::tick_rate / 2; /* 0.5 s of ticks */
     /* A state is broadcast once per simulation tick, or this often without ticks (paused game) */
     static constexpr auto idle_broadcast = std::chrono::milliseconds(100);
 
@@ -522,7 +523,7 @@ private:
             };
 
             /* Too many queued ticks (client clock runs faster, burst after a stall): merge the oldest */
-            while (q.size() > std::max(max_queued_inputs, client.target_inputs + 4))
+            while (q.size() > std::max(max_queued_inputs, client.target_inputs + max_queued_excess))
                 merge_oldest();
 
             if (q.empty())
@@ -844,7 +845,7 @@ private:
     std::map<std::string, client_t> _clients;
     std::vector<received_datagram>  _deferred; // read at a tick begin, handled by the frame (not inputs)
     std::optional<size_t>        _input_buffer; // fixed input jitter buffer target (ticks), adaptive if empty
-    double                       _tick_s = 1.0 / 60.0;
+    double                       _tick_s = physic_simulation::tick_s;
 
     u64                                     _last_broadcast_tick = 0;
     clock::time_point                       _last_broadcast_time;
