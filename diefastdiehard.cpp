@@ -15,6 +15,8 @@
 #include "net/net_client.hpp"
 #include "net_player_controller.hpp"
 
+#include <format>
+
 #include <SFML/Network/IpAddress.hpp>
 #include <SFML/Graphics/RectangleShape.hpp>
 
@@ -63,27 +65,70 @@ public:
         glog().info("fps: {}", cmd_opt<bool>(is_fps_counter_enabled()));
     }
 
+    /* The network state: the input buffers (server), the RTT and the interpolation delay (client) */
+    [[nodiscard]]
+    std::vector<std::string> net_info_lines() const {
+        std::vector<std::string> lines;
+        if (net_srv) {
+            auto fixed = net_srv->input_buffer();
+            lines.push_back("net input buffer: " + (fixed ? std::to_string(*fixed) + " ticks" : std::string("auto")));
+            for (auto& st : net_srv->input_stats())
+                lines.push_back(std::format("  {}: {} ticks, jitter {:.1f} ms, wait {:.1f} ms", std::string(st.player),
+                                            st.target, st.jitter_s * 1000.0, st.wait_s * 1000.f));
+        }
+        if (net_cli) {
+            auto& clk = net_cli->clock_estimate();
+            lines.push_back(std::format("net rtt: {:.1f} ms", net_cli->rtt() * 1000.f));
+            lines.push_back(std::format("net interp: {:.1f} ms", clk.interp_delay() * 1000.0));
+            lines.push_back(std::format("  jitter {:.1f} + state interval {:.1f} + margin {:.1f} ms, min {:.1f} ms",
+                                        clk.jitter() * 1000.0, clk.max_interval() * 1000.0, clk.interp_margin() * 1000.0,
+                                        clk.interp_min() * 1000.0));
+        }
+        if (!net_srv && !net_cli)
+            lines.emplace_back("net: not in a multiplayer game");
+        return lines;
+    }
+
     void cmd_net(const std::optional<std::string>& value) {
         if (value && *value == "help") {
             gc.cmd_help("net");
             return;
         }
-        if (net_srv) {
-            auto fixed = net_srv->input_buffer();
-            glog().info("net input buffer: {}", fixed ? std::to_string(*fixed) + " ticks" : std::string("auto"));
-            for (auto& st : net_srv->input_stats())
-                glog().info("  {}: {} ticks, jitter {:.1f} ms, wait {:.1f} ms", st.player, st.target, st.jitter_s * 1000.0,
-                            st.wait_s * 1000.f);
+        for (auto& line : net_info_lines())
+            glog().info("{}", line);
+    }
+
+    void cmd_hud(const std::optional<std::string>&) {
+        gc.cmd_help("hud");
+    }
+
+    void cmd_hud_net(cmd_opt<bool> opt) {
+        net_hud = opt ? opt.test() : !net_hud;
+        glog().info("hud net: {}", cmd_opt<bool>(net_hud));
+    }
+
+    /* The network state (like the net command) at the top left corner, under the fps counter */
+    void net_hud_draw() {
+        auto lines = net_info_lines();
+        if (lines.empty())
+            return;
+
+        /* The rows with nuklear's default spacing between them and padding around */
+        constexpr float row_height = 20.f; /* like the fps counter */
+        auto            top        = is_fps_counter_enabled() ? 36.f : 4.f;
+        auto            bounds     = nk_rect(4.f, top, 560.f, (row_height + 4.f) * float(lines.size()) + 16.f);
+
+        auto style = &ui.nk_ctx()->style;
+        ui.style_push_style_item(&style->window.fixed_background, nk_style_item_color(nk_rgba(0, 0, 0, 0)));
+        /* Nuklear takes the bounds of a new window only: keep it in place (fps counter toggled, more clients) */
+        ui.window_set_bounds("net_hud", bounds);
+        if (ui.begin("net_hud", bounds, NK_WINDOW_NO_INPUT | NK_WINDOW_NO_SCROLLBAR)) {
+            ui.layout_row_dynamic(row_height, 1);
+            for (auto& line : lines)
+                ui.label_colored(line.data(), NK_TEXT_LEFT, sf::Color(255, 255, 0));
         }
-        if (net_cli) {
-            auto& clk = net_cli->clock_estimate();
-            glog().info("net interp: {:.1f} ms (jitter {:.1f} ms + state interval {:.1f} ms + margin {:.1f} ms, min {:.1f} "
-                        "ms), rtt {:.1f} ms",
-                        clk.interp_delay() * 1000.0, clk.jitter() * 1000.0, clk.max_interval() * 1000.0,
-                        clk.interp_margin() * 1000.0, clk.interp_min() * 1000.0, net_cli->rtt() * 1000.f);
-        }
-        if (!net_srv && !net_cli)
-            glog().info("net: not in a multiplayer game");
+        ui.end();
+        ui.style_pop_style_item();
     }
 
     void cmd_net_buffer(const std::string& value) {
@@ -127,6 +172,8 @@ public:
 
     void init_commands() {
         command_buffer().add_handler("net", &diefastdiehard::cmd_net, this);
+        command_buffer().add_handler("hud", &diefastdiehard::cmd_hud, this);
+        command_buffer().add_handler("hud net", &diefastdiehard::cmd_hud_net, this);
         command_buffer().add_handler("net buffer", &diefastdiehard::cmd_net_buffer, this);
         command_buffer().add_handler("net interp", &diefastdiehard::cmd_net_interp, this);
         command_buffer().add_handler("fps", &diefastdiehard::cmd_fps, this);
@@ -202,6 +249,8 @@ public:
 
     void ui_update() final {
         engine::ui_update();
+        if (net_hud)
+            net_hud_draw();
         gs.ui_update(ui, window_size_float());
         /* The player configurator is drawn instead of the lobby while it is open */
         if (lobby_wnd && gs.lobby.active && !(gs.pconf_ui && gs.pconf_ui->shown()))
@@ -344,6 +393,7 @@ private:
     std::shared_ptr<net_player_controller>  net_ctrl;
     player_name_t                            my_player_name;
     std::optional<lobby_ui>                  lobby_wnd;
+    bool                                     net_hud = false; /* hud net: the network state on the screen */
 
     /* Open the player configurator of a local player, on_close: the config was written */
     void customize_player(const player_name_t& name, std::function<void()> on_close) {

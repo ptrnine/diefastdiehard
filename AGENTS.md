@@ -97,7 +97,7 @@ instead of sleeping. Use it for any new gameplay/network timer.
   server players are `player::server_driven()`. Simulated latency:
   `udp_channel::set_simulated_latency` / `--define=DFDH_DEBUG_PING`.
   Latency settings (input jitter buffer, interpolation delay): console
-  `net`, see `docs/multiplayer.md`.
+  `net` (on the screen: `hud net`), see `docs/multiplayer.md`.
 - `src/script/` — LuaJIT via luacpp; user types in `src/script/typeinit/`.
   Scripts in `data/scripts/*.lua`; `assist.lua`/`assist_ai.lua` are
   **generated at runtime** — never edit or commit them.

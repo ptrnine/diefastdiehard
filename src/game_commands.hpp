@@ -103,6 +103,11 @@ public:
                    "  lobby       - stop the game and open the lobby (server)\n"
                    "  lobby start - start the game with the lobby's map and game mode";
         }
+        else if (cmd == "hud") {
+            help = "on-screen information\n"
+                   "available commands:\n"
+                   "  hud net [on/off]?  - the network state (like the net command) at the top left corner";
+        }
         else if (cmd == "net") {
             help = "multiplayer latency settings\n"
                    "available commands:\n"

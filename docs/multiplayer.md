@@ -208,7 +208,9 @@ the client: the old player is deleted.
 | interpolation minimum | client | 20 ms | `--interp-min=MS` | `net interp min MS` |
 
 `net` shows each client's buffer target, input jitter and queue wait (server)
-and the interpolation delay with its parts (client).
+and the RTT and the interpolation delay with its parts (client). `hud net
+[on/off]` shows the same on the screen, at the top left corner (under the
+fps counter), every frame.
 
 The interpolation delay is the state jitter + the longest state interval
 in the window (16 ms, 32 ms when a server frame runs two ticks) + the
