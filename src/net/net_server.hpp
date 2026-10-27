@@ -99,13 +99,21 @@ public:
         };
         std::map<u32, queued_input> inputs;
         float                       input_wait_s = 0.f; // time the last applied input tick waited in the queue
+        /*
+         * Input margin (sent in STATE, the client aligns its ticks with it):
+         * how long before the tick that applied it the input tick ack_seq
+         * arrived; negative if the queue ran dry waiting for it
+         */
+        std::optional<float>             input_margin_s;
+        std::optional<clock::time_point> starved_since; // the first dry tick waiting for the next seq
+        std::optional<float>             late_s;        // how long after that the next seq arrived
         u32                next_seq      = 0; // first seq not applied yet, 0 = none received yet
         u32                ack_seq       = 0; // last applied seq
         u8                 held_bits     = 0; // held part of the last applied input
         u8                 pending_edges = 0; // edges of inputs merged away, applied with the next one
         bool               buffering     = true; // refilling the jitter buffer
         clock::time_point  last_input_time;
-        server_clock       input_jitter;               // input arrivals: offset = arrival - seq * tick
+        server_clock       input_jitter;               // input arrivals: offset = arrival - client send time
         size_t             target_inputs = target_queued_inputs;
         size_t             min_depth     = std::numeric_limits<size_t>::max(); // queue depth in the drain window
         u32                depth_ticks   = 0;
@@ -176,6 +184,7 @@ public:
         size_t        target;   /* ticks */
         double        jitter_s; /* input arrival jitter */
         float         wait_s;   /* the last applied input tick's wait in the queue */
+        std::optional<float> margin_s; /* how early it arrived (client_t::input_margin_s) */
     };
 
     [[nodiscard]]
@@ -183,7 +192,7 @@ public:
         std::vector<input_stats_t> res;
         for (auto& [_, c] : _clients)
             if (c.joined)
-                res.push_back({c.player_name, c.target_inputs, c.input_jitter.jitter(), c.input_wait_s});
+                res.push_back({c.player_name, c.target_inputs, c.input_jitter.jitter(), c.input_wait_s, c.input_margin_s});
         return res;
     }
 
@@ -246,7 +255,7 @@ private:
                 continue;
             }
             if (msg.type == msg_type::input)
-                handle_input(datagram.address, msg);
+                handle_input(datagram.address, datagram.arrival, msg);
             else
                 _deferred.push_back(std::move(datagram));
         }
@@ -451,6 +460,8 @@ private:
                 continue;
 
             st.ack_seq             = client.ack_seq;
+            st.input_margin        = client.input_margin_s ? state::pack_input_margin(*client.input_margin_s)
+                                                           : state::no_input_margin;
             st.echo_client_time_ms = client.echo_client_time_ms;
             st.echo_hold_ms        = u16(std::chrono::duration_cast<std::chrono::milliseconds>(
                                       clock::now() - client.echo_recv_time).count());
@@ -485,7 +496,7 @@ private:
      * duplicated datagram can never bring back an old input state
      */
     void apply_inputs(game_state& gs) {
-        auto now = clock::now();
+        auto now = clock::now(); /* the inputs were read now: one arriving later is too late for this tick */
         _tick_s  = std::chrono::duration<double>(gs.sim.tick_period()).count();
 
         for (auto& [key, client] : _clients) {
@@ -559,16 +570,23 @@ private:
                 /* Measured at the tick's time (catch-up ticks run late) */
                 client.input_wait_s =
                     std::max(std::chrono::duration<float>(gs.sim.current_update_time() - head->second.received).count(), 0.f);
+                client.input_margin_s =
+                    client.late_s ? -*client.late_s : std::chrono::duration<float>(now - head->second.received).count();
+                client.late_s.reset();
+                client.starved_since.reset();
                 q.erase(head);
             }
             else if (q.empty() && now - client.last_input_time > input_timeout) {
                 /* Lost client: release everything */
                 bits             = 0;
                 client.held_bits = 0;
+                client.starved_since.reset();
             }
             else {
                 /* Starving: hold the last state, no edges, without consuming a seq */
                 bits = client.held_bits;
+                if (q.empty() && client.ack_seq != 0 && !client.starved_since && !client.late_s)
+                    client.starved_since = now;
             }
 
             found->second->last_input_seq(client.ack_seq);
@@ -620,7 +638,7 @@ private:
 
         switch (msg.type) {
         case msg_type::hello: handle_hello(gs, datagram.address, datagram.port, msg); break;
-        case msg_type::input: handle_input(datagram.address, msg); break;
+        case msg_type::input: handle_input(datagram.address, datagram.arrival, msg); break;
         case msg_type::leave: handle_leave(gs, datagram.address); break;
         case msg_type::lobby: handle_lobby(gs, datagram.address, msg); break;
         default: break;
@@ -679,6 +697,9 @@ private:
         client.buffering     = true;
         client.echo_seq      = 0;
         client.input_jitter.reset();
+        client.input_margin_s.reset();
+        client.starved_since.reset();
+        client.late_s.reset();
 
         /* Create or reconfigure the player */
         player* pl = nullptr;
@@ -714,7 +735,7 @@ private:
         _sock.send_to(addr, port, data);
     }
 
-    void handle_input(const sf::IpAddress& addr, const net_msg& msg) {
+    void handle_input(const sf::IpAddress& addr, clock::time_point arrival, const net_msg& msg) {
         auto client = find_client(addr);
         if (!client || !client->joined)
             return;
@@ -723,13 +744,18 @@ private:
         if (!try_read_msg(msg.payload, in) || in.bits.empty())
             return;
 
-        auto now = clock::now();
+        auto now = arrival;
 
-        /* Arrival jitter (input_jitter): restarts after a pause (the client sends nothing while it doesn't tick) */
+        /*
+         * Arrival jitter (input_jitter): restarts after a pause (the client
+         * sends nothing while it doesn't tick). Against the client's send
+         * time, not seq * tick: the client slews its tick rate to align its
+         * inputs (net_client::align_ticks), that is not jitter
+         */
         if (now - client->last_input_time > input_timeout)
             client->input_jitter.reset();
         client->input_jitter.on_state(std::chrono::duration<double>(now.time_since_epoch()).count(),
-                                      double(in.last_seq) * _tick_s);
+                                      double(in.client_time_ms) / 1000.0);
 
         /* Newest input: RTT echo and lag compensation parameters */
         if (in.last_seq > client->echo_seq) {
@@ -742,6 +768,12 @@ private:
 
         if (client->next_seq == 0)
             client->next_seq = in.first_seq();
+
+        /* The queue ran dry waiting for it: it was this late */
+        if (client->starved_since && in.last_seq >= client->next_seq) {
+            client->late_s        = std::chrono::duration<float>(now - *client->starved_since).count();
+            client->starved_since.reset();
+        }
 
         for (u32 i = 0; i < in.bits.size(); ++i) {
             auto seq = in.first_seq() + i;

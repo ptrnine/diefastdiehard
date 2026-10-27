@@ -114,7 +114,9 @@ public:
                    "  net                         - show the input buffers (server) and the interpolation delay (client)\n"
                    "  net buffer [auto|ticks]     - input jitter buffer of the clients (server; auto: from their jitter)\n"
                    "  net interp [min|margin] [ms] - remote players are shown jitter + state interval + margin\n"
-                   "                                in the past, at least min (client)";
+                   "                                in the past, at least min (client)\n"
+                   "  net input margin [ms]       - the inputs arrive at the server this long before it needs them\n"
+                   "                                (client: aligns its ticks, at most a frame more)";
         }
         else if (cmd == "game") {
             help = "game settings\n"

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <map>
 #include <set>
 #include <vector>
@@ -98,6 +99,7 @@ public:
 
     void update(uint rps = 60, float speed = 1.f) {
         auto min_timestep = period_of(rps);
+        auto real_period  = real_period_of(rps);
         _last_speed = speed;
         _last_rps   = rps;
 
@@ -105,15 +107,35 @@ public:
         auto now = tp_now();
         while (now > _next_update_time) {
             update_immediate(duration_cast<float_seconds>(min_timestep).count() * speed, _next_update_time);
-            _next_update_time += min_timestep;
+            _next_update_time += real_period;
         }
 
-        _interpolation_factor = duration_cast<float_seconds>(now + min_timestep - _next_update_time) / min_timestep;
+        _interpolation_factor = duration_cast<float_seconds>(now + real_period - _next_update_time) / real_period;
     }
 
     void update_pass() {
         _current_update_time = tp_now();
-        _next_update_time = _current_update_time + period_of(last_rps());
+        _next_update_time = _current_update_time + real_period_of(last_rps());
+    }
+
+    /*
+     * The real time between the ticks is period_of(rps) * scale, the
+     * simulated timestep stays the same (a network client aligns its ticks
+     * with the server's, see net_client: well under 1 % off)
+     */
+    void tick_period_scale(double scale) {
+        _tick_period_scale = scale;
+    }
+
+    [[nodiscard]]
+    double tick_period_scale() const {
+        return _tick_period_scale;
+    }
+
+    [[nodiscard]]
+    steady_clock::duration real_period_of(uint rps) const {
+        auto period = period_of(rps);
+        return steady_clock::duration(steady_clock::rep(std::llround(double(period.count()) * _tick_period_scale)));
     }
 
     void update_immediate(float timestep, auto now) {
@@ -541,6 +563,7 @@ private:
     vec2f                                   _gravity      = {0.f, 0.f};
     vec2f                                   _bullet_gravity = {0.f, 0.f};
     float                                   _last_timestep        = 1.f / 60.f;
+    double                                  _tick_period_scale    = 1.0;
     float                                   _prev_timestep        = 1.f / 60.f;
     u32                                     _last_rps             = 60;
     float                                   _last_speed           = 1.f;

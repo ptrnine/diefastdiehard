@@ -986,10 +986,14 @@ TEST_CASE("net_server: handshake, rename and leave") {
 
         u32  seq       = 0;
         auto tick_s    = std::chrono::duration<double>(gs.sim.tick_period()).count();
+        auto t0        = game_clock::now();
         auto send_tick = [&](u32 count) {
             seq += count;
-            REQUIRE(cli.send(net::encode_msg(net::msg_type::input,
-                                             net::input{.last_seq = seq, .bits = std::vector<u8>(count, 0)})));
+            /* The jitter is measured against the client's send time */
+            auto client_ms = u32(std::chrono::duration_cast<std::chrono::milliseconds>(game_clock::now() - t0).count());
+            REQUIRE(cli.send(net::encode_msg(
+                net::msg_type::input,
+                net::input{.last_seq = seq, .client_time_ms = client_ms, .bits = std::vector<u8>(count, 0)})));
         };
         auto run_ticks = [&](int n) {
             for (int i = 0; i < n; ++i) {
@@ -2343,6 +2347,48 @@ TEST_CASE("net: the input buffer of a steady client is short") {
     CHECK(st.front().wait_s < 0.035f);
 }
 
+TEST_CASE("physic_simulation: the tick period scale slows the real ticks, not the timestep") {
+    game_clock_manual_guard clock_guard;
+    physic_simulation sim;
+    sim.update_pass();
+    sim.tick_period_scale(1.01);
+
+    auto t0 = sim.tick();
+    for (int i = 0; i < 200; ++i) {
+        game_clock::advance(std::chrono::milliseconds(5));
+        sim.update();
+    }
+    CHECK(sim.tick() - t0 == 59); /* 60 / 1.01 in a second */
+    CHECK(sim.last_timestep() == Catch::Approx(1.f / 60.f));
+}
+
+TEST_CASE("net: the client aligns its ticks, its inputs arrive just before the server needs them") {
+    using namespace std::chrono_literals;
+    auto latency = GENERATE(std::pair{25.0, 25.0}, std::pair{1.0, 2.0});
+    CAPTURE(latency.first, latency.second);
+    net_game_fixture f{latency.first, latency.second};
+
+    /* The default buffer (3 ticks) queues the first inputs ~2 ticks early: the client slows its ticks down */
+    f.run_for(6000ms);
+    auto margin = f.cli->input_margin_estimate();
+    REQUIRE(margin);
+    UNSCOPED_INFO("input margin " << *margin * 1000.0 << " ms, frames " << f.cli->frame_interval() * 1000.0 << " ms");
+    /* Within the target and a frame (a tick's input leaves in its frame) */
+    CHECK(*margin >= f.cli->input_margin() - 0.0005);
+    CHECK(*margin <= f.cli->input_margin() + f.cli->frame_interval() + 0.0025); /* + the 1..2 ms link's jitter */
+    auto st = f.srv.input_stats();
+    REQUIRE(st.size() == 1);
+    REQUIRE(st.front().margin_s);
+    CHECK(*st.front().margin_s < 0.012f); /* it was ~2 ticks */
+
+    /* Aligned: it stays so, the server never runs dry (a misprediction) */
+    f.cli->reset_correction_stats();
+    f.input = {.right = true};
+    f.run_for(2000ms);
+    CHECK(f.cli->corrections() == 0);
+    CHECK(std::abs(f.cli->tick_adjust()) <= net::net_client::max_tick_adjust);
+}
+
 TEST_CASE("net: bullet hits on the local player are predicted") {
     using namespace std::chrono_literals;
     hit_fixture f;
@@ -2613,8 +2659,8 @@ TEST_CASE("net: server bullets under gravity are drawn turned along their drawn 
         }
     UNSCOPED_INFO("max angle to the drawn path " << max_error << " deg over " << steps << " steps");
     REQUIRE(steps > 20);
-    /* (the drawn path wobbles a little with the shown delay: ~0.5 deg) */
-    CHECK(max_error < 1.f);
+    /* (the shown delay at the tick's time: no wobble with the ticks drifting against the frames, ~0.05 deg) */
+    CHECK(max_error < 0.5f);
 }
 
 TEST_CASE("net: own bullet hits on remote players are predicted") {

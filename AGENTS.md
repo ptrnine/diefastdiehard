@@ -55,7 +55,8 @@ instead of sleeping. Use it for any new gameplay/network timer.
 - `src/game_state.hpp` — the central game object: players, `sim`
   (physic_simulation), `blt_mgr` (bullets), `kick_mgr`, camera, AI manager,
   config watcher. **Entirely public** — no private sections.
-- `src/physic/physic_simulation.hpp` — fixed 60 Hz sim (ticks exactly 1/60 s apart); extensible via
+- `src/physic/physic_simulation.hpp` — fixed 60 Hz sim (ticks exactly 1/60 s apart; a network
+  client slews the real period by ≤ 0.5 %, `tick_period_scale`, the timestep stays); extensible via
   `add_update_callback` / `add_platform_callback` / `add_bounce_callback`.
   Default gravity is **zero**.
 - `src/player.hpp`, `src/weapon.hpp`, `src/bullet.hpp` — player, pistol,
@@ -96,8 +97,8 @@ instead of sleeping. Use it for any new gameplay/network timer.
   players of clients are `player::net_controlled()`, client mirrors of
   server players are `player::server_driven()`. Simulated latency:
   `udp_channel::set_simulated_latency` / `--define=DFDH_DEBUG_PING`.
-  Latency settings (input jitter buffer, interpolation delay): console
-  `net` (on the screen: `hud net`), see `docs/multiplayer.md`.
+  Latency settings (input jitter buffer, interpolation delay, input
+  margin): console `net` (on the screen: `hud net`), see `docs/multiplayer.md`.
 - `src/script/` — LuaJIT via luacpp; user types in `src/script/typeinit/`.
   Scripts in `data/scripts/*.lua`; `assist.lua`/`assist_ai.lua` are
   **generated at runtime** — never edit or commit them.

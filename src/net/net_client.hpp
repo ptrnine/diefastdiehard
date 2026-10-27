@@ -173,6 +173,7 @@ public:
         if (_gs) {
             _gs->sim.remove_tick_begin_callback("net_client");
             _gs->sim.remove_tick_end_callback("net_client");
+            _gs->sim.tick_period_scale(1.0);
         }
     }
 
@@ -246,6 +247,62 @@ public:
         _clock.interp_settings(min_s, margin_s);
     }
 
+    /*
+     * Tick alignment: the client slews its real tick period (at most
+     * max_tick_adjust, the simulated timestep stays) so its inputs arrive
+     * at the server input_margin() before the tick that applies them
+     * (state::input_margin): the server's input buffer is then this time
+     * margin, not whole ticks. A tick's input leaves in the frame the tick
+     * runs in, so the margin is kept within [input_margin, input_margin +
+     * the frame interval]: one frame later, the inputs could be late. The
+     * margin is the smallest one in a window: with a jittery link it jumps
+     * up when the latest arrival leaves the window, so it is reduced only
+     * by the smallest one of a longer window (each late input is a tick the
+     * server runs dry, a misprediction)
+     */
+    static constexpr double default_input_margin_s = 0.002;
+    static constexpr double max_tick_adjust        = 0.005;
+    static constexpr double align_converge_s       = 1.0; /* a margin error is corrected over about this long */
+    static constexpr double margin_window_s        = 2.0; /* the margin is the smallest one in this window */
+    static constexpr double margin_reduce_window_s = 6.0; /* ... and is reduced by the smallest one in this one */
+
+    void input_margin(double margin_s) {
+        _input_margin_s = std::clamp(margin_s, 0.0, 0.1);
+    }
+
+    [[nodiscard]]
+    double input_margin() const {
+        return _input_margin_s;
+    }
+
+    /**
+     * Expected margin of the inputs sent now: the smallest one in the
+     * window, moved by the tick period slewing since (empty: not measured)
+     */
+    [[nodiscard]]
+    std::optional<double> input_margin_estimate(double window_s = margin_window_s) const {
+        std::optional<double> base;
+        auto                  from = time_s() - window_s;
+        for (auto& [time, smp] : _margin_samples)
+            if (time >= from)
+                base = std::min(base.value_or(smp), smp);
+        if (!base)
+            return {};
+        return *base - _tick_shift_s;
+    }
+
+    /** The real tick period is off by this much (tick_period_scale - 1: > 0 slower) */
+    [[nodiscard]]
+    double tick_adjust() const {
+        return _tick_scale - 1.0;
+    }
+
+    /** The interval between the frames (update calls), s */
+    [[nodiscard]]
+    double frame_interval() const {
+        return _frame_s;
+    }
+
     void update(game_state& gs) {
         if (!is_ready())
             return;
@@ -273,6 +330,11 @@ public:
 
         register_predicted_bullets(gs);
 
+        auto now = time_s();
+        if (_last_update_s)
+            _frame_s += (std::clamp(now - *_last_update_s, 0.0, max_frame_s) - _frame_s) * 0.1;
+        _last_update_s = now;
+
         for (auto& datagram : _sock.recv(std::chrono::milliseconds(2))) {
             net_msg msg;
             try {
@@ -295,6 +357,7 @@ public:
         apply_remote_snapshots(gs);
         send_input_window();
         send_lobby_request(gs);
+        align_ticks(gs);
     }
 
     /** Largest distance between a predicted own bullet and its confirmed trajectory so far, px */
@@ -397,6 +460,12 @@ private:
 
         auto in = _input_source();
         ++_input_seq;
+        _input_tick_s = std::chrono::duration<double>(gs.sim.current_update_time() - _start_time).count();
+        /* How much later than without the tick alignment this tick runs (and its input leaves) */
+        _tick_shift_s += (gs.sim.tick_period_scale() - 1.0) * std::chrono::duration<double>(gs.sim.tick_period()).count();
+        _tick_shifts.emplace_back(_input_seq, _tick_shift_s);
+        if (_tick_shifts.size() > history_t::max_size)
+            _tick_shifts.pop_front();
         pl->set_predicted(true);
         pl->last_input_seq(_input_seq);
         pl->apply_input(in);
@@ -902,9 +971,26 @@ private:
     [[nodiscard]]
     float shown_delay() const {
         auto local = local_frame_time();
-        if (!local || !_shown_time)
+        auto shown = shown_time_at_tick();
+        if (!local || !shown)
             return 0.f;
-        return std::clamp(float(*local - *_shown_time), 0.f, game_state::max_lag_compensation);
+        return std::clamp(float(*local - *shown), 0.f, game_state::max_lag_compensation);
+    }
+
+    /*
+     * The shown server time at the scheduled time of the local player's
+     * current tick (_input_seq, shown from then on): the last frame's one,
+     * moved on by the real time in between (the render clock follows it). A
+     * tick runs in the first frame after its time, up to a frame late: the
+     * last frame's shown time made the delay (and the server bullets' drawn
+     * gap) wobble by up to a frame, as the ticks drift against the frames
+     * (the tick alignment slews them)
+     */
+    [[nodiscard]]
+    std::optional<double> shown_time_at_tick() const {
+        if (!_shown_time)
+            return {};
+        return *_shown_time + (_input_tick_s - _last_remote_apply_s);
     }
 
     /**
@@ -1304,6 +1390,43 @@ private:
         _last_sent_seq = _input_seq;
     }
 
+    /*
+     * A margin of the input tick ack_seq (the server sends it with every
+     * state): kept independent of the tick slewing (+ the tick's shift), so
+     * the window's minimum stays valid while the shift changes
+     */
+    void update_input_margin(const state& st) {
+        auto margin = st.input_margin_s();
+        if (!_joined || !margin || st.ack_seq <= _margin_ack)
+            return;
+        auto tick = std::ranges::find(_tick_shifts, st.ack_seq, [](auto& ts) { return ts.first; });
+        if (tick == _tick_shifts.end())
+            return;
+        _margin_ack = st.ack_seq;
+        _margin_samples.emplace_back(time_s(), *margin + tick->second);
+    }
+
+    /* Every frame: slew the tick period towards the target input margin (see input_margin) */
+    void align_ticks(game_state& gs) {
+        auto now = time_s();
+        while (!_margin_samples.empty() && _margin_samples.front().first < now - margin_reduce_window_s)
+            _margin_samples.pop_front();
+
+        double adjust = 0.0;
+        auto   margin = input_margin_estimate();
+        auto   lowest = input_margin_estimate(margin_reduce_window_s);
+        if (margin && lowest && _joined && !gs.lobby.active) {
+            auto low  = _input_margin_s;
+            auto high = _input_margin_s + _frame_s;
+            if (*margin < low)
+                adjust = (*margin - low) / align_converge_s; /* late: faster */
+            else if (*lowest > high)
+                adjust = (*lowest - high) / align_converge_s; /* early: slower */
+        }
+        _tick_scale = 1.0 + std::clamp(adjust, -max_tick_adjust, max_tick_adjust);
+        gs.sim.tick_period_scale(_tick_scale);
+    }
+
     void update_rtt(const state& st) {
         if (st.echo_client_time_ms == 0)
             return;
@@ -1416,6 +1539,7 @@ private:
 
         _clock.on_state(time_s(), st.server_time_s());
         update_tick_time(st);
+        update_input_margin(st);
 
         /* States may arrive out of order: only the newest one updates the world state */
         bool newest = st.tick > _last_state_tick;
@@ -1676,6 +1800,7 @@ private:
     std::deque<u8>    _sent_inputs;       // the last input::max_window input ticks
     std::deque<std::optional<double>> _sent_views; // their views: the server time shown at the tick (input::view_base)
     u32               _input_seq     = 0; // seq of the newest input tick
+    double            _input_tick_s  = 0.0; // its scheduled (real) time, time_s()
     u32               _last_sent_seq = 0;
     float             _rtt_s         = 0.f;
     bool              _rtt_measured  = false;
@@ -1706,6 +1831,17 @@ private:
     u32                                                              _tick_time_ack = 0;
     std::optional<double>                                            _shown_time; // server time the remote players are shown at, s
     std::optional<std::pair<u32, player::physic_state>>              _ack_state;  // the server state at the newest ack
+
+    /* Tick alignment (see input_margin) */
+    static constexpr double              max_frame_s = 0.05;
+    double                               _input_margin_s = default_input_margin_s;
+    double                               _tick_scale     = 1.0;
+    double                               _tick_shift_s   = 0.0; // the slewing's delay of the current tick, s
+    std::deque<std::pair<u32, double>>   _tick_shifts;          // per input tick: its _tick_shift_s
+    std::deque<std::pair<double, double>> _margin_samples;      // local time, margin + shift of the tick
+    u32                                  _margin_ack = 0;
+    double                               _frame_s    = 1.0 / 60.0;
+    std::optional<double>                _last_update_s;
 
     /* Lag-compensated hits predicted on the local player, by bullet id, until the server registers them */
     struct rewound_hit_t {

@@ -9,7 +9,7 @@ The server compensates for each client's lag.
 
 ```sh
 ./dfdh --server [--port=10443] [--input-buffer=auto|N]                       # host: plays too (local keyboard player, bots)
-./dfdh --client 127.0.0.1:10443 [--name=client0] [--interp-margin=MS] [--interp-min=MS]  # client
+./dfdh --client 127.0.0.1:10443 [--name=client0] [--interp-margin=MS] [--interp-min=MS] [--input-margin=MS]  # client
 ```
 
 The latency flags are optional (see Latency settings).
@@ -80,7 +80,7 @@ Every datagram has a header `u16 type, u16 payload_size`, then an
 `ss::serializer` payload: little endian, with **u16** string and vector
 length prefixes (`net::wire_size_type`; the serializer default is u64).
 **Bump `net::protocol_version`** on any wire change: a HELLO with another
-version is answered with ERROR. The current version is 19.
+version is answered with ERROR. The current version is 20.
 
 | id | dir | payload |
 |----|-----|---------|
@@ -93,7 +93,7 @@ version is answered with ERROR. The current version is 19.
 | 7 LOBBY | C → S | `u32 session`, `u32 seq`, `i16 group`, `u8 ready`: the client's lobby choice (see Lobby; seqs restart with a new random session) |
 
 STATE contains:
-- **Header:** `tick` (broadcast sequence number), `server_time` (time of the simulated tick, 1/10000 s: ticks are 1/60 s apart, so whole ms were up to 0.67 ms early), `ack_seq` (the last input tick applied to this client's player), and `echo_client_time_ms` + `echo_hold_ms` (RTT echo of the newest input).
+- **Header:** `tick` (broadcast sequence number), `server_time` (time of the simulated tick, 1/10000 s: ticks are 1/60 s apart, so whole ms were up to 0.67 ms early), `ack_seq` (the last input tick applied to this client's player), `echo_client_time_ms` + `echo_hold_ms` (RTT echo of the newest input), and `input_margin` (`i16`, 1/10 ms: how long before the server needed it the tick `ack_seq` arrived, negative if the queue ran dry waiting for it; see Tick alignment).
 - **`own_weapon`:** the client's own player's weapon logic state (`weapon_sync`: ammo, logic animation id and time, time since the last shot, reloading/trigger flags, shot index and seed), if it holds a gun. Only the recipient's player is reconciled, so other players' weapons are not sent.
 - **`mode`, the game mode, only when the client may not know it:** section name, bullet gravity, crate drop period (see `src/game_mode.hpp`). It is sent with the same policy as the player configs (1 s after the join or a change, every 30th broadcast); the client applies the newest one with `game_state::game_mode_set` and sets `game_mode_networked`, so its console cannot change the game mode.
 - **`lobby`, only when the client may not know it (the same policy as `mode`):** `u8 active`, level and game mode sections. While active, these are the owner's choices; in game, what is played.
@@ -185,8 +185,10 @@ the client: the old player is deleted.
     target number of queued ticks. Dry ticks repeat the last held bits
     without edges and consume no seq;
   - the target adapts to the client's input arrival jitter
-    (`client_t::input_jitter`, a `server_clock` of `arrival − seq·tick`
-    over 2 s, restarted after 0.5 s without input):
+    (`client_t::input_jitter`, a `server_clock` of `arrival − client send
+    time` over 2 s, restarted after 0.5 s without input; it was
+    `arrival − seq·tick`, which takes the client's tick alignment for
+    jitter):
     `ceil(jitter / tick − 0.1) + 1` ticks (`adaptive_target`, 1..8). Each
     queued tick is a tick of input latency and of the client's shot
     forwarding (`lag`). Until 1 s is measured, the target is 3;
@@ -218,6 +220,44 @@ the client: the old player is deleted.
     `rtt/2 + interp` was off by the asymmetry of the trips, the RTT jitter,
     the render clock's slewing and an interp reported a trip ago.
   - Without a view (nothing shown yet), `rewind = rtt/2 + 26 ms`.
+- **Arrival times** (`received_datagram::arrival`): the kernel's receive
+  timestamp (`SIOCGSTAMP`, Linux), the delivery time of a simulated
+  latency, otherwise the read time. The socket is read at tick boundaries
+  and frames, a datagram may have waited for the read.
+
+### Tick alignment
+
+The jitter buffer counts whole ticks, and an input can arrive anywhere
+within a tick: on average it waited half a tick more than needed. The
+client slews its real tick period instead (`physic_simulation::
+tick_period_scale`, at most ±0.5 %; the simulated timestep stays 1/60 s),
+so its inputs arrive `input_margin` (2 ms) before the server applies them
+(`net_client::align_ticks`, every frame):
+- **Measured by the server:** every STATE carries the margin of the tick
+  `ack_seq`: the read at its tick begin minus its arrival, or minus how
+  late it arrived after the queue ran dry for it.
+- **Independent of the slewing:** the client records per tick how much
+  later than without the slewing it ran (`_tick_shifts`). A margin sample
+  plus its tick's shift does not change with the slewing, so the expected
+  margin of the inputs sent now is the window's smallest one (2 s) minus
+  the current shift (`input_margin_estimate`). Without that it overshot by
+  the window's delay.
+- **Frames:** a tick's input leaves in the frame the tick runs in, so it
+  can only move by whole frames. The margin is kept in `[input_margin,
+  input_margin + frame interval]` (at 60 Hz vsync: up to a frame early; at
+  higher frame rates tighter).
+- **Jitter:** below the range, the client speeds up at once. Above it, it
+  slows down only by the smallest margin of 6 s (`margin_reduce_window_s`):
+  the 2 s minimum jumps up whenever the latest arrival leaves the window,
+  and each input late again is a dry tick, a misprediction.
+- The server's adaptive buffer still refills a dry queue to its target at
+  once (the coarse margin); the slewing then trims it. With jitter, the
+  server's target stays in ticks; the alignment matters on steady links.
+- **Shown delay at the tick's time:** the ticks now drift against the
+  frames. `shown_delay` used the last frame's shown time, up to a frame
+  off the tick's time: the server bullets' drawn gap wobbled by up to a
+  frame of their speed (`shown_time_at_tick`: the shown time at the
+  scheduled time of the tick `_input_seq`).
 
 ## Latency settings
 
@@ -226,9 +266,11 @@ the client: the old player is deleted.
 | input jitter buffer | server | adaptive | `--input-buffer=auto\|N` (ticks) | `net buffer auto\|N` |
 | interpolation margin | client | 5 ms | `--interp-margin=MS` | `net interp margin MS` |
 | interpolation minimum | client | 20 ms | `--interp-min=MS` | `net interp min MS` |
+| input margin | client | 2 ms | `--input-margin=MS` | `net input margin MS` |
 
-`net` shows each client's buffer target, input jitter and queue wait (server)
-and the RTT and the interpolation delay with its parts (client). `hud net
+`net` shows each client's buffer target, input jitter, queue wait and input
+margin (server) and the RTT, the interpolation delay with its parts and the
+input margin with the tick rate adjustment (client). `hud net
 [on/off]` shows the same on the screen, at the top left corner (under the
 fps counter), every frame.
 

@@ -73,8 +73,9 @@ public:
             auto fixed = net_srv->input_buffer();
             lines.push_back("net input buffer: " + (fixed ? std::to_string(*fixed) + " ticks" : std::string("auto")));
             for (auto& st : net_srv->input_stats())
-                lines.push_back(std::format("  {}: {} ticks, jitter {:.1f} ms, wait {:.1f} ms", std::string(st.player),
-                                            st.target, st.jitter_s * 1000.0, st.wait_s * 1000.f));
+                lines.push_back(std::format("  {}: {} ticks, jitter {:.1f} ms, wait {:.1f} ms, margin {}", std::string(st.player),
+                                            st.target, st.jitter_s * 1000.0, st.wait_s * 1000.f,
+                                            st.margin_s ? std::format("{:.1f} ms", *st.margin_s * 1000.f) : "-"));
         }
         if (net_cli) {
             auto& clk = net_cli->clock_estimate();
@@ -83,6 +84,11 @@ public:
             lines.push_back(std::format("  jitter {:.1f} + state interval {:.1f} + margin {:.1f} ms, min {:.1f} ms",
                                         clk.jitter() * 1000.0, clk.max_interval() * 1000.0, clk.interp_margin() * 1000.0,
                                         clk.interp_min() * 1000.0));
+            auto margin = net_cli->input_margin_estimate();
+            lines.push_back(std::format("net input margin: {} (target {:.1f} .. +{:.1f} ms frame), tick rate {:+.2f} %",
+                                        margin ? std::format("{:.1f} ms", *margin * 1000.0) : std::string("-"),
+                                        net_cli->input_margin() * 1000.0, net_cli->frame_interval() * 1000.0,
+                                        -net_cli->tick_adjust() * 100.0));
         }
         if (!net_srv && !net_cli)
             lines.emplace_back("net: not in a multiplayer game");
@@ -145,6 +151,18 @@ public:
         cmd_net({});
     }
 
+    void cmd_net_input_margin(const std::string& value) {
+        if (!net_cli) {
+            glog().error("net input margin: not a client");
+            return;
+        }
+        if (auto ms = parse_count(value))
+            net_cli->input_margin(double(*ms) / 1000.0);
+        else
+            glog().error("net input margin: expected milliseconds, got '{}'", value);
+        cmd_net({});
+    }
+
     void cmd_net_interp(const std::string& key, const std::string& value) {
         if (!net_cli) {
             glog().error("net interp: not a client");
@@ -176,6 +194,7 @@ public:
         command_buffer().add_handler("hud net", &diefastdiehard::cmd_hud_net, this);
         command_buffer().add_handler("net buffer", &diefastdiehard::cmd_net_buffer, this);
         command_buffer().add_handler("net interp", &diefastdiehard::cmd_net_interp, this);
+        command_buffer().add_handler("net input margin", &diefastdiehard::cmd_net_input_margin, this);
         command_buffer().add_handler("fps", &diefastdiehard::cmd_fps, this);
         command_buffer().add_handler("log", &diefastdiehard::cmd_log, this);
         command_buffer().add_handler("log time", &diefastdiehard::cmd_log_time, this);
@@ -502,6 +521,7 @@ private:
         };
         net_cli->interp_settings(interp_ms("--interp-min", net::server_clock::min_interp_s),
                                  interp_ms("--interp-margin", net::server_clock::interp_margin_s));
+        net_cli->input_margin(interp_ms("--input-margin", net::net_client::default_input_margin_s));
 
         if (!net_cli->is_ready()) {
             glog().error("multiplayer: can't connect to {}", addr_str);

@@ -7,6 +7,12 @@
 #include <span>
 #include <vector>
 
+#if defined(__linux__)
+#include <linux/sockios.h>
+#include <sys/ioctl.h>
+#include <sys/time.h>
+#endif
+
 #include <SFML/Network/UdpSocket.hpp>
 #include <SFML/Network/SocketSelector.hpp>
 #include <SFML/Network/IpAddress.hpp>
@@ -21,9 +27,10 @@ namespace dfdh::net {
  * A single received datagram (copied, always valid)
  */
 struct received_datagram {
-    sf::IpAddress   address;
-    u16             port      = 0;
-    std::vector<u8> data;
+    sf::IpAddress          address;
+    u16                    port      = 0;
+    std::vector<u8>        data;
+    game_clock::time_point arrival; // when it arrived (not when it was read)
 };
 
 /**
@@ -135,10 +142,13 @@ public:
             d.address = addr;
             d.port    = port;
             d.data    = std::vector<u8>(data, data + recv_size);
-            if (simulated_latency())
+            d.arrival = arrival_time();
+            if (simulated_latency()) {
                 /* Simulated latency: deliver the datagram only after its
-                 * one-way delay has elapsed */
-                _held_recvs.push_back({game_clock::now() + one_way_delay(), std::move(d)});
+                 * one-way delay has elapsed (it arrives then) */
+                d.arrival = game_clock::now() + one_way_delay();
+                _held_recvs.push_back({d.arrival, std::move(d)});
+            }
             else
                 out.push_back(std::move(d));
         }
@@ -219,6 +229,27 @@ private:
         return to_duration_ms(dist(_ping_rng));
     }
 
+    /*
+     * Arrival time of the datagram received last: the kernel's timestamp
+     * (the socket is read at tick boundaries and frames, the datagram may
+     * have waited since), on the game clock. Read now with a manual clock
+     */
+    [[nodiscard]]
+    game_clock::time_point arrival_time() {
+        auto now = game_clock::now();
+#if defined(SIOCGSTAMP)
+        timeval stamp{};
+        if (!game_clock::manual() && ioctl(_sock.getHandle(), SIOCGSTAMP, &stamp) == 0) {
+            auto age = std::chrono::system_clock::now() -
+                       (std::chrono::system_clock::time_point{} + std::chrono::seconds(stamp.tv_sec) +
+                        std::chrono::microseconds(stamp.tv_usec));
+            return now - std::clamp<game_clock::duration>(std::chrono::duration_cast<game_clock::duration>(age),
+                                                          game_clock::duration::zero(), std::chrono::seconds(1));
+        }
+#endif
+        return now;
+    }
+
     /* Send every queued datagram whose simulated deadline has passed */
     void flush_due_sends() {
         auto now = game_clock::now();
@@ -255,7 +286,12 @@ private:
     std::vector<delayed_send> _pending_sends;
     std::vector<delayed_recv> _held_recvs;
 
-    sf::UdpSocket _sock;
+    /* The native handle (protected in SFML) reads the kernel's receive timestamps */
+    struct socket_t : sf::UdpSocket {
+        using sf::UdpSocket::getHandle;
+    };
+
+    socket_t      _sock;
     bool          _open      = false;
     bool          _connected = false;
     sf::IpAddress _peer;

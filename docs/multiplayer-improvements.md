@@ -34,7 +34,13 @@ the inputs (the tick begin callback of `net_server`), send the states right
 after each tick, and send the client's inputs right after each client tick.
 No game logic changes.
 
-### 2. Align the input arrival with the server ticks (~5–10 ms, medium)
+### 2. Align the input arrival with the server ticks (~5–10 ms, medium) — done
+
+See `docs/multiplayer.md`, Tick alignment. A tick's input leaves in the
+frame it runs in, so with 60 Hz vsync the margin can only be kept within a
+frame (`[2 ms, 2 ms + 16.7 ms]`): the gain is mostly fewer dry ticks there,
+and the full few ms at higher frame rates. In the tests (5 ms frames) the
+first inputs' ~30 ms margin goes down to ~5 ms within ~3 s.
 
 The adaptive input buffer counts whole ticks, and an input can arrive
 anywhere within a tick. The client could slightly adjust its own tick rate
