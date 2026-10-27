@@ -659,8 +659,8 @@ public:
         ++_shot_index; /* as shot() does */
         play_animation("shot");
         --_ammo_elapsed;
-        _on_reload  = false;
-        _since_shot = 0.f;
+        _on_reload = false;
+        shot_fired();
         return _wpn->_recoil;
     }
 
@@ -697,7 +697,7 @@ public:
                  std::move(player_group_getter),
                  rand_pool);
             _on_reload = false;
-            _since_shot = 0.f;
+            shot_fired();
             return _wpn->_recoil;
         }
 
@@ -937,6 +937,18 @@ private:
             _on_reload    = false;
         }
         return false;
+    }
+
+    /*
+     * Start the time to the next shot. Shots land on ticks: in a continuous
+     * fire the time past the shot period (less than the tick) is carried
+     * over, so the gun fires at its fire rate at any tick rate (a reset made
+     * an 850 rpm gun fire every 5th 60 Hz tick: 720 rpm). A shot after a
+     * pause carries nothing (no burst)
+     */
+    void shot_fired() {
+        auto carry  = _since_shot - 60.f / _wpn->_fire_rate;
+        _since_shot = carry <= _anim_tick_dt ? carry : 0.f;
     }
 
     /* Advance the current animation, switching to the next one at its end (shotgun shells, ...) */

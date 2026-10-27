@@ -427,6 +427,38 @@ TEST_CASE("weapon slots: secondary guns, respawn with the secondary gun") {
     CHECK(pl->holds_secondary());
 }
 
+TEST_CASE("weapon: a held trigger fires at the configured fire rate") {
+    game_state gs;
+    REQUIRE(gs.level_current("lvl_aes"));
+    auto pl = gs.player_create("shooter");
+    REQUIRE(pl != nullptr);
+    gs.game_run(true);
+    pl->teleport({1300.f, 1040.f});
+
+    /* 800, 400, 300 rpm: shot periods of 9, 18 and 24 ticks at 120 Hz, 4.5, 9 and 12 at 60 Hz */
+    auto wpn = GENERATE(as<std::string>{}, "wpn_ak9", "wpn_glk17", "wpn_brn10");
+    CAPTURE(wpn);
+    pl->setup_pistol(wpn);
+    auto& gun    = pl->get_gun();
+    auto  period = 60.f / gun.get_weapon()->fire_rate();
+    auto  shots  = std::min(gun.get_weapon()->mag_size() - 1, 10u);
+
+    /* The time from the first shot to the shots-th after it, not rounded up to whole ticks per shot */
+    REQUIRE(pl->shot());
+    auto index = [&] { return gun.get_sync_state().shot_index; };
+    auto first = index();
+    for (u32 i = 0; i < sim_tick_rate && index() == first; ++i)
+        sim_tick(gs);
+    REQUIRE(index() == first + 1);
+
+    u32 ticks = 0;
+    for (; ticks < 5 * sim_tick_rate && index() < first + 1 + shots; ++ticks)
+        sim_tick(gs);
+    pl->relax();
+    /* Up to a tick off (the period after the first shot starts from no carry) */
+    CHECK(float(ticks) * sim_tick_s == Catch::Approx(float(shots) * period).margin(1.5f * sim_tick_s));
+}
+
 TEST_CASE("game mode: limited magazines, an emptied gun is dropped") {
     game_state gs;
     REQUIRE(gs.level_current("lvl_aes"));

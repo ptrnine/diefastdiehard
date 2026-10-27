@@ -89,6 +89,10 @@ lift that; not done.
   input queue (default 6 ticks, up to 16), the drain window (0.5 s: the
   same ~17 ms of queue drained a second), the position trace, the gun
   hit cooldown. `protocol_version` 21.
+- Gun timings: shots land on ticks, and `_since_shot` was reset at a shot,
+  so a gun fired every whole number of ticks past its period (850 rpm:
+  720 at 60 Hz, 800 at 120 Hz). The time past the period is now carried
+  over in a continuous fire: the configured rate at any tick rate.
 - The weapon bobbing filter (tuned per 60 Hz tick) is scaled to the tick
   length. The explicit Euler steps make a jump slightly higher (estimated
   ~1.7 %, 155 → 158 px).
