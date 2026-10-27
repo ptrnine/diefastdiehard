@@ -55,7 +55,10 @@ public:
     /*
      * A queue deeper than the target for this many ticks (a burst after a
      * client hitch, a target that dropped) merges its oldest tick: once per
-     * window, until it is back at the target
+     * window, until it is back at the target. Only a tick the next one
+     * repeats (the same held bits, no edges) is merged: merging a trigger
+     * pull would fire the shot a tick later, seeded by another input tick,
+     * so it would not match the client's predicted bullets
      */
     static constexpr u32 drain_window_ticks = 60;
 
@@ -475,7 +478,10 @@ private:
             else if (q.size() >= client.target_inputs)
                 client.buffering = false;
 
-            /* Deeper than the target for a whole window: drain a tick (the client corrects its prediction) */
+            /*
+             * Deeper than the target for a whole window: drain a repeated tick
+             * (the client corrects its prediction); none yet: try next tick
+             */
             if (client.buffering) {
                 client.min_depth   = std::numeric_limits<size_t>::max();
                 client.depth_ticks = 0;
@@ -483,10 +489,18 @@ private:
             else {
                 client.min_depth = std::min(client.min_depth, q.size());
                 if (++client.depth_ticks >= drain_window_ticks) {
-                    if (client.min_depth > client.target_inputs && q.size() > 1)
-                        merge_oldest();
-                    client.min_depth   = std::numeric_limits<size_t>::max();
-                    client.depth_ticks = 0;
+                    auto repeated = [&] {
+                        auto head = q.begin();
+                        auto next = std::next(head);
+                        return next != q.end() && next->first == head->first + 1 &&
+                               head->second.bits == next->second.bits && (head->second.bits & in_edge_bits) == 0;
+                    };
+                    if (client.min_depth <= client.target_inputs || repeated()) {
+                        if (client.min_depth > client.target_inputs)
+                            merge_oldest();
+                        client.min_depth   = std::numeric_limits<size_t>::max();
+                        client.depth_ticks = 0;
+                    }
                 }
             }
 

@@ -180,9 +180,11 @@ the client: the old player is deleted.
     queued tick is a tick of input latency and of the client's shot
     forwarding (`lag`). Until 1 s is measured, the target is 3;
   - drains a queue that stayed deeper than the target for a whole window
-    of 60 ticks (`drain_window_ticks`): merges its oldest tick. Without it,
-    the backlog of a client hitch (a stall, then the ticks at once) stayed
-    queued for good;
+    of 60 ticks (`drain_window_ticks`): merges its oldest tick, once the
+    next tick repeats it (the same held bits, no edges; a merged trigger
+    pull would fire a tick later, seeded by another tick, unlike the
+    client's prediction). Without it, the backlog of a client hitch (a
+    stall, then the ticks at once) stayed queued for good;
   - above `max(8, target + 4)` queued ticks, merges the oldest ticks away,
     keeping their edges. Merged ticks are not simulated, so the client's
     prediction of them diverges and gets corrected (physics and weapon);
