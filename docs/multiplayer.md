@@ -529,12 +529,25 @@ with its player.
   the shown flight minus the simulated one). Under bullet gravity the
   simulated velocity is later in the flight, so a bullet turned by it
   pointed below its drawn path (up to ~3.7° at 100 ms ping).
+- **Catch-up** (`framed_t::catch_up`): when the shooter is shown firing,
+  the shown frame is already `forward + rewind` (the shooter's lag and view
+  delay) into the flight: at 100 ms ping the bullet appeared ~300 px past
+  the barrel. So it is drawn `catch_up` earlier in its flight, from the
+  muzzle, and catches up at 2× its speed (`catch_up_speed`, smoothed
+  between ticks with `catch_up_vel`). It is visual only: the simulation,
+  the sweeps and the hits stay in their frames. `catch_up` never grows and
+  is gone 30 px before a remote player it may hit ahead on its path
+  (shortened over 2× the distance, ≤ 1.5× faster meanwhile), so it reaches
+  the player when the hit shows up; near the local player the shown blend
+  removes it with the gap.
 - Before the first acknowledged input there is no tick time: the bullet is
   forwarded by its state's age (present time) and collides physically.
 - Bullets the server already consumed are not spawned, and bullets missing
   from the alive set are removed.
-- **Cost:** a remote bullet appears further from the muzzle, about
-  `(shooter lag + own RTT and queue wait + shooter rewind)·speed`.
+- **Cost:** a remote bullet is simulated further along its flight, about
+  `(shooter lag + own RTT and queue wait + shooter rewind)·speed`; the
+  catch-up hides it near the muzzle, but a bullet that hits a wall during
+  the catch-up disappears short of it.
 
 **Own bullet prediction** (client's predicted player):
 - The bullets spawn at once, without an id. Shots are deterministic:

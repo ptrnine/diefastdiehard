@@ -194,12 +194,21 @@ public:
          * its flight: under gravity, less bent). It is drawn there and turned
          * that way, so it meets the remote players when they are hit, but
          * converges to the local frame when it flies at the local player
-         * (local_center): it hits it in that frame
+         * (local_center): it hits it in that frame.
+         * Catch-up: the shown frame is already the shooter's lag + rewind into
+         * the flight when the shooter is shown firing (far from the muzzle at
+         * ping), so it is drawn catch_up earlier in its flight, from the
+         * muzzle, catching up at catch_up_speed. catch_up never grows and is
+         * gone before the bullet reaches a player it may hit
          */
         vec2f                gap         = {0.f, 0.f};
         vec2f                gap_vel     = {0.f, 0.f};
         std::optional<vec2f> local_center = {};
         float                shown_blend = 1.f; // 1: drawn in the shown frame, 0: in the local frame; never grows
+        float                catch_up    = 0.f; // s: drawn this much earlier in its flight than the shown frame
+        vec2f                catch_up_vel = {0.f, 0.f}; // how fast the catch-up moves it on until the next tick
+
+        static constexpr float catch_up_speed = 2.f; /* drawn 2x faster until caught up */
 
         /* Blend to the shown frame of the bullet at pos flying along vel: by its distance to the local player ahead */
         [[nodiscard]]
@@ -222,15 +231,18 @@ public:
         }
 
         [[nodiscard]]
-        vec2f draw_offset(const vec2f& pos, const vec2f& vel) const {
-            return gap * shown_blend_at(pos, vel);
+        vec2f draw_offset(const vec2f& pos, const vec2f& vel, float since_tick = 0.f) const {
+            return (gap + catch_up_vel * since_tick) * shown_blend_at(pos, vel);
         }
 
-        /* Where it is drawn and its velocity there, for the bullet at pos flying along vel */
+        /*
+         * Where it is drawn and its velocity there, for the bullet at pos flying
+         * along vel, since_tick seconds after the tick it was updated at
+         */
         [[nodiscard]]
-        std::pair<vec2f, vec2f> drawn(const vec2f& pos, const vec2f& vel) const {
+        std::pair<vec2f, vec2f> drawn(const vec2f& pos, const vec2f& vel, float since_tick = 0.f) const {
             auto blend = shown_blend_at(pos, vel);
-            return {pos + gap * blend, vel + gap_vel * blend};
+            return {pos + (gap + catch_up_vel * since_tick) * blend, vel + gap_vel * blend};
         }
     };
 
@@ -394,7 +406,7 @@ public:
             auto dir = ph->get_direction();
             /* A server bullet on a client: drawn in the shown frame, turned like its path there */
             if (auto& fr = b.framed(); fr && !fr->own) {
-                auto [drawn_pos, drawn_vel] = fr->drawn(pos, ph->get_velocity());
+                auto [drawn_pos, drawn_vel] = fr->drawn(pos, ph->get_velocity(), interpolation_factor * timestep);
                 pos                         = drawn_pos;
                 if (magnitude(drawn_vel) > 1.f)
                     dir = normalize(drawn_vel);

@@ -2714,6 +2714,65 @@ TEST_CASE("net: server bullets under gravity are drawn turned along their drawn 
     CHECK(max_error < 0.5f);
 }
 
+TEST_CASE("net: server bullets of a shooter with ping are drawn from the muzzle") {
+    using namespace std::chrono_literals;
+    hit_fixture f{25, 25};
+    /*
+     * A network shooter with ~100 ms ping (lag + rewind) fires away from the
+     * local player: its bullets are shown ~lag + rewind into their flight
+     * when it is shown firing. They must be drawn from the muzzle, catch up
+     * with the shown frame and never be drawn moving backwards
+     */
+    f.server_side().teleport({1400.f, 1040.f});
+    f.bot->lag_compensation({.lag = 0.1f, .rewind = 0.11f});
+    f.run_for(1500ms);
+
+    struct drawn_t {
+        std::vector<float> dist; /* drawn distance from the muzzle per tick */
+        float              shown_first = 0.f;
+        bool               caught_up   = false;
+    };
+    std::map<u32, drawn_t> drawn;
+    auto last_tick = f.gs_cli.sim.tick();
+    REQUIRE(f.bot->shot());
+    f.run_for(500ms, [&] {
+        if (f.gs_cli.sim.tick() == last_tick)
+            return;
+        last_tick = f.gs_cli.sim.tick();
+        for (auto& blt : f.gs_cli.blt_mgr.bullets()) {
+            auto& fr = blt.framed();
+            if (!fr || fr->own || blt.net_id() == 0 || blt.physic()->ready_delete_later())
+                continue;
+            auto& d   = drawn[blt.net_id()];
+            auto  pos = fr->drawn(blt.physic()->get_position(), blt.physic()->get_velocity()).first;
+            if (d.dist.empty())
+                d.shown_first = magnitude(
+                    f.gs_cli.ballistic_forward(fr->start, fr->velocity, fr->gravity, fr->shown_flight).first - fr->start);
+            d.dist.push_back(magnitude(pos - fr->start));
+            d.caught_up = d.caught_up || fr->catch_up == 0.f;
+        }
+    });
+    f.bot->relax();
+    REQUIRE(!drawn.empty());
+
+    size_t long_flights = 0;
+    for (auto& [id, d] : drawn) {
+        CAPTURE(id, d.shown_first, d.dist.front(), d.dist.size());
+        /* The shown frame is far from the muzzle: without the catch-up the bullet appeared there */
+        CHECK(d.shown_first > 150.f);
+        /* Drawn from the muzzle: up to a tick at the catch-up speed */
+        CHECK(d.dist.front() < 60.f);
+        /* Caught up within ~0.33 s (the head start at 2x speed), unless fired at the end */
+        if (d.dist.size() >= 40) {
+            ++long_flights;
+            CHECK(d.caught_up);
+        }
+        for (size_t i = 1; i < d.dist.size(); ++i)
+            CHECK(d.dist[i] >= d.dist[i - 1]);
+    }
+    CHECK(long_flights > 0);
+}
+
 TEST_CASE("net: own bullet hits on remote players are predicted") {
     using namespace std::chrono_literals;
     hit_fixture f;
