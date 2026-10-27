@@ -76,14 +76,20 @@ public:
     }
 
     [[nodiscard]]
+    /**
+     * The line at f of the tick, normalized: (nx, ny, c) with the signed
+     * distance nx * x + ny * y + c. The normal is oriented by the line's own
+     * direction (p1 -> p2), so it keeps its side while the line moves: a
+     * point crossing it changes the sign. (Oriented towards the origin, it
+     * flipped when the line crossed the origin: x = 0 for a vertical side,
+     * so a bullet passed through a player crossing x = 0 in that tick)
+     */
     sf::Vector3f equation(float timestep, float f) const {
         auto [p1, p2] = interpolated_pos2(timestep, f);
         auto a = p2.y - p1.y;
         auto b = p2.x - p1.x;
         auto c = p2.x * p1.y - p1.x * p2.y;
         auto d = 1.f / std::sqrt(a * a + b * b);
-        if (c >= 0)
-            d = -d;
         return sf::Vector3f(-a, b, -c) * d;
     }
 

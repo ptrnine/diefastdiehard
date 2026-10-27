@@ -1778,6 +1778,30 @@ TEST_CASE("net: server-only knockback is reconciled on the client") {
     CHECK(f.local().get_position().y == Catch::Approx(f.server_side().get_position().y).margin(1.f));
 }
 
+TEST_CASE("physic_simulation: a bullet hits a player whose side crosses x = 0") {
+    /*
+     * A player in the air moving left, a bullet overtaking it: in the tick
+     * the bullet (10 -> -15) crosses the player's right side (5 -> -5). The
+     * line equation used to be oriented towards the origin, so it flipped
+     * when the side crossed x = 0 and the crossing was missed. The same
+     * scenario 1000 px to the right is the control
+     */
+    auto shift = GENERATE(0.f, 1000.f);
+    CAPTURE(shift);
+    game_state gs;
+    auto target = gs.player_create("target");
+    REQUIRE(target);
+    auto size = target->get_size();
+    target->position({shift + 5.f - size.x, 300.f});
+    target->velocity({-600.f, 0.f});
+    auto& blt = gs.blt_mgr.shot(gs.sim, {shift + 10.f, 300.f - size.y * 0.5f}, 1.f, {-1500.f, 0.f}, sf::Color::White, false);
+    auto  ph  = blt.physic();
+
+    gs.sim.update_immediate(1.f / 60.f, game_clock::now());
+    CHECK(ph->ready_delete_later());
+    CHECK(target->get_velocity().x < -600.f - 100.f); /* pushed on by the bullet */
+}
+
 TEST_CASE("game_state: lag-compensated bullets") {
     game_state gs;
     auto shooter = gs.player_create("shooter");
