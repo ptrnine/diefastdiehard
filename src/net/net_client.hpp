@@ -231,10 +231,17 @@ public:
         return _weapon_corrections;
     }
 
+    /** Number of weapon corrections that changed the predicted ammo (magazine or reserve) */
+    [[nodiscard]]
+    u64 ammo_corrections() const {
+        return _ammo_corrections;
+    }
+
     void reset_correction_stats() {
         _corrections        = 0;
         _max_correction     = 0.f;
         _weapon_corrections = 0;
+        _ammo_corrections   = 0;
     }
 
     [[nodiscard]]
@@ -584,6 +591,9 @@ private:
             if (replay_weapon) {
                 gun.restore_sync_state(*server_wpn, ack_seq);
                 ++_weapon_corrections;
+                if (predicted && predicted->extra.weapon &&
+                    (predicted->extra.weapon->ammo != server_wpn->ammo || predicted->extra.weapon->reserve != server_wpn->reserve))
+                    ++_ammo_corrections;
                 glog().detail("net client: weapon correction at tick {}: ammo {} (reserve {})", ack_seq, server_wpn->ammo,
                               server_wpn->reserve);
             }
@@ -1815,6 +1825,7 @@ private:
     u64          _corrections     = 0;
     float        _max_correction  = 0.f;
     u64          _weapon_corrections = 0;
+    u64          _ammo_corrections   = 0;
     server_clock _clock;
     std::map<player_name_t, snapshot_buffer<remote_player_snapshot>> _remote;
     using knockback_t = knockback_offset<bullet_ref, player::physic_state>;

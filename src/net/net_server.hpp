@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -99,6 +100,7 @@ public:
             std::optional<double> view_s;   // the server time the client was showing at the tick
         };
         std::map<u32, queued_input> inputs;
+        std::set<u32>               merged_seqs; // queued seqs merged away: a newer window must not queue them again
         float                       input_wait_s = 0.f; // time the last applied input tick waited in the queue
         /*
          * Input margin (sent in STATE, the client aligns its ticks with it):
@@ -111,7 +113,7 @@ public:
         u32                next_seq      = 0; // first seq not applied yet, 0 = none received yet
         u32                ack_seq       = 0; // last applied seq
         u8                 held_bits     = 0; // held part of the last applied input
-        u8                 pending_edges = 0; // edges of inputs merged away, applied with the next one
+        u8                 pending_edges = 0; // edges and shots of inputs merged away, applied with the next one
         bool               buffering     = true; // refilling the jitter buffer
         clock::time_point  last_input_time;
         server_clock       input_jitter;               // input arrivals: offset = arrival - client send time
@@ -517,14 +519,51 @@ private:
             else
                 client.target_inputs = target_queued_inputs;
 
-            auto merge_oldest = [&] {
-                client.pending_edges |= u8(q.begin()->second.bits & in_edge_bits);
-                q.erase(q.begin());
+            auto merge = [&](auto it) {
+                client.merged_seqs.insert(it->first);
+                q.erase(it);
             };
 
-            /* Too many queued ticks (client clock runs faster, burst after a stall): merge the oldest */
-            while (q.size() > std::max(max_queued_inputs, client.target_inputs + max_queued_excess))
-                merge_oldest();
+            /*
+             * The tick repeats the previous one (the same input, no edges):
+             * merging it away loses a tick of time only, every press and
+             * release stays on its tick. A shot due on it fires on the next
+             * tick: the trigger must stay held there. by_next: the next tick
+             * is the same input too
+             */
+            auto repeated = [&](auto it, bool by_next) {
+                auto bits = it->second.bits;
+                auto next = std::next(it);
+                bool contiguous = next != q.end() && next->first == it->first + 1;
+                if ((bits & in_edge_bits) != 0 || (by_next && !(contiguous && next->second.bits == bits)) ||
+                    ((bits & in_bit_shot) && !(contiguous && (next->second.bits & in_bit_shot))))
+                    return false;
+                if (it == q.begin())
+                    return client.ack_seq != 0 && it->first == client.ack_seq + 1 && client.pending_edges == 0 &&
+                           bits == client.held_bits;
+                auto prev = std::prev(it);
+                return prev->first + 1 == it->first && prev->second.bits == bits;
+            };
+
+            /*
+             * Too many queued ticks (client clock runs faster, burst after a
+             * stall): merge the oldest repeated one. A merged trigger press or
+             * release would desync the weapon (the client's prediction fires
+             * and reloads by every tick). None repeated: merge the oldest,
+             * its edges and trigger pull carry over to the next one
+             */
+            while (q.size() > std::max(max_queued_inputs, client.target_inputs + max_queued_excess)) {
+                auto it = q.end();
+                for (bool by_next : {true, false})
+                    for (auto i = q.begin(); it == q.end() && i != q.end(); ++i)
+                        if (repeated(i, by_next))
+                            it = i;
+                if (it == q.end()) {
+                    it = q.begin();
+                    client.pending_edges |= u8(it->second.bits & (in_edge_bits | in_bit_shot));
+                }
+                merge(it);
+            }
 
             if (q.empty())
                 client.buffering = true;
@@ -542,15 +581,9 @@ private:
             else {
                 client.min_depth = std::min(client.min_depth, q.size());
                 if (++client.depth_ticks >= drain_window_ticks) {
-                    auto repeated = [&] {
-                        auto head = q.begin();
-                        auto next = std::next(head);
-                        return next != q.end() && next->first == head->first + 1 &&
-                               head->second.bits == next->second.bits && (head->second.bits & in_edge_bits) == 0;
-                    };
-                    if (client.min_depth <= client.target_inputs || repeated()) {
+                    if (client.min_depth <= client.target_inputs || repeated(q.begin(), true)) {
                         if (client.min_depth > client.target_inputs)
-                            merge_oldest();
+                            merge(q.begin());
                         client.min_depth   = std::numeric_limits<size_t>::max();
                         client.depth_ticks = 0;
                     }
@@ -568,6 +601,7 @@ private:
                 client.next_seq      = head->first + 1;
                 client.held_bits     = u8(head->second.bits & ~in_edge_bits);
                 client.pending_edges = 0;
+                client.merged_seqs.erase(client.merged_seqs.begin(), client.merged_seqs.lower_bound(client.next_seq));
                 /* Measured at the tick's time (catch-up ticks run late) */
                 client.input_wait_s =
                     std::max(std::chrono::duration<float>(gs.sim.current_update_time() - head->second.received).count(), 0.f);
@@ -692,6 +726,7 @@ private:
         client.joined      = true;
         client.joined_time = clock::now();
         client.inputs.clear();
+        client.merged_seqs.clear();
         client.next_seq      = 0;
         client.held_bits     = 0;
         client.pending_edges = 0;
@@ -778,7 +813,7 @@ private:
 
         for (u32 i = 0; i < in.bits.size(); ++i) {
             auto seq = in.first_seq() + i;
-            if (seq >= client->next_seq)
+            if (seq >= client->next_seq && !client->merged_seqs.contains(seq))
                 client->inputs.emplace(seq, client_t::queued_input{in.bits[i], now, in.view_s(i)});
         }
     }

@@ -910,13 +910,19 @@ private:
      * wherever the weapon is simulated. A network player's weapon counts its
      * applied input ticks instead (the server can tick without a new input
      * while waiting for one), so the shots and reloads land on the same input
-     * ticks on the server and in the client's prediction. Returns whether the
+     * ticks on the server and in the client's prediction. A tick without a
+     * new input tick (the server waits for one) is skipped: the prediction
+     * has no such tick to fire or start a reload on. Returns whether the
      * weapon fires
      */
     bool tick(float timestep) {
         if (_input_tick) {
             auto ticks          = _counted_input_tick ? *_input_tick - *_counted_input_tick : 1u;
             _counted_input_tick = _input_tick;
+            if (ticks == 0) {
+                _anim_tick_dt = 0.f;
+                return false;
+            }
             timestep *= float(ticks);
         }
         _anim_tick_dt = timestep;

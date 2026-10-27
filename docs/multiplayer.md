@@ -200,14 +200,24 @@ the client: the old player is deleted.
     queued tick is a tick of input latency and of the client's shot
     forwarding (`lag`). Until 1 s is measured, the target is 6 (50 ms);
   - drains a queue that stayed deeper than the target for a whole window
-    of 60 ticks (`drain_window_ticks`, 0.5 s): merges its oldest tick, once the
-    next tick repeats it (the same held bits, no edges; a merged trigger
-    pull would fire a tick later, seeded by another tick, unlike the
-    client's prediction). Without it, the backlog of a client hitch (a
-    stall, then the ticks at once) stayed queued for good;
-  - above `max(16, target + 8)` queued ticks, merges the oldest ticks away,
-    keeping their edges. Merged ticks are not simulated, so the client's
-    prediction of them diverges and gets corrected (physics and weapon);
+    of 60 ticks (`drain_window_ticks`, 0.5 s): merges its oldest tick, once it
+    is repeated (see below) by the previous and the next tick. Without it,
+    the backlog of a client hitch (a stall, then the ticks at once) stayed
+    queued for good;
+  - above `max(16, target + 8)` queued ticks, merges the oldest repeated
+    tick away: the same held bits as the previous tick, no edges, and a
+    held trigger stays held on the next tick (preferably the next tick is
+    the same input too). Only a tick of time is lost: every trigger press
+    and release stays on its tick, a shot due on the merged tick fires on
+    the next one. Merging the oldest tick dropped short presses and
+    releases: the server fired fewer (or more) shots than the client
+    predicted, and the client reloaded while the server's gun still had
+    ammo. No repeated tick: merges the oldest, its edges and trigger pull
+    carry over to the next tick. A merged seq is consumed
+    (`client_t::merged_seqs`): newer input windows still carry it and
+    re-queued it, undoing the merge (and applying its edges twice). Merged
+    ticks are not simulated, so the client's prediction of them diverges
+    and gets corrected (physics and weapon timing);
   - after 0.5 s without input, applies a neutral input.
 - **View:** with every input tick the client reports its view: the server
   time it was showing then (`_shown_time`, the render time of the last
@@ -614,7 +624,9 @@ teleport in the snapshots makes the test use the first snapshot after it
 - **Counted time:** a network player's weapon counts its applied input ticks
   (`input_tick(seq)`), not server ticks. The server can tick without a new
   input, so a reload ends, and a held trigger fires, on the same input tick
-  on the server and in the prediction.
+  on the server and in the prediction. A tick without a new input tick
+  (the queue ran dry) skips the weapon logic: the held trigger fired, or a
+  reload started, on a tick the prediction does not have.
 - **Synced state:** `sync_state` holds ammo, animation id and time,
   `since_shot`, reloading/trigger flags, shot index and seed base. The
   server sends it, and the client corrects its predicted player's weapon

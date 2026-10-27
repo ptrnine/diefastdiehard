@@ -3703,3 +3703,37 @@ TEST_CASE("net: lobby") {
     CHECK_FALSE(f.cli->last_lobby_request().ready);
     CHECK(f.server_side().get_group() == 5);
 }
+
+TEST_CASE("net: merged input ticks keep the trigger presses and releases") {
+    using namespace std::chrono_literals;
+    auto wpn = GENERATE(as<std::string>{}, "wpn_glk17", "wpn_ak9", "wpn_1887");
+    auto tap = GENERATE(6, 13); /* frames per trigger press and release: ~4 and ~8 ticks */
+    /*
+     * Jittery latency: bursts overflow the server's input queue and it
+     * merges ticks. A merged trigger press or release made the server fire
+     * fewer (or more) shots than the client predicted: the client reloaded
+     * while the server's gun still had ammo
+     */
+    net_game_fixture f{10, 400};
+
+    auto gm            = f.gs_srv.cur_game_mode;
+    gm.magazines_count = 100;
+    f.gs_srv.game_mode_set(gm);
+    f.server_side().setup_pistol(wpn, gm.magazines_count);
+    f.server_side().teleport({1300.f, 1040.f});
+    f.run_for(2000ms);
+    REQUIRE(f.local().pistol_section() == wpn);
+
+    auto& srv_gun = f.server_side().get_gun();
+    auto& cli_gun = f.local().get_gun();
+    f.cli->reset_correction_stats();
+    int frames = 0;
+    f.run_for(15000ms, [&] { f.input.shot = (++frames / tap) % 2 != 0; });
+    f.input = {};
+    f.run_for(6000ms); /* the reload is over on both sides (the client is ahead by the latency) */
+
+    UNSCOPED_INFO(wpn << ", tap " << tap << ": weapon corrections " << f.cli->weapon_corrections());
+    CHECK(f.cli->ammo_corrections() == 0);
+    CHECK(cli_gun.ammo_elapsed() == srv_gun.ammo_elapsed());
+    CHECK(cli_gun.ammo_reserve() == srv_gun.ammo_reserve());
+}
