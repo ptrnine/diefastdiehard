@@ -198,9 +198,10 @@ public:
 
     /* A hit predicted on the client, waiting for the server's confirmation */
     struct predicted_hit_t {
-        bullet_ref ref;
-        vec2f      impulse;
-        bool       grounded; // the player stood on a platform when hit
+        bullet_ref            ref;
+        vec2f                 impulse;
+        bool                  grounded; // the player stood on a platform when hit
+        std::optional<double> at;       // when it hit, if known: the server time of the shown remote player (net client)
     };
 
     /**
@@ -1655,13 +1656,14 @@ public:
      * - remote player mirror (client): queued only, the client shows it as a
      *   visual knockback until the server state has it
      */
-    void on_bullet_hit(const vec2f& impulse, const vec2f& hit_position, const bullet_ref& ref = {}) {
+    void on_bullet_hit(const vec2f& impulse, const vec2f& hit_position, const bullet_ref& ref = {},
+                       std::optional<double> at = {}) {
         if (!_server_driven)
             apply_hit_physics(impulse);
         else {
             if (_predicted)
                 apply_hit_physics(impulse);
-            _predicted_hits.push_back({ref, impulse, _collision_box->is_lock_y()});
+            _predicted_hits.push_back({ref, impulse, _collision_box->is_lock_y(), at});
         }
         hit_feedback(impulse, hit_position, ref);
     }

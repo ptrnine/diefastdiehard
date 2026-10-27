@@ -44,7 +44,14 @@ shooters; prediction and lag compensation stay the same (the client runs
 ahead of the server by the one way trip + the small margin; the view time
 keeps the hit tests exact).
 
-### 3. Smoother hand-over of a predicted knockback (~5–7 ms, medium)
+### 3. Smoother hand-over of a predicted knockback (~5–7 ms, medium) — done (~5 ms)
+
+Done differently than blending: the jump came from the predicted knockback
+starting at the wrong time (the shown time of its detection), not from the
+hand-over itself. It now starts where the server's does (the server's tick
+at or before the hit time, see `docs/multiplayer.md`, Hit prediction), so
+the confirming snapshots continue it without a jump. The margin is 5 ms:
+at 3 ms one test still mispredicts an own hit on a falling remote player.
 
 The 10 ms interpolation margin (`server_clock::interp_margin_s`) is only
 needed because a predicted hard knockback jumps when the confirming

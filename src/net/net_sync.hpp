@@ -30,7 +30,7 @@ public:
     /* Defaults of the interpolation delay: jitter + state interval + margin, at least min (see interp_settings) */
     static constexpr double min_interp_s       = 0.020;
     static constexpr double max_interp_s       = 0.3;
-    static constexpr double interp_margin_s    = 0.010;
+    static constexpr double interp_margin_s    = 0.005;
     static constexpr double default_interval_s = 1.0 / 60.0; /* the state interval before it is measured (a tick) */
     static constexpr double max_interval_s     = 0.1;   /* longer pauses (e.g. a paused game) are not a state rate */
     static constexpr double max_slew         = 0.1;  /* render clock speed deviation */
@@ -222,6 +222,17 @@ public:
         return _snaps.back().value;
     }
 
+    /** The newest snapshot at or before time_s, with its time */
+    [[nodiscard]]
+    std::optional<std::pair<double, T>> at_or_before(double time_s) const {
+        auto next = std::upper_bound(_snaps.begin(), _snaps.end(), time_s,
+                                     [](double t, const snap_t& s) { return t < s.time_s; });
+        if (next == _snaps.begin())
+            return {};
+        auto snap = std::prev(next);
+        return std::pair{snap->time_s, snap->value};
+    }
+
     /** The oldest snapshot matching pred */
     template <typename F>
     [[nodiscard]]
@@ -338,9 +349,11 @@ private:
  * re-simulates the victim (game_state::apply_hit_at), so the snapshots
  * that report the hit already show the motion predicted here: confirmed
  * hits are simply dropped from the prediction (the caller smooths the
- * small difference). Hits the server did not register fade out. The
- * offset is not limited: it follows the game physics, and a hard hit must
- * not stop in mid-air until it is confirmed.
+ * small difference). For that the episode starts where the server's motion
+ * does (predict's ahead_s), each episode stepped on its own tick grid.
+ * Hits the server did not register fade out. The offset is not limited: it
+ * follows the game physics, and a hard hit must not stop in mid-air until
+ * it is confirmed.
  *
  * State needs pos, vel (vec2f) and lock_y (bool)
  */
@@ -376,6 +389,7 @@ public:
         pair_t             ghosts;
         float              age  = 0.f;
         float              fade = 1.f; /* < 1: fading out */
+        float              since_step = 0.f; /* time since the ghosts' last step (< 0: starts in that long) */
 
         [[nodiscard]]
         bool open() const {
@@ -383,27 +397,48 @@ public:
         }
 
         [[nodiscard]]
+        bool started() const {
+            return since_step >= 0.f;
+        }
+
+        /* In between the fixed steps: moved on by the velocity */
+        [[nodiscard]]
         vec2f offset() const {
-            return ghosts.offset() * fade;
+            return started() ? (ghosts.offset() + ghosts.velocity() * since_step) * fade : vec2f{0.f, 0.f};
         }
 
         [[nodiscard]]
         vec2f velocity() const {
-            return ghosts.velocity() * fade;
+            return started() ? ghosts.velocity() * fade : vec2f{0.f, 0.f};
         }
     };
 
     /**
-     * A hit predicted now on the player shown in state shown; apply_hit(State&,
-     * impulse) applies it to a ghost. Joins the open episode, if any
+     * A hit on the player shown in state shown; apply_hit(State&, impulse)
+     * applies it to a ghost. Joins the open episode, if any. Otherwise a new
+     * one starts from shown ahead_s ago (stepped by step_state(State&, float
+     * timestep) up to now; negative: it starts in -ahead_s): where the server
+     * starts the hit's motion
      */
-    template <typename FApply>
-    void predict(const Ref& ref, const vec2f& impulse, const State& shown, FApply&& apply_hit) {
-        if (_episodes.empty() || !_episodes.back().open())
+    template <typename FApply, typename FStep>
+    void predict(const Ref& ref, const vec2f& impulse, const State& shown, FApply&& apply_hit, float ahead_s,
+                 float timestep, FStep&& step_state) {
+        if (_episodes.empty() || !_episodes.back().open()) {
             _episodes.push_back({{}, {shown, shown}});
+            apply_hit(_episodes.back().ghosts.with, impulse);
+            _episodes.back().hits.push_back({ref, impulse});
+            advance(_episodes.back(), ahead_s, timestep, step_state);
+            return;
+        }
         auto& ep = _episodes.back();
         apply_hit(ep.ghosts.with, impulse);
         ep.hits.push_back({ref, impulse});
+    }
+
+    /* A hit predicted now (see the above) */
+    template <typename FApply>
+    void predict(const Ref& ref, const vec2f& impulse, const State& shown, FApply&& apply_hit) {
+        predict(ref, impulse, shown, apply_hit, 0.f, 1.f, [](State&, float) {});
     }
 
     /**
@@ -419,7 +454,8 @@ public:
             auto confirmed = std::erase_if(ep.hits, [&](const hit_t& h) { return matches(h.ref); });
             if (confirmed == 0 || ep.hits.empty())
                 continue;
-            ep.ghosts = {snapshot, snapshot};
+            ep.ghosts     = {snapshot, snapshot};
+            ep.since_step = 0.f;
             for (auto& h : ep.hits)
                 apply_hit(ep.ghosts.with, h.impulse);
         }
@@ -433,24 +469,14 @@ public:
      */
     template <typename F>
     void step(float dt, float timestep, float unconfirmed_timeout_s, F&& step_state) {
-        _accumulated += dt;
-        while (_accumulated >= timestep) {
-            _accumulated -= timestep;
-            for (auto& ep : _episodes) {
-                step_state(ep.ghosts.with, timestep);
-                step_state(ep.ghosts.without, timestep);
-            }
-        }
-
         for (auto& ep : _episodes) {
+            advance(ep, dt, timestep, step_state);
             ep.age += dt;
             if (!ep.open() || ep.age > unconfirmed_timeout_s)
                 ep.fade *= std::exp(-dt / fade_s);
         }
 
         std::erase_if(_episodes, [](const episode_t& ep) { return ep.fade < remove_below; });
-        if (_episodes.empty())
-            _accumulated = 0.f;
     }
 
     [[nodiscard]]
@@ -465,7 +491,7 @@ public:
         vec2f o = {0.f, 0.f};
         for (auto& ep : _episodes)
             if (std::ranges::none_of(ep.hits, [&](const hit_t& h) { return reported(h.ref); }))
-                o += ep.offset() + ep.velocity() * _accumulated; /* in between the fixed steps */
+                o += ep.offset();
         return o;
     }
 
@@ -480,7 +506,7 @@ public:
     /* Ground contact of the shown motion: of the open episode's ghost, if any */
     [[nodiscard]]
     std::optional<bool> grounded() const {
-        if (!_episodes.empty() && _episodes.back().open())
+        if (!_episodes.empty() && _episodes.back().open() && _episodes.back().started())
             return _episodes.back().ghosts.with.lock_y;
         return {};
     }
@@ -499,8 +525,18 @@ public:
     }
 
 private:
+    /* Move an episode's ghosts on by dt in fixed steps of timestep */
+    template <typename F>
+    static void advance(episode_t& ep, float dt, float timestep, F&& step_state) {
+        ep.since_step += dt;
+        while (ep.since_step >= timestep) {
+            ep.since_step -= timestep;
+            step_state(ep.ghosts.with, timestep);
+            step_state(ep.ghosts.without, timestep);
+        }
+    }
+
     std::vector<episode_t> _episodes;
-    float                  _accumulated = 0.f;
 };
 
 } // namespace dfdh::net

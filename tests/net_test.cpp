@@ -1445,6 +1445,24 @@ TEST_CASE("net_sync: server clock and snapshot interpolation") {
         confirmed.confirm([](int ref) { return ref == 2; }, standing, apply_hit);
         CHECK(confirmed.empty());
 
+        /*
+         * Started where the server starts the hit's motion: in the past it is
+         * stepped up to now (it shows what one predicted back then shows
+         * now), in the future it waits
+         */
+        kb_t early, late, waiting;
+        early.predict(1, {200.f, 0.f}, standing, apply_hit);
+        run(early, 0.1f);
+        late.predict(1, {200.f, 0.f}, standing, apply_hit, 0.1f, dt, stepper);
+        CHECK(late.offset().x == Catch::Approx(early.offset().x).margin(0.5f));
+        CHECK(late.velocity().x == Catch::Approx(early.velocity().x).margin(0.5f));
+        waiting.predict(1, {200.f, 0.f}, standing, apply_hit, -0.05f, dt, stepper);
+        run(waiting, 0.03f); /* 2 steps */
+        CHECK(waiting.offset().x == 0.f);
+        CHECK_FALSE(waiting.grounded());
+        run(waiting, 0.1f);
+        CHECK(waiting.offset().x > 5.f);
+
         /* Not confirmed in time: fades out */
         kb_t missed;
         missed.predict(1, {200.f, 0.f}, standing, apply_hit);
@@ -2557,7 +2575,9 @@ TEST_CASE("net: server bullets under gravity are drawn turned along their drawn 
      * Drawn shown_delay behind its simulated position (earlier in its
      * flight), a bullet must be turned like its path there: the direction it
      * is drawn moving in. Turned like the simulated one, it pointed up to
-     * ~3.7 deg lower than its path at this ping
+     * ~3.7 deg lower than its path at this ping. Measured once it left the
+     * muzzle (drawn there until shown_delay into its flight: the step it
+     * leaves is a part of a tick)
      */
     std::map<u32, std::vector<std::pair<vec2f, vec2f>>> drawn; /* per bullet: drawn position and direction per tick */
     auto last_tick = f.gs_cli.sim.tick();
@@ -2567,7 +2587,8 @@ TEST_CASE("net: server bullets under gravity are drawn turned along their drawn 
             return;
         last_tick = f.gs_cli.sim.tick();
         for (auto& blt : f.gs_cli.blt_mgr.bullets())
-            if (auto& fr = blt.framed(); fr && !fr->own && blt.net_id() != 0 && !blt.physic()->ready_delete_later()) {
+            if (auto& fr = blt.framed();
+                fr && !fr->own && blt.net_id() != 0 && !blt.physic()->ready_delete_later() && fr->shown_flight > 0.f) {
                 auto [pos, vel] = fr->drawn(blt.physic()->get_position(), blt.physic()->get_velocity());
                 drawn[blt.net_id()].emplace_back(pos, normalize(vel));
             }

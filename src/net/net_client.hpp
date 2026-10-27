@@ -916,13 +916,19 @@ private:
      * It is in the snapshots (about the shown time now). Plus the knockbacks
      * predicted on top of them. Without a view: the shown time
      */
-    std::optional<std::pair<player*, vec2f>> own_bullet_hit(game_state& gs, const vec2f& a, const vec2f& b, float flight,
-                                                            std::optional<double> view, const player* local, int group) {
+    struct own_hit_t {
+        player* target;
+        vec2f   position;
+        double  time; /* the tested server time (the server's hit time) */
+    };
+
+    std::optional<own_hit_t> own_bullet_hit(game_state& gs, const vec2f& a, const vec2f& b, float flight,
+                                            std::optional<double> view, const player* local, int group) {
         if (!view && !_shown_time)
             return {};
         auto t = view ? *view + double(flight) : *_shown_time;
 
-        std::optional<std::pair<player*, vec2f>> res;
+        std::optional<own_hit_t> res;
         auto best = std::numeric_limits<float>::max();
         for (auto& [name, snaps] : _remote) {
             auto found = gs.players.find(name);
@@ -954,7 +960,7 @@ private:
             auto size = pl.get_size();
             if (auto hit = game_state::segment_hit(a, b, {pos.x, pos.y - size.y, size.x, size.y}); hit && *hit < best) {
                 best = *hit;
-                res  = std::pair{&pl, a + (b - a) * *hit};
+                res  = own_hit_t{&pl, a + (b - a) * *hit, t};
             }
         }
         return res;
@@ -989,7 +995,7 @@ private:
 
             if (fr->own) {
                 if (auto hit = own_bullet_hit(gs, from, to, flight, fr->view, local, blt.group())) {
-                    hit->first->on_bullet_hit(ph->impulse(), hit->second, bullet_ref::of(ph.get()));
+                    hit->target->on_bullet_hit(ph->impulse(), hit->position, bullet_ref::of(ph.get()), hit->time);
                     ph->delete_later();
                 }
                 continue;
@@ -1192,12 +1198,29 @@ private:
                 st = ghost.get_physic_state();
             };
 
+            /*
+             * The server starts the motion of a retroactive hit at its last
+             * tick at or before the hit time (game_state::apply_hit_at: before
+             * the next tick's move), a snapshot here: started from there on
+             * its tick grid, the prediction shows the motion the confirming
+             * snapshots will (it is detected at about the hit time, but the
+             * render clock slews; hand-overs jumped by up to ~100 px of a hard
+             * hit). Server bullets' hits are predicted at the shown time
+             */
             for (auto& hit : pl.take_predicted_hits()) {
                 if (hit.ref.id != 0 && _own_bullet_ids.contains(hit.ref.id))
                     _own_hit_ids.push_back(hit.ref.id); /* its bullet is confirmed already */
                 else if (hit.ref.key)
                     _own_hit_keys.push_back(*hit.ref.key);
-                kb.predict(hit.ref, hit.impulse, shown, apply_hit);
+
+                auto from = hit.at ? snaps.at_or_before(*hit.at) : std::nullopt;
+                if (from && from->second.teleports == snap->teleports && continuous) {
+                    /* Before this frame's step (dt) */
+                    auto ahead = std::clamp(float(t - from->first) - dt, -max_hit_lead_s, max_hit_age_s);
+                    kb.predict(hit.ref, hit.impulse, from->second.ph, apply_hit, ahead, gs.sim.last_timestep(), step_ghost);
+                }
+                else
+                    kb.predict(hit.ref, hit.impulse, shown, apply_hit);
             }
             trim_own_hit_stats();
             for (auto id : snap->hits)
@@ -1632,6 +1655,10 @@ private:
         pl->tracer_color(unpack_color(cfg.tracer_color));
         pl->group(cfg.group);
     }
+
+    /* How far in the past (future) of the shown time a predicted hit's knockback may start */
+    static constexpr float max_hit_age_s  = 0.25f;
+    static constexpr float max_hit_lead_s = 0.1f;
 
     /* Input ticks the server's switch to the secondary gun may lag behind the predicted one */
     static constexpr u32 predicted_switch_confirm_ticks = 30;

@@ -224,7 +224,7 @@ the client: the old player is deleted.
 | setting | side | default | CLI | console |
 |---------|------|---------|-----|---------|
 | input jitter buffer | server | adaptive | `--input-buffer=auto\|N` (ticks) | `net buffer auto\|N` |
-| interpolation margin | client | 10 ms | `--interp-margin=MS` | `net interp margin MS` |
+| interpolation margin | client | 5 ms | `--interp-margin=MS` | `net interp margin MS` |
 | interpolation minimum | client | 20 ms | `--interp-min=MS` | `net interp min MS` |
 
 `net` shows each client's buffer target, input jitter and queue wait (server)
@@ -234,11 +234,15 @@ fps counter), every frame.
 
 The interpolation delay is the state jitter + the longest state interval
 in the window (a tick, ~17 ms; two when a server frame runs two ticks, a
-dropped frame) + the margin: ~28 ms on a steady link (it was max(jitter + 26 ms, 33 ms)). The
-hit predictions no longer need it (they use the exact view), but the
-hand-over of a predicted hard knockback to the confirming snapshots does:
-with less than ~10 ms margin it shows a jump (`net: a hard hit on a remote
-player flies smoothly`).
+dropped frame) + the margin: ~23 ms on a steady link (it was max(jitter +
+26 ms, 33 ms), then ~28 ms with a 10 ms margin). The hit predictions do not
+need it (they use the exact view), nor does the hand-over of a predicted
+knockback since it starts where the server's does (see Hit prediction;
+it jumped by up to ~100 px of a hard hit before, whatever the margin, which
+the render offset smoothed into a visible speed change). At 3 ms an own bullet's hit
+on a falling remote player is mispredicted in the tests (`net: own bullet
+hits on a falling remote player ...`, not understood yet); 4 ms passes, the
+default keeps a millisecond more.
 
 ## Local player: prediction and reconciliation
 
@@ -300,7 +304,7 @@ tick N: X px`, `weapon correction ...`).
 - **`server_clock`:** estimates the server time from the least delayed state
   in a 2 s window. Its offset spread is the latency jitter:
   `interp_delay = clamp(spread + max state interval + margin, min, 300 ms)`,
-  by default a 10 ms margin and a 20 ms minimum (see Latency settings). Remote players are
+  by default a 5 ms margin and a 20 ms minimum (see Latency settings). Remote players are
   rendered at `server_now - interp_delay`, using a monotonic render clock
   that slews by at most 10 % (and snaps beyond 0.5 s).
 - **`snapshot_buffer`:** stores each remote player's snapshots (state,
@@ -500,6 +504,19 @@ with its player.
   and one without. They are stepped with the real physics on a hidden ghost
   player (`ghost_of`, outside of the simulation). The offset is their
   difference, so it follows platforms and edges.
+  - **Start:** where the server starts the motion. The server applies a
+    retroactive hit before the move of the tick after its last record at or
+    before the hit time (`apply_hit_at`), so the confirming snapshots show
+    the motion from that tick on. An own bullet's hit carries its hit time
+    (`view + flight`, `player::predicted_hit_t::at`): its episode starts
+    from the snapshot at or before it (`snapshot_buffer::at_or_before`, the
+    server's tick grid), stepped up to the shown time (or waiting for it).
+    Each episode keeps its own step phase (`since_step`). Started at the
+    shown time of the detection instead, a hard hit's hand-over jumped by
+    up to ~100 px (the detection is a frame or two off, the render clock
+    slews), and the render offset took ~0.2 s to absorb it: the remote
+    player first sped up or slowed down by a third. Server bullets' hits
+    are still predicted at the shown time.
   - **Episodes:** hits in a row accumulate in one episode, because
     knockback physics is not additive.
   - **Confirmation:** a hit reported by the snapshots is dropped from the
