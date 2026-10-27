@@ -1062,11 +1062,20 @@ private:
             _own_hit_ids.push_back(id);
         _own_bullet_ids.insert(id);
         trim_own_hit_stats();
+        /*
+         * Also the hits still queued on the players (predicted in a tick
+         * sweep, taken by the next frame's apply_remote_snapshots): left with
+         * the key only, their snapshot confirmation never matched them and
+         * the predicted knockback stayed on top of the server's
+         */
+        auto resolve = [&](auto& hit) {
+            if (hit.ref.key && *hit.ref.key == key)
+                hit.ref.id = id;
+        };
         for (auto& [_, kb] : _knockbacks)
-            kb.for_each_hit([&](auto& hit) {
-                if (hit.ref.key && *hit.ref.key == key)
-                    hit.ref.id = id;
-            });
+            kb.for_each_hit(resolve);
+        for (auto& [_, pl] : gs.players)
+            pl->for_each_predicted_hit(resolve);
 
         _predicted.erase(found);
         return true;
@@ -1177,10 +1186,10 @@ private:
             };
 
             for (auto& hit : pl.take_predicted_hits()) {
-                if (hit.ref.key)
+                if (hit.ref.id != 0 && _own_bullet_ids.contains(hit.ref.id))
+                    _own_hit_ids.push_back(hit.ref.id); /* its bullet is confirmed already */
+                else if (hit.ref.key)
                     _own_hit_keys.push_back(*hit.ref.key);
-                else if (_own_bullet_ids.contains(hit.ref.id))
-                    _own_hit_ids.push_back(hit.ref.id);
                 kb.predict(hit.ref, hit.impulse, shown, apply_hit);
             }
             trim_own_hit_stats();

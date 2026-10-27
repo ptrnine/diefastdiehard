@@ -495,7 +495,11 @@ with its player.
     which the confirmation crossed the rest of the knockback at once.
 
 Own-bullet hits on remote players carry a shot key, which is resolved to
-the server id when the bullet is confirmed.
+the server id when the bullet is confirmed: in the knockback episodes and in
+the hits still queued on the players (predicted in a tick sweep, taken by
+the next frame). A queued hit left with the key only was never confirmed by
+the snapshots, so its predicted knockback stayed on top of the server's
+(the remote player flew twice as far for a second).
 
 **Own bullets vs. remote players** (`own_bullet_hit`): own predicted
 bullets don't collide with players physically. Every tick their path is
