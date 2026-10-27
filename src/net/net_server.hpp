@@ -129,8 +129,10 @@ public:
     net_server& operator=(const net_server&) = delete;
 
     ~net_server() {
-        if (_gs)
+        if (_gs) {
             _gs->sim.remove_tick_begin_callback("net_server");
+            _gs->sim.remove_tick_end_callback("net_server");
+        }
     }
 
     net_server(u16 port): _port(port) {
@@ -193,7 +195,13 @@ public:
 
     /**
      * The game_state must outlive the server (the server hooks into its
-     * simulation ticks)
+     * simulation ticks).
+     *
+     * The network I/O of the game is at the tick boundaries: every tick
+     * begins with reading the inputs (one that arrived during the previous
+     * frame is applied in this tick, not in the next frame's), and the state
+     * is sent right after the tick. The frame handles everything else (joins,
+     * the lobby) and broadcasts while nothing ticks (lobby, paused game)
      */
     void update(game_state& gs) {
         if (!_sock.is_open())
@@ -201,12 +209,51 @@ public:
 
         if (!_gs) {
             _gs = &gs;
-            gs.sim.add_tick_begin_callback("net_server", [this](const physic_simulation&, float) { apply_inputs(*_gs); });
+            gs.sim.add_tick_begin_callback("net_server", [this](const physic_simulation&, float) {
+                receive_inputs();
+                apply_inputs(*_gs);
+            });
+            /* After the game's tick end callbacks (shots, history): the state of the finished tick */
+            gs.sim.add_tick_end_callback(
+                "net_server", [this](const physic_simulation&, float) { tick_broadcast(*_gs, clock::now()); }, 1000);
         }
 
+        for (auto& datagram : _deferred)
+            handle_msg(gs, datagram);
+        _deferred.clear();
         for (auto& datagram : _sock.recv(std::chrono::milliseconds(2)))
             handle_msg(gs, datagram);
 
+        /* Nothing ticks (lobby, paused game): the state is sent anyway, this often */
+        auto now = clock::now();
+        if (gs.sim.tick() != _last_broadcast_tick || now - _last_broadcast_time >= idle_broadcast)
+            tick_broadcast(gs, now);
+    }
+
+private:
+    /*
+     * Tick begin: read the socket without waiting. Inputs are queued now,
+     * other messages wait for the frame (they create and delete players)
+     */
+    void receive_inputs() {
+        for (auto& datagram : _sock.recv(std::chrono::milliseconds(0))) {
+            net_msg msg;
+            try {
+                msg = decode_msg({datagram.data.data(), datagram.data.size()});
+            }
+            catch (const std::exception&) {
+                _deferred.push_back(std::move(datagram)); /* the frame logs it */
+                continue;
+            }
+            if (msg.type == msg_type::input)
+                handle_input(datagram.address, msg);
+            else
+                _deferred.push_back(std::move(datagram));
+        }
+    }
+
+    /* The state after a tick (or of the idle frame): once per tick, it does not change in between */
+    void tick_broadcast(game_state& gs, clock::time_point now) {
         /* Bullets spawned since the last broadcast (ids grow: each one is taken once) */
         for (auto& be : gs.cur_frame_bullets)
             if (be.id > _last_pending_bullet_id) {
@@ -219,17 +266,11 @@ public:
             return;
         }
 
-        /* Once per simulation tick: the state does not change in between */
-        auto now = clock::now();
-        if (gs.sim.tick() == _last_broadcast_tick && now - _last_broadcast_time < idle_broadcast)
-            return;
         _last_broadcast_tick = gs.sim.tick();
         _last_broadcast_time = now;
-
         broadcast(gs, now);
     }
 
-private:
     /* Ids of the players on the wire (never reused) */
     u16 player_id(const player_name_t& name) {
         auto [it, inserted] = _player_ids.try_emplace(name, 0);
@@ -769,6 +810,7 @@ private:
     u32                          _broadcast_seq  = 0;
     clock::time_point            _start_time     = clock::now();
     std::map<std::string, client_t> _clients;
+    std::vector<received_datagram>  _deferred; // read at a tick begin, handled by the frame (not inputs)
     std::optional<size_t>        _input_buffer; // fixed input jitter buffer target (ticks), adaptive if empty
     double                       _tick_s = 1.0 / 60.0;
 

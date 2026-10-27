@@ -2355,6 +2355,8 @@ TEST_CASE("net: hits on the falling local player are predicted where the server 
     /* A shooter with lag compensation (like a network one): rewound sweeps instead of physical collisions */
     auto lag_compensated = GENERATE(false, true);
     CAPTURE(weapon, drop_y, lag_compensated);
+    /* The bot's stream disperses with the global generator: the same stream every run, whatever ran before */
+    rand_gen_singleton::instance().mt().seed(1);
 
     if (lag_compensated)
         f.bot->lag_compensation({.lag = 0.05f, .rewind = 0.08f});
@@ -2406,7 +2408,12 @@ TEST_CASE("net: hits of a lagging shooter on the local player are predicted (100
 
     using clock = game_clock;
     std::optional<clock::time_point> srv_hit, cli_hit;
-    /* Held for a few ticks: one shot (released before the first tick, it would not fire) */
+    /*
+     * Held for a few ticks: one shot (released before the first tick, it would
+     * not fire). Seeded like a network player's: the dispersion of a bot's
+     * shot comes from the global generator, and at 700 px it could miss
+     */
+    f.bot->last_input_seq(1);
     REQUIRE(f.bot->shot());
     auto t0 = clock::now();
     f.run_for(1000ms, [&] {

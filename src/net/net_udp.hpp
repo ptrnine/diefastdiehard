@@ -32,7 +32,8 @@ struct received_datagram {
  * - bind(port) opens the socket and binds it (port 0 = ephemeral)
  * - connect(address, port) sets the peer for connected sends
  * - recv(timeout) drains all pending datagrams, blocking up to the
- *   given timeout for the first datagram (never with a manual game_clock)
+ *   given timeout for the first datagram (never with a manual game_clock
+ *   or a zero timeout)
  */
 class udp_channel {
 public:
@@ -100,7 +101,7 @@ public:
         return send_to(_peer, _peer_port, data);
     }
 
-    /* Drain all pending datagrams, blocking up to the timeout for the first one */
+    /* Drain all pending datagrams, blocking up to the timeout for the first one (0: never blocks) */
     std::vector<received_datagram> recv(std::chrono::milliseconds timeout) {
         std::vector<received_datagram> out;
         if (!_open)
@@ -108,8 +109,12 @@ public:
 
         flush_due_sends();
 
-        /* Manual game time (tests): no waiting, a loopback datagram is readable as soon as it is sent */
-        if (!game_clock::manual()) {
+        /*
+         * Manual game time (tests): no waiting, a loopback datagram is readable
+         * as soon as it is sent. No timeout: the socket is non-blocking (a
+         * selector waits forever with a zero timeout)
+         */
+        if (!game_clock::manual() && timeout.count() > 0) {
             sf::SocketSelector selector;
             selector.add(_sock);
             selector.wait(sf::milliseconds(static_cast<i32>(timeout.count())));

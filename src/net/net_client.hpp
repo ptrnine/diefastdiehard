@@ -257,10 +257,17 @@ public:
                 sweep_framed_bullets(*_gs);
                 sample_input(*_gs, timestep);
             });
-            /* After the game's tick end callbacks (player updates: shots, recoil) */
+            /*
+             * After the game's tick end callbacks (player updates: shots,
+             * recoil). The input leaves right after its tick, not at the end
+             * of the frame
+             */
             gs.sim.add_tick_end_callback(
                 "net_client",
-                [this](const physic_simulation&, float) { record_prediction(*_gs); },
+                [this](const physic_simulation&, float) {
+                    record_prediction(*_gs);
+                    send_input_window();
+                },
                 100);
         }
 

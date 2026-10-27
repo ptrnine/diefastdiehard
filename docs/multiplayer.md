@@ -145,10 +145,21 @@ the client: the old player is deleted.
 
   | tick begin | tick end |
   |------------|----------|
-  | `net_server` / `net_client`: apply or sample input | `rewound_bullets` (-1) |
+  | `net_server`: read the inputs, apply them / `net_client`: sample input | `rewound_bullets` (-1) |
   | `history` (10) | `players` (0): `players_tick_update` — weapons, shots, recoil, death |
   | | `history` (100) |
-  | | `net_client` (100): record the prediction |
+  | | `net_client` (100): record the prediction, send the input |
+  | | `net_server` (1000): send the state |
+
+- **Network I/O at the tick boundaries:** the server reads its socket
+  (`recv` without waiting) at every tick begin, right before applying the
+  inputs, and sends the state right after the tick; the client sends its
+  input right after its tick. The server used to read once per frame, after
+  the frame's ticks: an input that arrived during a frame waited for the
+  next frame's tick (~8 ms on average). Only INPUT is handled in the tick;
+  the rest (HELLO, LEAVE, LOBBY: they create and delete players) waits for
+  the frame's `update`, which also reads the socket and sends the state
+  while nothing ticks (lobby, paused game: every 100 ms).
 
 - Players are updated on ticks, not frames. So shots, recoil and reloads land
   on the same input ticks on both sides.
@@ -161,7 +172,7 @@ the client: the old player is deleted.
 ## Input
 
 - **Client:** samples the input once per tick, applies it to the local
-  player and stores it in `input_history`. After each new tick, it sends the
+  player and stores it in `input_history`. Right after each tick, it sends the
   ticks the server has not acknowledged yet (after the newest `ack_seq`, up
   to 32). A lost or reordered datagram costs nothing, because each newer one
   repeats every unacknowledged tick.

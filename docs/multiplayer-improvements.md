@@ -25,7 +25,7 @@ interpolation delay and the input queue wait in game.
 
 ## Options that keep the current advantages
 
-### 1. Network I/O at tick boundaries (~8 ms, low risk)
+### 1. Network I/O at tick boundaries (~8 ms, low risk) — done
 
 The server reads its socket in its per-frame `update`, after
 `gs.game_update()` ran the frame's ticks: an input that arrives during a
