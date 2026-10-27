@@ -198,8 +198,8 @@ public:
          * Catch-up: the shown frame is already the shooter's lag + rewind into
          * the flight when the shooter is shown firing (far from the muzzle at
          * ping), so it is drawn catch_up earlier in its flight, from the
-         * muzzle, catching up at catch_up_speed. catch_up never grows and is
-         * gone before the bullet reaches a player it may hit
+         * muzzle, catching up at bullet::catch_up_speed. catch_up never grows
+         * and is gone before the bullet reaches a player it may hit
          */
         vec2f                gap         = {0.f, 0.f};
         vec2f                gap_vel     = {0.f, 0.f};
@@ -207,8 +207,6 @@ public:
         float                shown_blend = 1.f; // 1: drawn in the shown frame, 0: in the local frame; never grows
         float                catch_up    = 0.f; // s: drawn this much earlier in its flight than the shown frame
         vec2f                catch_up_vel = {0.f, 0.f}; // how fast the catch-up moves it on until the next tick
-
-        static constexpr float catch_up_speed = 2.f; /* drawn 2x faster until caught up */
 
         /* Blend to the shown frame of the bullet at pos flying along vel: by its distance to the local player ahead */
         [[nodiscard]]
@@ -245,6 +243,32 @@ public:
             return {pos + (gap + catch_up_vel * since_tick) * blend, vel + gap_vel * blend};
         }
     };
+
+    /* Drawn behind its position, catching up: drawn this much faster until caught up */
+    static constexpr float catch_up_speed = 2.f;
+
+    /*
+     * Spawned ahead of the muzzle (server: a network shooter's bullet,
+     * forwarded by the shooter's lag): drawn behind seconds earlier in its
+     * flight, from the muzzle, catching up at catch_up_speed (updated every
+     * tick: game_state::bullets_catch_up_update)
+     */
+    struct catch_up_t {
+        float behind;                // s
+        vec2f gap      = {0.f, 0.f}; // drawn position minus its position
+        vec2f gap_vel  = {0.f, 0.f}; // drawn velocity minus its velocity (under gravity: earlier in the flight)
+        vec2f step_vel = {0.f, 0.f}; // how fast the catch-up moves it on until the next tick
+    };
+
+    [[nodiscard]]
+    std::optional<catch_up_t>& catch_up() {
+        return _catch_up;
+    }
+
+    [[nodiscard]]
+    const std::optional<catch_up_t>& catch_up() const {
+        return _catch_up;
+    }
 
     /**
      * Server bullet on a client, simulated in the frame of the predicted
@@ -319,7 +343,8 @@ private:
     float         _rewind     = 0.f;
     vec2f         _swept_from = {0.f, 0.f};
 
-    std::optional<framed_t> _framed;
+    std::optional<framed_t>   _framed;
+    std::optional<catch_up_t> _catch_up;
 };
 
 class bullet_mgr {
@@ -409,6 +434,12 @@ public:
                 auto [drawn_pos, drawn_vel] = fr->drawn(pos, ph->get_velocity(), interpolation_factor * timestep);
                 pos                         = drawn_pos;
                 if (magnitude(drawn_vel) > 1.f)
+                    dir = normalize(drawn_vel);
+            }
+            /* Spawned ahead of the muzzle: drawn behind, catching up */
+            else if (auto& cu = b.catch_up()) {
+                pos += cu->gap + cu->step_vel * (interpolation_factor * timestep);
+                if (auto drawn_vel = ph->get_velocity() + cu->gap_vel; magnitude(drawn_vel) > 1.f)
                     dir = normalize(drawn_vel);
             }
 

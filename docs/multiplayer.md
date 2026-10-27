@@ -419,6 +419,12 @@ tick N: X px`, `weapon correction ...`).
   like the rest of the flight. A hit consumes the bullet. (It used to be
   tested against the players at one time, `S_k − rewind`: newer than the
   shooter saw, by up to `lag`.)
+- **Drawn from the muzzle** (`bullet::catch_up_t`): the server's screen
+  shows the network shooter firing now, its bullet `lag·speed` ahead. It
+  is drawn `lag` earlier in its flight and catches up at 2× its speed
+  (`game_state::bullets_catch_up_update` every tick), visual only, gone
+  30 px before a player it may hit ahead on its path
+  (`game_state::bullet_catch_up_limit`, shared with the clients' catch-up).
 - **Compensated:** a network shooter's bullet with a lag or a rewind. A lag
   under a tick rounds down to 0 (a short input queue on a fast link), the
   rewind still compensates it: it used to collide with the players of the
@@ -533,11 +539,12 @@ with its player.
   the shown frame is already `forward + rewind` (the shooter's lag and view
   delay) into the flight: at 100 ms ping the bullet appeared ~300 px past
   the barrel. So it is drawn `catch_up` earlier in its flight, from the
-  muzzle, and catches up at 2× its speed (`catch_up_speed`, smoothed
+  muzzle, and catches up at 2× its speed (`bullet::catch_up_speed`, smoothed
   between ticks with `catch_up_vel`). It is visual only: the simulation,
   the sweeps and the hits stay in their frames. `catch_up` never grows and
   is gone 30 px before a remote player it may hit ahead on its path
-  (shortened over 2× the distance, ≤ 1.5× faster meanwhile), so it reaches
+  (`game_state::bullet_catch_up_limit`: shortened over 2× the distance,
+  ≤ 1.5× faster meanwhile), so it reaches
   the player when the hit shows up; near the local player the shown blend
   removes it with the gap.
 - Before the first acknowledged input there is no tick time: the bullet is

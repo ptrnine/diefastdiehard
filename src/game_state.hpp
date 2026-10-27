@@ -42,6 +42,9 @@ public:
             "rewound_bullets", [this](const physic_simulation&, float) { rewound_bullets_tick_update(); }, -1);
         sim.add_tick_end_callback(
             "rewound_gun_hits", [this](const physic_simulation&, float) { rewound_gun_hits_tick_update(); }, -1);
+        /* Bullets drawn behind (bullet::catch_up_t) catch up, before this tick's new shots */
+        sim.add_tick_end_callback(
+            "bullets_catch_up", [this](const physic_simulation&, float) { bullets_catch_up_update(); }, -1);
 
         /* Players (weapons, shots, recoil, death) are updated on every simulation tick */
         sim.add_tick_end_callback("players", [this](const physic_simulation&, float) {
@@ -857,8 +860,74 @@ public:
         blt.net_id(id);
         if (compensated)
             blt.lag_compensate(owner.name(), rewind);
+        /* The owner is shown firing now: drawn from the muzzle */
+        if (lag > 0.f) {
+            blt.catch_up() = bullet::catch_up_t{lag};
+            bullet_catch_up_update(blt, false);
+        }
         cur_frame_bullets.push_back({owner.name(), id, key, start, pos, vel, velocity, lag, compensated ? rewind : 0.f, mass,
                                      owner.tracer_color(), gravity, false, {}});
+    }
+
+    /*
+     * How long a bullet drawn behind (catch-up, s) at pos flying vel may stay
+     * behind: it is gone 30 px before a player it may hit ahead on its path
+     * (not the owner nor its group, nor skip), so the bullet reaches the
+     * player when the hit shows up. Shortened over 2x the distance: drawn at
+     * most 1.5x faster meanwhile
+     */
+    [[nodiscard]]
+    float bullet_catch_up_limit(float catch_up, const vec2f& pos, const vec2f& vel, const player* owner, int group,
+                                const player* skip = nullptr) const {
+        constexpr float near   = 30.f;  /* px */
+        constexpr float aside  = 150.f; /* px: passing further aside, the player is not its target */
+        constexpr float span_k = 2.f;
+
+        auto speed = magnitude(vel);
+        if (catch_up <= 0.f || speed < 1.f)
+            return catch_up;
+        auto dir = vel / speed;
+        for (auto& [_, p] : players) {
+            if (p.get() == skip || p.get() == owner || p->eliminated() ||
+                (group != -1 && p->get_group() != -1 && p->get_group() == group))
+                continue;
+            auto size   = p->get_size();
+            auto to     = p->get_position() + vec2f{size.x * 0.5f, -size.y * 0.5f} - pos;
+            auto along  = to.x * dir.x + to.y * dir.y;
+            auto across = std::abs(to.x * dir.y - to.y * dir.x);
+            if (along >= 0.f && across <= aside)
+                catch_up = std::min(catch_up, std::max(along - near, 0.f) / (span_k * speed));
+        }
+        return catch_up;
+    }
+
+    /* Where a bullet drawn behind is drawn until the next tick; tick: it caught up for a tick first */
+    void bullet_catch_up_update(bullet& blt, bool tick) {
+        auto& cu = blt.catch_up();
+        auto& ph = blt.physic();
+        auto  dt = std::chrono::duration<float>(sim.tick_period()).count();
+        if (tick)
+            cu->behind -= (bullet::catch_up_speed - 1.f) * dt;
+
+        auto found = players.find(blt.owner());
+        auto owner = found != players.end() ? found->second.get() : nullptr;
+        cu->behind = bullet_catch_up_limit(cu->behind, ph->get_position(), ph->get_velocity(), owner, blt.group());
+        if (cu->behind <= 0.f) {
+            cu.reset();
+            return;
+        }
+
+        auto [drawn_pos, drawn_vel] =
+            ballistic_forward(ph->get_position(), ph->get_velocity(), ph->is_gravity_enabled(), -cu->behind);
+        cu->gap      = drawn_pos - ph->get_position();
+        cu->gap_vel  = drawn_vel - ph->get_velocity();
+        cu->step_vel = drawn_vel * (std::min(cu->behind, (bullet::catch_up_speed - 1.f) * dt) / dt);
+    }
+
+    void bullets_catch_up_update() {
+        for (auto& blt : blt_mgr.bullets())
+            if (blt.catch_up() && !blt.physic()->ready_delete_later())
+                bullet_catch_up_update(blt, true);
     }
 
     /**

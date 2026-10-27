@@ -968,31 +968,14 @@ private:
      */
     void frame_draw_update(game_state& gs, bullet::framed_t& fr, const vec2f& pos, const vec2f& vel,
                            float shown_flight, const player* local, const player* owner, int group) const {
-        constexpr float near   = 30.f;  /* px */
-        constexpr float aside  = 150.f; /* px: passing further aside, the player is not its target */
-        constexpr float span_k = 2.f;   /* caught up over 2x the head start's distance: drawn <= 1.5x faster */
-
         auto [shown_pos, shown_vel] = gs.ballistic_forward(fr.start, fr.velocity, fr.gravity, shown_flight);
-        if (auto speed = magnitude(shown_vel); fr.catch_up > 0.f && speed > 1.f) {
-            auto dir = shown_vel / speed;
-            for (auto& [_, p] : gs.players) {
-                if (p.get() == local || p->eliminated() || !may_hit(*p, owner, group))
-                    continue;
-                auto size   = p->get_size();
-                auto to     = p->get_position() + vec2f{size.x * 0.5f, -size.y * 0.5f} - shown_pos;
-                auto along  = to.x * dir.x + to.y * dir.y;
-                auto across = std::abs(to.x * dir.y - to.y * dir.x);
-                if (along >= 0.f && across <= aside)
-                    fr.catch_up = std::min(fr.catch_up, std::max(along - near, 0.f) / (span_k * speed));
-            }
-        }
-
+        fr.catch_up = gs.bullet_catch_up_limit(fr.catch_up, shown_pos, shown_vel, owner, group, local);
         fr.catch_up = std::min(fr.catch_up, shown_flight);
         auto [drawn_pos, drawn_vel] = gs.ballistic_forward(fr.start, fr.velocity, fr.gravity, shown_flight - fr.catch_up);
         fr.gap          = drawn_pos - pos;
         fr.gap_vel      = drawn_vel - vel;
         /* Until the next tick (sweep_framed_bullets) catches up by up to (catch_up_speed - 1) ticks */
-        auto step       = std::min(fr.catch_up, (bullet::framed_t::catch_up_speed - 1.f) * _tick_dt);
+        auto step       = std::min(fr.catch_up, (bullet::catch_up_speed - 1.f) * _tick_dt);
         fr.catch_up_vel = drawn_vel * (step / _tick_dt);
         if (local) {
             auto size       = local->get_size();
@@ -1138,7 +1121,7 @@ private:
             }
 
             auto shown = std::max(flight - test.ahead_s(_tick_dt) + test.rewind_s(_tick_dt) - delay, 0.f);
-            fr->catch_up = std::max(fr->catch_up - (bullet::framed_t::catch_up_speed - 1.f) * _tick_dt, 0.f);
+            fr->catch_up = std::max(fr->catch_up - (bullet::catch_up_speed - 1.f) * _tick_dt, 0.f);
             frame_draw_update(gs, *fr, to, ph->get_velocity(), shown, hits_local ? local : nullptr, owner, blt.group());
             if (shown <= fr->shown_flight)
                 continue;
