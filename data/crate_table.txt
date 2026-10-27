@@ -5,6 +5,5 @@ wpn_416 1
 wpn_ak9 1
 wpn_m40 1
 wpn_ss50 1
-wpn_sw500 1
 wpn_vss 1
 wpn_vssk 1
