@@ -354,6 +354,10 @@ tick N: X px`, `weapon correction ...`).
   like the rest of the flight. A hit consumes the bullet. (It used to be
   tested against the players at one time, `S_k − rewind`: newer than the
   shooter saw, by up to `lag`.)
+- **Compensated:** a network shooter's bullet with a lag or a rewind. A lag
+  under a tick rounds down to 0 (a short input queue on a fast link), the
+  rewind still compensates it: it used to collide with the players of the
+  present, a rewind later than the shooter saw them.
 - **Whole flight:** a lag-compensated bullet (`bullet::lag_compensate`)
   does not collide with players physically. Every tick, the segment it flew
   is swept against the players rewound by the same amount

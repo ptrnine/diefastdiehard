@@ -844,14 +844,21 @@ public:
             }
         }
 
+        /*
+         * Not only with a lag: one shorter than a tick (rounded down, a short
+         * input queue on a fast link) still has the targets rewound by the
+         * owner's view. Uncompensated, it hit them where they were rewind
+         * later than the owner saw them
+         */
+        auto compensated = lag > 0.f || rewind > 0.f;
         auto& blt = blt_mgr.shot(sim, pos, mass, vel, owner.tracer_color(), gravity, owner.get_group(),
                                  player::player_group_getter, player::owner_checker(&owner));
         blt.owner(owner.name());
         blt.net_id(id);
-        if (lag > 0.f)
+        if (compensated)
             blt.lag_compensate(owner.name(), rewind);
-        cur_frame_bullets.push_back(
-            {owner.name(), id, key, start, pos, vel, velocity, lag, lag > 0.f ? rewind : 0.f, mass, owner.tracer_color(), gravity, false, {}});
+        cur_frame_bullets.push_back({owner.name(), id, key, start, pos, vel, velocity, lag, compensated ? rewind : 0.f, mass,
+                                     owner.tracer_color(), gravity, false, {}});
     }
 
     /**

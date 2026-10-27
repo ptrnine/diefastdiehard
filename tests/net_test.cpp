@@ -1859,6 +1859,17 @@ TEST_CASE("game_state: lag-compensated bullets") {
         CHECK(gs.cur_frame_bullets[0].id == blt.net_id());
     }
 
+    SECTION("a bullet with a rewind but no lag (shorter than a tick) is lag-compensated too") {
+        /* A short input queue on a fast link: the lag rounds down to 0, the shooter still saw the players back then */
+        shooter->lag_compensation({0.f, 0.06f});
+        gs.spawn_bullet(*shooter, start, {1500.f, 0.f}, 1.f, false);
+
+        REQUIRE(gs.blt_mgr.bullets().size() == 1);
+        CHECK(gs.blt_mgr.bullets().front().rewind() == Catch::Approx(0.06f));
+        REQUIRE(gs.cur_frame_bullets.size() == 1);
+        CHECK(gs.cur_frame_bullets[0].rewind == Catch::Approx(0.06f));
+    }
+
     SECTION("the skipped path is swept against the players as the shooter saw them in its flight") {
         /*
          * The bullet reaches x = 500 at flight 1/3 s, which the shooter saw
