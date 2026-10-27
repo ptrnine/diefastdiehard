@@ -2405,9 +2405,12 @@ TEST_CASE("net: hits of a lagging shooter on the local player are predicted (100
 
     using clock = game_clock;
     std::optional<clock::time_point> srv_hit, cli_hit;
+    /* Held for a few ticks: one shot (released before the first tick, it would not fire) */
     REQUIRE(f.bot->shot());
+    auto t0 = clock::now();
     f.run_for(1000ms, [&] {
-        f.bot->relax();
+        if (clock::now() - t0 > 40ms)
+            f.bot->relax();
         if (!srv_hit && f.server_side().get_velocity().x < -50.f)
             srv_hit = clock::now();
         if (!cli_hit && f.local().get_velocity().x < -50.f)
@@ -2878,8 +2881,8 @@ TEST_CASE("net: a hard hit on a remote player flies smoothly") {
     std::vector<float> xs;
     int frames = 0;
     f.run_for(1500ms, [&] {
-        if (++frames == 3)
-            f.input = {};
+        if (++frames == 8)
+            f.input = {}; /* held for a few ticks: one shot */
         if (drawn() > x0 + 2.f && xs.size() < 40) /* 200 ms of flight from the predicted hit */
             xs.push_back(drawn());
     });

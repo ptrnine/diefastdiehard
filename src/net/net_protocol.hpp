@@ -152,7 +152,7 @@ struct input {
     /*
      * The server time the client was showing (its render time) at each tick
      * of bits: the newest one (view_base, 0: unknown, nothing shown yet),
-     * and view_steps[i] from tick i to i + 1 (a tick ~16 ms, the ticks of
+     * and view_steps[i] from tick i to i + 1 (a tick ~16.7 ms, the ticks of
      * one frame 0; sent without a length: bits.size() - 1 of them). The
      * server tests the client's shots against the players at that time
      */

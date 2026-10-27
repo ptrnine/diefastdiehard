@@ -85,8 +85,19 @@ public:
         T primitive;
     };
 
+    /*
+     * Real time between ticks at rps ticks per second, exact to the
+     * nanosecond: whole milliseconds made 60 rps tick at 62.5 Hz (16 ms),
+     * so a 60 Hz frame ran two ticks every 25 frames (bursts of inputs and
+     * a skipped state in multiplayer)
+     */
+    [[nodiscard]]
+    static steady_clock::duration period_of(uint rps) {
+        return duration_cast<steady_clock::duration>(std::chrono::nanoseconds(1'000'000'000LL / std::max(rps, 1u)));
+    }
+
     void update(uint rps = 60, float speed = 1.f) {
-        auto min_timestep = milliseconds(uint(1000.f / float(rps)));
+        auto min_timestep = period_of(rps);
         _last_speed = speed;
         _last_rps   = rps;
 
@@ -102,7 +113,7 @@ public:
 
     void update_pass() {
         _current_update_time = tp_now();
-        _next_update_time = _current_update_time + milliseconds(uint(1000.f / float(last_rps())));
+        _next_update_time = _current_update_time + period_of(last_rps());
     }
 
     void update_immediate(float timestep, auto now) {
@@ -436,8 +447,8 @@ public:
 
     /* Real time between ticks (the tick rate of the last update) */
     [[nodiscard]]
-    std::chrono::milliseconds tick_period() const {
-        return std::chrono::milliseconds(uint(1000.f / float(last_rps())));
+    steady_clock::duration tick_period() const {
+        return period_of(last_rps());
     }
 
 private:

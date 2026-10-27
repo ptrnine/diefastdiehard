@@ -131,8 +131,15 @@ the client: the old player is deleted.
 
 ## Time and ticks
 
-- `physic_simulation` runs fixed 60 Hz ticks. Each tick is stamped with its
-  scheduled time (`current_update_time`), not the catch-up time.
+- `physic_simulation` runs fixed 60 Hz ticks, exactly 1/60 s apart
+  (`period_of`, nanoseconds). Each tick is stamped with its scheduled time
+  (`current_update_time`), not the catch-up time.
+  - It used to round the period down to whole milliseconds: 16 ms, 62.5 Hz.
+    Against 60 Hz frames (vsync), every 25th frame ran two ticks. The
+    server then sent one state for both (a 32 ms gap) and the client sent
+    two inputs at once, so the interpolation delay (~57 ms) and the input
+    buffer (2 ticks, ~39 ms wait) grew even on a 1 ms LAN. Exact ticks: one
+    per 60 Hz frame, ~28 ms and 1 tick.
 - Network code hooks into ticks with ordered callbacks
   (`add_tick_begin_callback` / `add_tick_end_callback(name, cb, order)`):
 
@@ -213,8 +220,8 @@ and the RTT and the interpolation delay with its parts (client). `hud net
 fps counter), every frame.
 
 The interpolation delay is the state jitter + the longest state interval
-in the window (16 ms, 32 ms when a server frame runs two ticks) + the
-margin: ~26 ms on a steady link (it was max(jitter + 26 ms, 33 ms)). The
+in the window (a tick, ~17 ms; two when a server frame runs two ticks, a
+dropped frame) + the margin: ~28 ms on a steady link (it was max(jitter + 26 ms, 33 ms)). The
 hit predictions no longer need it (they use the exact view), but the
 hand-over of a predicted hard knockback to the confirming snapshots does:
 with less than ~10 ms margin it shows a jump (`net: a hard hit on a remote

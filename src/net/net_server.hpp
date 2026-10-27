@@ -757,7 +757,7 @@ private:
     clock::time_point            _start_time     = clock::now();
     std::map<std::string, client_t> _clients;
     std::optional<size_t>        _input_buffer; // fixed input jitter buffer target (ticks), adaptive if empty
-    double                       _tick_s = 0.016;
+    double                       _tick_s = 1.0 / 60.0;
 
     u64                                     _last_broadcast_tick = 0;
     clock::time_point                       _last_broadcast_time;
