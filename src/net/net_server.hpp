@@ -333,11 +333,10 @@ private:
 
     void broadcast(game_state& gs, clock::time_point now) {
         net::state st;
-        st.tick           = ++_broadcast_seq;
+        st.tick        = ++_broadcast_seq;
         /* Time of the simulated state (the last tick), not of the broadcast */
-        st.server_time_ms = u32(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    gs.sim.current_update_time() - _start_time)
-                                    .count());
+        st.server_time = u32(std::llround(std::chrono::duration<double>(gs.sim.current_update_time() - _start_time).count() *
+                                          net::state::server_time_scale));
 
         /* Players and their configs (remembering when a config changed) */
         std::map<u16, known_config> configs;

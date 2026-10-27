@@ -117,7 +117,7 @@ TEST_CASE("protocol: message round-trips") {
     SECTION("state") {
         state st;
         st.tick                = 7;
-        st.server_time_ms      = 5000;
+        st.server_time         = 50000;
         st.ack_seq             = 77;
         st.echo_client_time_ms = 900;
         st.echo_hold_ms        = 16;
@@ -138,7 +138,8 @@ TEST_CASE("protocol: message round-trips") {
 
         auto r = read_msg<state>(msg.payload);
         CHECK(r.tick == 7);
-        CHECK(r.server_time_ms == 5000);
+        CHECK(r.server_time == 50000);
+        CHECK(r.server_time_s() == Catch::Approx(5.0));
         CHECK(r.ack_seq == 77);
         CHECK(r.echo_client_time_ms == 900);
         CHECK(r.echo_hold_ms == 16);
@@ -1042,17 +1043,17 @@ TEST_CASE("net_server: handshake, rename and leave") {
         cli.recv(std::chrono::milliseconds(50));
         auto& pl = *gs.players.at("test1");
 
-        /* The server time of the next tick (STATE stamps its ticks in ms), a while after the start */
+        /* The server time of the next tick (from a STATE), a while after the start */
         game_clock::advance(std::chrono::seconds(1));
         sim_tick(gs);
         srv.update(gs);
-        std::optional<u32> server_ms;
+        std::optional<double> server_s;
         for (auto& d : cli.recv(std::chrono::milliseconds(50)))
             if (auto msg = net::decode_msg({d.data.data(), d.data.size()}); msg.type == net::msg_type::state)
-                server_ms = net::read_msg<net::state>(msg.payload).server_time_ms;
-        REQUIRE(server_ms);
+                server_s = net::read_msg<net::state>(msg.payload).server_time_s();
+        REQUIRE(server_s);
         game_clock::advance(gs.sim.tick_period());
-        auto next_s = double(*server_ms) / 1000.0 + std::chrono::duration<double>(gs.sim.tick_period()).count();
+        auto next_s = *server_s + std::chrono::duration<double>(gs.sim.tick_period()).count();
 
         /* It showed the server 70 ms before the tick; its RTT estimate (300 ms) does not matter */
         net::input in{.last_seq = 3, .rtt_ms = 300, .bits = {0, 0, 0}};

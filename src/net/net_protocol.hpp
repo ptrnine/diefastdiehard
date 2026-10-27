@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 18;
+inline constexpr u16 protocol_version = 19;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -514,8 +514,16 @@ struct lobby_request {
 };
 
 struct state {
-    u32 tick           = 0; // broadcast sequence number
-    u32 server_time_ms = 0; // server clock at the simulation tick of this state
+    /* server_time units: 1/10000 s (ticks are 1/60 s apart: whole ms were up to 0.67 ms early) */
+    static constexpr double server_time_scale = 10000.0;
+
+    u32 tick        = 0; // broadcast sequence number
+    u32 server_time = 0; // server clock at the simulation tick of this state (server_time_scale)
+
+    [[nodiscard]]
+    double server_time_s() const {
+        return double(server_time) / server_time_scale;
+    }
 
     /* Per receiving client */
     u32 ack_seq             = 0; // last input tick applied to the client's player
@@ -538,12 +546,12 @@ struct state {
     alive_set alive_bullets;
 
     void serialize(auto& s) const {
-        s.write(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, mode, lobby, configs, players,
+        s.write(tick, server_time, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, mode, lobby, configs, players,
                 shots, crates, guns, alive_bullets);
     }
 
     void deserialize(auto& d) {
-        d.read(tick, server_time_ms, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, mode, lobby, configs, players,
+        d.read(tick, server_time, ack_seq, echo_client_time_ms, echo_hold_ms, own_weapon, mode, lobby, configs, players,
                shots, crates, guns, alive_bullets);
     }
 };

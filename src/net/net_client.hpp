@@ -1288,25 +1288,23 @@ private:
      */
     [[nodiscard]]
     float state_age(const state& st) const {
-        auto excess = _clock.excess_delay(time_s(), double(st.server_time_ms) / 1000.0);
+        auto excess = _clock.excess_delay(time_s(), st.server_time_s());
         return _rtt_min_s * 0.5f + float(excess);
     }
 
     /**
      * The server simulated the input tick ack_seq at the state's time and
      * applies one input tick per server tick: the server time of input tick
-     * k is offset + k * dt. Smoothed, a queue wait or a merge moves it
+     * k is offset + k * dt. The newest state's sample is exact (the time of
+     * the tick that applied ack_seq); it moves by whole ticks only, when the
+     * server merges queued ticks or runs dry. Smoothing it lagged a merge by
+     * ~0.3 s, framing the server bullets a tick ahead (early hits)
      */
     void update_tick_time(const state& st) {
         if (!_joined || st.ack_seq == 0 || st.ack_seq <= _tick_time_ack)
             return;
-        _tick_time_ack = st.ack_seq;
-
-        auto sample = double(st.server_time_ms) / 1000.0 - double(st.ack_seq) * double(_tick_dt);
-        if (!_tick_time_offset || std::abs(sample - *_tick_time_offset) > 0.25)
-            _tick_time_offset = sample;
-        else
-            *_tick_time_offset += (sample - *_tick_time_offset) * 0.1;
+        _tick_time_ack    = st.ack_seq;
+        _tick_time_offset = st.server_time_s() - double(st.ack_seq) * double(_tick_dt);
     }
 
     /* Lobby requests are resent this often while the lobby is active (lost datagrams cost nothing) */
@@ -1377,7 +1375,7 @@ private:
 
         update_rtt(st);
 
-        _clock.on_state(time_s(), double(st.server_time_ms) / 1000.0);
+        _clock.on_state(time_s(), st.server_time_s());
         update_tick_time(st);
 
         /* States may arrive out of order: only the newest one updates the world state */
@@ -1445,7 +1443,7 @@ private:
                               ? std::optional{to_weapon_state(*st.own_weapon)}
                               : std::nullopt);
             else
-                _remote[name].push(double(st.server_time_ms) / 1000.0,
+                _remote[name].push(st.server_time_s(),
                                    remote_player_snapshot{to_physic_state(sp),
                                                           (sp.flags & state_player::flag_on_left) != 0,
                                                           (sp.flags & state_player::flag_shooting) != 0,
@@ -1459,7 +1457,7 @@ private:
         /* How far the local player's frame is ahead of this state */
         std::optional<float> frame_ahead;
         if (auto local = local_frame_time())
-            frame_ahead = std::clamp(float(*local - double(st.server_time_ms) / 1000.0), 0.f,
+            frame_ahead = std::clamp(float(*local - st.server_time_s()), 0.f,
                                      game_state::max_lag_compensation);
         for (auto& shot : st.shots)
             for (size_t i = 0; i < shot.pellets.size(); ++i)

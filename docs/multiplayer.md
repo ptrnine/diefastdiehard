@@ -80,7 +80,7 @@ Every datagram has a header `u16 type, u16 payload_size`, then an
 `ss::serializer` payload: little endian, with **u16** string and vector
 length prefixes (`net::wire_size_type`; the serializer default is u64).
 **Bump `net::protocol_version`** on any wire change: a HELLO with another
-version is answered with ERROR. The current version is 18.
+version is answered with ERROR. The current version is 19.
 
 | id | dir | payload |
 |----|-----|---------|
@@ -93,7 +93,7 @@ version is answered with ERROR. The current version is 18.
 | 7 LOBBY | C → S | `u32 session`, `u32 seq`, `i16 group`, `u8 ready`: the client's lobby choice (see Lobby; seqs restart with a new random session) |
 
 STATE contains:
-- **Header:** `tick` (broadcast sequence number), `server_time_ms` (time of the simulated tick), `ack_seq` (the last input tick applied to this client's player), and `echo_client_time_ms` + `echo_hold_ms` (RTT echo of the newest input).
+- **Header:** `tick` (broadcast sequence number), `server_time` (time of the simulated tick, 1/10000 s: ticks are 1/60 s apart, so whole ms were up to 0.67 ms early), `ack_seq` (the last input tick applied to this client's player), and `echo_client_time_ms` + `echo_hold_ms` (RTT echo of the newest input).
 - **`own_weapon`:** the client's own player's weapon logic state (`weapon_sync`: ammo, logic animation id and time, time since the last shot, reloading/trigger flags, shot index and seed), if it holds a gun. Only the recipient's player is reconciled, so other players' weapons are not sent.
 - **`mode`, the game mode, only when the client may not know it:** section name, bullet gravity, crate drop period (see `src/game_mode.hpp`). It is sent with the same policy as the player configs (1 s after the join or a change, every 30th broadcast); the client applies the newest one with `game_state::game_mode_set` and sets `game_mode_networked`, so its console cannot change the game mode.
 - **`lobby`, only when the client may not know it (the same policy as `mode`):** `u8 active`, level and game mode sections. While active, these are the owner's choices; in game, what is played.
@@ -381,7 +381,11 @@ with its player.
   mispredicted: a hit the server did not have, or a missed one.
 - **Tick time:** the server applies one input tick per tick, so the server
   time of input tick `k` is `offset + k·dt`, with `offset` from the newest
-  states' `server_time − ack_seq·dt` (smoothed, `update_tick_time`).
+  states' `server_time − ack_seq·dt` (`update_tick_time`): exact (the time
+  of the tick that applied `ack_seq`), so the newest one is taken as is. It
+  moves by whole ticks when the server merges queued ticks or runs dry;
+  smoothed, it lagged a merge by ~0.3 s and framed the server bullets a tick
+  ahead (early predicted hits, e.g. on a player knocked away from a stream).
   `local_frame_time()` is the server time of the local player's current
   tick.
 - **Spawn:** at the flight time `forward + (local_frame_time − state time) +
