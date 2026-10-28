@@ -24,7 +24,7 @@ jobs:
       run:  |
             sudo apt install libglu1-mesa-dev freeglut3-dev mesa-common-dev
             sudo apt install libudev-dev libopenal-dev libvorbis-dev libflac-dev
-            sudo apt install libxrandr-dev libxcursor-dev libglew-dev
+            sudo apt install libxrandr-dev libxcursor-dev libxi-dev libglew-dev
 
     - name: Build
       run: ./build-plz --used-compilers && ./build-plz --debug --asan
