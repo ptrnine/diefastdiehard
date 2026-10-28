@@ -1,0 +1,72 @@
+name: windows
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  # Cross-compiled with MinGW-w64 (build-windows.sh)
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install MinGW-w64
+      shell: bash
+      run:  |
+            sudo apt update
+            sudo apt install -y g++-mingw-w64-x86-64-win32 gcc-mingw-w64-x86-64-win32
+
+    - name: Build
+      run: x86_64-w64-mingw32-g++ --version && ./build-windows.sh && ./build-windows.sh prod
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: dfdh-windows
+        path: easybuild-windows/dist
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: tests-windows
+        path: |
+          easybuild-windows/cfg_test.exe
+          easybuild-windows/tasks_test.exe
+          easybuild-windows/net_test.exe
+
+  test:
+    needs: build
+    runs-on: windows-latest
+
+    steps:
+    # data/ and fs.cfg: the tests run from the repo root
+    - uses: actions/checkout@v4
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: tests-windows
+
+    # No GPU on the runner: Mesa llvmpipe as opengl32.dll next to the tests
+    - name: Install Mesa (software OpenGL)
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run:  |
+            gh release download -R pal1000/mesa-dist-win -p 'mesa3d-*-release-msvc.7z' -O mesa.7z
+            7z x -omesa mesa.7z > /dev/null
+            cp mesa/x64/*.dll .
+
+    - name: Tests
+      shell: bash
+      run:  |
+            status=0
+            for t in cfg_test tasks_test net_test; do
+                echo "::group::$t"
+                ./$t.exe || status=1
+                echo "::endgroup::"
+            done
+            exit $status

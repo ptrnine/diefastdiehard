@@ -1,4 +1,4 @@
-name: ubuntu-22.04
+name: ubuntu-24.04
 
 on:
   push:
@@ -8,26 +8,69 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
-    - name: Install GCC12
+    # std::format: GCC 13+
+    - name: Install GCC14
       shell: bash
       run:  |
             sudo apt update
-            sudo apt install gcc-12 g++-12
+            sudo apt install -y gcc-14 g++-14
 
     - name: Install dependencies
       shell: bash
       run:  |
-            sudo apt install libglu1-mesa-dev freeglut3-dev mesa-common-dev
-            sudo apt install libudev-dev libopenal-dev libvorbis-dev libflac-dev
-            sudo apt install libxrandr-dev libxcursor-dev libxi-dev libglew-dev
+            sudo apt install -y libglu1-mesa-dev freeglut3-dev mesa-common-dev
+            sudo apt install -y libudev-dev libopenal-dev libvorbis-dev libflac-dev
+            sudo apt install -y libxrandr-dev libxcursor-dev libxi-dev libglew-dev
+            sudo apt install -y xvfb
 
     - name: Build
       run: ./build-plz --used-compilers && ./build-plz --debug --asan
 
+    # Texture loading needs a GL context: run under xvfb
     - name: Tests
-      run: ./build-plz --debug --asan --run tasks_test
+      shell: bash
+      run:  |
+            b=easybuild-debug-asan
+            export LD_LIBRARY_PATH=$b/3rd/lib:$b/3rd/lib64:$b/submodules/luacpp/3rd/lib:$b/submodules/luacpp/3rd/lib64
+            export LSAN_OPTIONS=suppressions=$PWD/tests/lsan.supp
+            status=0
+            for t in cfg_test tasks_test net_test; do
+                echo "::group::$t"
+                xvfb-run -a ./$b/$t || status=1
+                echo "::endgroup::"
+            done
+            exit $status
+
+  # Release build: self-contained easybuild/dist
+  dist:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # std::format: GCC 13+
+    - name: Install GCC14
+      shell: bash
+      run:  |
+            sudo apt update
+            sudo apt install -y gcc-14 g++-14
+
+    - name: Install dependencies
+      shell: bash
+      run:  |
+            sudo apt install -y libglu1-mesa-dev freeglut3-dev mesa-common-dev
+            sudo apt install -y libudev-dev libopenal-dev libvorbis-dev libflac-dev
+            sudo apt install -y libxrandr-dev libxcursor-dev libxi-dev libglew-dev
+
+    - name: Build
+      run: ./build-plz prod
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: dfdh-linux
+        path: easybuild/dist

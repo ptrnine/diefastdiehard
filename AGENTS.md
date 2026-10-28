@@ -43,6 +43,11 @@ easybuild-debug/submodules/luacpp/3rd/lib:easybuild-debug/submodules/luacpp/3rd/
 ./easybuild-debug/cfg_test    # also: tasks_test, net_test
 ```
 
+Under `--asan`, set `LSAN_OPTIONS=suppressions=$PWD/tests/lsan.supp` (Mesa
+GLX driver leaks). CI (`.github/workflows/`) runs all three tests on Linux
+(ASan) and on Windows (cross-built by `build-windows.sh`, Mesa llvmpipe as
+`opengl32.dll`), and uploads the Linux and Windows dists as artifacts.
+
 Game time (sim ticks, net timing, simulated latency) comes from
 `game_clock` (src/base/game_clock.hpp), not `std::chrono::steady_clock`:
 tests drive it by hand (`game_clock_manual_guard` + `game_clock::advance`)

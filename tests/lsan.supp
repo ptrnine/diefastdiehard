@@ -1,0 +1,2 @@
+# LeakSanitizer suppressions: leaks of the system GL driver (Mesa GLX), not ours
+leak:libGLX_mesa.so
