@@ -460,6 +460,34 @@ build_luajit() {
     colored lgreen "done"
 }
 
+# Generated headers (src/*_generated.hpp, like build-plz's codegen_step):
+# the generator runs on the build host, the SFML header is preprocessed for
+# the target
+codegen_step() {
+    local builddir="$1"
+    local input_header="$2"
+    local generator_name="$3"
+    local generator_cpp="$4"
+    local output_header="$5"
+    local host_cxx="${HOST_CXX_COMPILER:-g++}"
+
+    command -v "$host_cxx" > /dev/null || fail "$host_cxx not found (host compiler for $generator_name)"
+
+    if [ -f "$output_header" ] && [ "$output_header" -nt "$generator_cpp" ] && \
+        [ "$output_header" -nt "$input_header" ]; then
+        colored lpurple "$output_header already generated"
+        return 0
+    fi
+
+    colored yellow "Generating $output_header ... " n
+    "$host_cxx" -std=c++20 -O1 "$generator_cpp" -o "$builddir/$generator_name" || \
+        fail "Build of $generator_name failed"
+    "$CXX_COMPILER" -E -I "$builddir/3rd/include" "$input_header" | "$builddir/$generator_name" \
+        > "$output_header.tmp" && [ "${PIPESTATUS[0]}" = 0 ] || fail "Generation of $output_header failed"
+    mv "$output_header.tmp" "$output_header"
+    colored lgreen "done"
+}
+
 build_dist() {
     local builddir="$1"
     colored yellow "Assembling dist ... " n
@@ -592,6 +620,11 @@ $builddir/luajit/lib/libluajit-5.1.a \
 
     build_luajit "$builddir"
     build_glew_shim "$builddir" "$hardening_flags"
+
+    codegen_step "$builddir" "$builddir/3rd/include/SFML/Window/Keyboard.hpp" \
+        sfml_key_generator src/key_generator.cpp src/key_generated.hpp
+    codegen_step "$builddir" "$builddir/3rd/include/SFML/Window/Event.hpp" \
+        sfml_event_type_generator src/event_type_generator.cpp src/event_type_generated.hpp
 
     # Header-only / single-file submodules
     # Copied again when the submodule is updated

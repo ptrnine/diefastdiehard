@@ -197,9 +197,7 @@ codegen_step() {
     local output_header="$6"
     local includes="$7"
 
-    if [ ! -z "$TARGET" ] && [ "$TARGET" != "$name" ]; then
-        return
-    fi
+    # No TARGET check: the generated headers are needed by the targets
 
     local cmd="$CXX_COMPILER -E -fdiagnostics-color=always \
         $(make_includes "$includes") \
@@ -214,7 +212,7 @@ codegen_step() {
             "$(pwd)/$input_header") && \
         already_gen=true
 
-    build_executable \
+    TARGET= build_executable \
         "$generator_name" \
         "$generator_cpp" \
         "$builddir" \
