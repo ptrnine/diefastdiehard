@@ -4,6 +4,67 @@
 #include <cerrno>
 #include <ostream>
 
+#ifdef _WIN32
+
+/* Exotic POSIX errno codes that MinGW's <errno.h> doesn't define. They never
+ * occur on Windows; the values exist only so the errno->string map below
+ * compiles uniformly. */
+#define EADV 10002
+#define EBADE 10003
+#define EBADFD 10004
+#define EBADR 10005
+#define EBADRQC 10006
+#define EBADSLT 10007
+#define EBFONT 10008
+#define ECHRNG 10009
+#define ECOMM 10010
+#define EDOTDOT 10011
+#define EDQUOT 10012
+#define EHOSTDOWN 10013
+#define EISNAM 10014
+#define EKEYEXPIRED 10015
+#define EKEYREJECTED 10016
+#define EKEYREVOKED 10017
+#define EL2HLT 10018
+#define EL2NSYNC 10019
+#define EL3HLT 10020
+#define EL3RST 10021
+#define ELIBACC 10022
+#define ELIBBAD 10023
+#define ELIBEXEC 10024
+#define ELIBMAX 10025
+#define ELIBSCN 10026
+#define ELNRNG 10027
+#define EMEDIUMTYPE 10028
+#define EMULTIHOP 10029
+#define ENAVAIL 10030
+#define ENOANO 10031
+#define ENOCSI 10032
+#define ENOKEY 10033
+#define ENOMEDIUM 10034
+#define ENONET 10035
+#define ENOPKG 10036
+#define ENOTBLK 10037
+#define ENOTNAM 10038
+#define ENOTUNIQ 10039
+#define EPFNOSUPPORT 10040
+#define EREMCHG 10041
+#define EREMOTE 10042
+#define EREMOTEIO 10043
+#define ERESTART 10044
+#define ESHUTDOWN 10045
+#define ESOCKTNOSUPPORT 10046
+#define ESRMNT 10047
+#define ESTALE 10048
+#define ESTRPIPE 10049
+#define ETOOMANYREFS 10050
+#define EUCLEAN 10051
+#define EUNATCH 10052
+#define EUSERS 10053
+#define EXFULL 10054
+
+#endif
+
 namespace dfdh
 {
 using namespace std::string_view_literals;

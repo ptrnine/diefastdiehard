@@ -81,7 +81,7 @@ public:
 
 private:
     bullet_sprite_cache() {
-        _txtr.loadFromFile(std::filesystem::current_path() / "data/textures/bullet.png");
+        _txtr.loadFromFile((std::filesystem::current_path() / "data/textures/bullet.png").string());
         _txtr.setSmooth(true);
         auto sz = _txtr.getSize();
         _xf = bullet_x_max / float(sz.x);
@@ -211,7 +211,7 @@ public:
         /* Blend to the shown frame of the bullet at pos flying along vel: by its distance to the local player ahead */
         [[nodiscard]]
         float shown_blend_at(const vec2f& pos, const vec2f& vel) const {
-            constexpr float near   = 30.f;  /* px: in the local frame at the local player */
+            constexpr float near_px = 30.f; /* px: in the local frame at the local player */
             constexpr float aside  = 150.f; /* px: passing further aside, the local player is not its target */
             constexpr float span_k = 2.f;   /* converges over 2 gaps: drawn at most 1.5x faster meanwhile */
 
@@ -225,7 +225,7 @@ public:
             if (along < 0.f || across > aside)
                 return shown_blend;
             auto span = std::max(span_k * magnitude(gap), 150.f);
-            return std::min(shown_blend, std::clamp((along - near) / span, 0.f, 1.f));
+            return std::min(shown_blend, std::clamp((along - near_px) / span, 0.f, 1.f));
         }
 
         [[nodiscard]]

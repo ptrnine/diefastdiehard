@@ -378,7 +378,7 @@ private:
 class logger {
 public:
     logger() {
-        add_stream("stdout", log_acceptor_fd::create(outfd<char>::stdout()));
+        add_stream("stdout", log_acceptor_fd::create(outfd<char>::std_out()));
     }
 
     ~logger() {

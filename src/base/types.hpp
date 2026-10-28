@@ -6,17 +6,15 @@
 #include <vector>
 #include <string>
 
-#include <byteswap.h>
-
 inline auto bswap(auto v) {
     if constexpr (sizeof(v) == 1)
         return v;
-    if constexpr (sizeof(v) == 2)
-        return bswap_16(v);
-    if constexpr (sizeof(v) == 4)
-        return bswap_32(v);
-    if constexpr (sizeof(v) == 8)
-        return bswap_64(v);
+    else if constexpr (sizeof(v) == 2)
+        return __builtin_bswap16(v);
+    else if constexpr (sizeof(v) == 4)
+        return __builtin_bswap32(v);
+    else if constexpr (sizeof(v) == 8)
+        return __builtin_bswap64(v);
 }
 
 #ifndef NDEBUG
@@ -37,6 +35,8 @@ using u8 = uint8_t;
 using u16 = uint16_t;
 using u32 = uint32_t;
 using u64 = uint64_t;
+
+using uint = unsigned int; /* POSIX <sys/types.h> typedef; glibc defines it, MinGW doesn't */
 
 using i8 = int8_t;
 using i16 = int16_t;

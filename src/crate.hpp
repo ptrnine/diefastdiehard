@@ -37,7 +37,7 @@ struct crate_loot_table {
         std::vector<entry> table;
 
         auto path = std::filesystem::current_path() / "data/crate_table.txt";
-        std::ifstream file(path);
+        std::ifstream file(path.string());
         if (!file) {
             glog().error("can't open crate loot table {}", path.string());
             return table;

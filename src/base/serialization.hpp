@@ -25,7 +25,7 @@
 namespace ss {
 
 #ifdef VERBOSE_DEBUG
-    static inline auto stdo = dfdh::outfd<char, 4096 * 16>::stdout();
+    static inline auto stdo = dfdh::outfd<char, 4096 * 16>::std_out();
     static inline constexpr auto verbose = true;
     static size_t nestcounter = 0;
 

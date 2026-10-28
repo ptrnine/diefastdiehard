@@ -30,7 +30,7 @@ public:
         if (was_insert) {
             auto [sample_pos, was_insert] = samples.emplace(path, sf::SoundBuffer{});
             if (was_insert &&
-                !sample_pos->second.loadFromFile(std::filesystem::current_path() / "data/sounds" / path)) {
+                !sample_pos->second.loadFromFile((std::filesystem::current_path() / "data/sounds" / path).string())) {
                 if (path == "dummy.wav")
                     throw std::runtime_error("Sound "s +
                                              (std::filesystem::current_path() / "dummy.wav does not exists").string());

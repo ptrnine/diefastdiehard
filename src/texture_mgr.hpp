@@ -18,7 +18,7 @@ public:
     }
 
     sf::Texture& load(const std::string& path) {
-        auto p = std::string(std::filesystem::current_path() / "data/textures" / path);
+        auto p = (std::filesystem::current_path() / "data/textures" / path).string();
         auto [pos, was_insert] = _textures.emplace(p, sf::Texture());
         if (was_insert) {
             if (!pos->second.loadFromFile(p)) {

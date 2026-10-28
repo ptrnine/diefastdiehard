@@ -58,8 +58,8 @@ public:
 
 #define load_if_path_changed(txtr) \
         if (_##txtr##_path != txtr##_path) { \
-            _##txtr.loadFromFile(txtr##_path); \
-            _##txtr##_path = txtr##_path; \
+            _##txtr.loadFromFile(txtr##_path.string()); \
+            _##txtr##_path = txtr##_path.string(); \
         }
 
         load_if_path_changed(end_platform_txtr);

@@ -5,11 +5,39 @@
 #include <chrono>
 
 #include <fcntl.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#ifdef _WIN32
+
+#include <io.h>
+#include <windows.h>
+
+#ifndef isatty
+#define isatty _isatty
+#endif
+
+/* Mode bits MinGW's <sys/stat.h> doesn't define */
+#ifndef S_ISUID
+#define S_ISUID 04000
+#endif
+#ifndef S_ISGID
+#define S_ISGID 02000
+#endif
+#ifndef S_ISVTX
+#define S_ISVTX 01000
+#endif
+#ifndef S_IFSOCK
+#define S_IFSOCK 0x4000
+#endif
+
+#else
+
+#include <sys/mman.h>
 #include <sys/select.h>
+
+#endif
 
 #include "errc.hpp"
 #include "finalizers.hpp"
@@ -72,18 +100,22 @@ enum class fd_flag {
     write_only     = O_WRONLY,
     readwrite      = O_RDWR,
     append         = O_APPEND,
+#ifndef _WIN32
     async          = O_ASYNC,
     close_exec     = O_CLOEXEC,
-    create         = O_CREAT,
     direct         = O_DIRECT,
     dsync          = O_DSYNC,
     sync           = O_SYNC,
-    ensure_new     = O_EXCL | O_CREAT,
     large          = O_LARGEFILE,
     no_access_time = O_NOATIME,
     no_follow      = O_NOFOLLOW,
-    nonblock       = O_NONBLOCK,
     temp           = O_TMPFILE,
+#endif
+    create         = O_CREAT,
+    ensure_new     = O_EXCL | O_CREAT,
+#ifndef _WIN32
+    nonblock       = O_NONBLOCK,
+#endif
     trunc          = O_TRUNC
 };
 
@@ -278,6 +310,28 @@ namespace outfd_concepts
     concept Writable = WritableBase<Container, T> || WritableRAI<Container, T> || std::convertible_to<Container, T>;
 } // namespace outfd_concepts
 
+#ifdef _WIN32
+
+/* POSIX-ish CRT fd functions from <io.h> */
+#define impl_open_posix   ::_open
+#define impl_close_posix  ::_close
+#define impl_write_posix  ::_write
+#define impl_read_posix   ::_read
+#define impl_seek_posix   ::_lseek
+#define impl_fstat_posix  ::fstat
+#define impl_get_osfhandle ::_get_osfhandle
+
+#else
+
+#define impl_open_posix   ::open
+#define impl_close_posix  ::close
+#define impl_write_posix  ::write
+#define impl_read_posix   ::read
+#define impl_seek_posix   ::lseek
+#define impl_fstat_posix  ::fstat
+
+#endif
+
 template <typename DerivedT, auto... Settings>
 struct outfd_linux_impl_t {
     static constexpr bool exception_on_syswrite_fail =
@@ -287,18 +341,18 @@ struct outfd_linux_impl_t {
 
     static int impl_open(const char* filename, fd_combined_flag flags, file_permissions create_permissions) {
         int fd;
-        if ((fd = ::open(filename, flags.f, create_permissions.to_int())) < 0)
+        if ((fd = impl_open_posix(filename, flags.f, create_permissions.to_int())) < 0)
             throw cannot_open_file(filename, errc::from_errno());
         return fd;
     }
 
     static void impl_close(int fd) noexcept {
         if (fd != STDOUT_FILENO && fd != STDERR_FILENO && fd != STDIN_FILENO)
-            ::close(fd);
+            impl_close_posix(fd);
     }
 
     static void impl_write(int fd, const void* data, size_t size) noexcept(!exception_on_syswrite_fail) {
-        [[maybe_unused]] auto sz = ::write(fd, data, size);
+        [[maybe_unused]] auto sz = impl_write_posix(fd, data, size);
         if constexpr (exception_on_syswrite_fail) {
             if (size_t(sz) != size)
                 throw sys_write_fail(std::to_string(sz) + " of " + std::to_string(size) + " bytes has been wrote", {0});
@@ -306,7 +360,7 @@ struct outfd_linux_impl_t {
     }
 
     static io_read_res impl_read(int fd, void* data, size_t size) noexcept(!exception_on_read_fail) {
-        auto actually_read = ::read(fd, data, size);
+        auto actually_read = impl_read_posix(fd, data, size);
         if (actually_read < 0) {
             auto err = errc::from_errno();
             if (err == EAGAIN)
@@ -320,21 +374,22 @@ struct outfd_linux_impl_t {
     }
 
     static void impl_seek(int fd, ssize_t value) noexcept(!exception_on_seek_fail) {
-        [[maybe_unused]] auto rc = ::lseek(fd, value, SEEK_CUR);
+        [[maybe_unused]] auto rc = impl_seek_posix(fd, value, SEEK_CUR);
         if constexpr (exception_on_seek_fail)
             if (rc < 0)
                 throw sys_seek_fail(errc::from_errno());
     }
 
-    constexpr static DerivedT stdout() {
+    /* Named std_out/std_err/std_in because stdout/stderr/stdin are macros on Windows */
+    constexpr static DerivedT std_out() {
         return DerivedT::raw_create(STDOUT_FILENO);
     }
 
-    constexpr static DerivedT stderr() {
+    constexpr static DerivedT std_err() {
         return DerivedT::raw_create(STDERR_FILENO);
     }
 
-    constexpr static DerivedT stdin() {
+    constexpr static DerivedT std_in() {
         return DerivedT::raw_create(STDIN_FILENO);
     }
 
@@ -348,13 +403,22 @@ struct outfd_linux_impl_t {
 
     static bool impl_is_blocking(int fd) {
         struct stat st;
-        auto rc = fstat(fd, &st);
+        auto rc = impl_fstat_posix(fd, &st);
         if (rc == -1)
             throw stat_fd_failed("", errc::from_errno());
 
         auto fmt = st.st_mode & S_IFMT;
         return fmt == S_IFSOCK || fmt == S_IFIFO || fmt == S_IFCHR;
     }
+
+#ifdef _WIN32
+
+    /* Not needed on Windows (no select() for CRT fds) — always ready. */
+    static bool impl_waitdev(int, int64_t) {
+        return true;
+    }
+
+#else
 
     static bool impl_waitdev(int fd, int64_t usec_timeout) {
         struct timeval tv {};
@@ -364,6 +428,8 @@ struct outfd_linux_impl_t {
         FD_SET(fd, &readfds);
         return ::select(1, &readfds, nullptr, nullptr, &tv);
     }
+
+#endif
 };
 
 template <typename DerivedT, auto... Settings>
@@ -820,6 +886,88 @@ public:
 
     mmap_file_range() = default;
 
+#ifdef _WIN32
+
+    mmap_file_range(const char* filename) {
+        int fd = impl_open_posix(filename, Mutable ? O_RDWR : O_RDONLY, 0);
+        if (fd < 0)
+            throw cannot_open_file(filename, errc::from_errno());
+
+        auto guard = exception_guard([&]{
+            if constexpr (autoclose_fd_on_fail)
+                impl_close_posix(fd);
+        });
+
+        auto h_file = reinterpret_cast<HANDLE>(impl_get_osfhandle(fd));
+        LARGE_INTEGER fsz = {};
+        if (h_file == INVALID_HANDLE_VALUE || !GetFileSizeEx(h_file, &fsz)) {
+            errno = ENOENT;
+            throw stat_fd_failed(filename, errc::from_errno(), autoclose_fd_on_fail ? -1 : fd);
+        }
+
+        auto size = static_cast<size_t>(fsz.QuadPart) / sizeof(T);
+        if (size != 0) {
+            h_map = CreateFileMappingA(h_file,
+                                       nullptr,
+                                       Mutable ? PAGE_READWRITE : PAGE_READONLY,
+                                       0,
+                                       0,
+                                       nullptr);
+            if (!h_map) {
+                errno = ENOMEM;
+                throw mmap_fd_failed(filename, errc::from_errno(), autoclose_fd_on_fail ? -1 : fd);
+            }
+
+            start = static_cast<T*>(MapViewOfFile(h_map, Mutable ? FILE_MAP_WRITE : 0, 0, 0, 0)); // NOLINT
+            if (!start) {
+                CloseHandle(h_map);
+                h_map = nullptr;
+                errno = ENOMEM;
+                throw mmap_fd_failed(filename, errc::from_errno(), autoclose_fd_on_fail ? -1 : fd);
+            }
+
+            pend = start + size;
+        }
+
+        /* The mapping keeps the file open; close the CRT fd explicitly. */
+        impl_close_posix(fd);
+    }
+
+    ~mmap_file_range() {
+        if (start) {
+            UnmapViewOfFile(start);
+            if (h_map)
+                CloseHandle(h_map);
+        }
+    }
+
+    mmap_file_range(mmap_file_range&& mfr) noexcept: start(mfr.start), pend(mfr.pend), h_map(mfr.h_map) {
+        mfr.start = nullptr;
+        mfr.pend  = nullptr;
+        mfr.h_map = nullptr;
+    }
+
+    mmap_file_range& operator=(mmap_file_range&& mfr) noexcept {
+        if (&mfr == this)
+            return *this;
+
+        if (start) {
+            UnmapViewOfFile(start);
+            if (h_map)
+                CloseHandle(h_map);
+        }
+
+        start     = mfr.start;
+        pend      = mfr.pend;
+        h_map     = mfr.h_map;
+        mfr.start = nullptr;
+        mfr.pend  = nullptr;
+        mfr.h_map = nullptr;
+        return *this;
+    }
+
+#else
+
     mmap_file_range(const char* filename) {
         int fd = open(filename, Mutable ? O_RDWR : O_RDONLY);
         if (fd < 0)
@@ -873,6 +1021,8 @@ public:
         return *this;
     }
 
+#endif
+
     const value_type* begin() const {
         return start;
     }
@@ -905,6 +1055,9 @@ public:
 private:
     T* start = nullptr;
     T* pend  = nullptr;
+#ifdef _WIN32
+    HANDLE h_map = nullptr;
+#endif
 };
 
 template <typename T>
@@ -986,7 +1139,7 @@ public:
 
 private:
     void read_buffered(int fd) {
-        auto scope_exit = finalizer([=] { ::close(fd); });
+        auto scope_exit = finalizer([=] { impl_close_posix(fd); });
 
         static constexpr size_t buff_size = 8192 / sizeof(T);
         T                       buff[buff_size];
@@ -996,7 +1149,7 @@ private:
         size_t size      = 0;
         auto&  data      = mfr.start;
 
-        while ((avail = ::read(fd, buff, buff_size * sizeof(T))) > 0) {
+        while ((avail = impl_read_posix(fd, buff, buff_size * sizeof(T))) > 0) {
             auto required_allocated = size + size_t(avail);
             if (allocated < required_allocated) {
                 auto new_allocated = allocated * 2;

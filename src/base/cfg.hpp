@@ -8,8 +8,16 @@
 #include <filesystem>
 #include <thread>
 
+#ifdef _WIN32
+
+#include <windows.h>
+
+#else
+
 #include <poll.h>
 #include <sys/inotify.h>
+
+#endif
 
 #include "split_view.hpp"
 #include "log.hpp"
@@ -1598,7 +1606,7 @@ public:
             bool create_dir_tried = false;
             retry:
             try {
-                [[maybe_unused]] auto of = outfd<char>(entry_config_path);
+                [[maybe_unused]] auto of = outfd<char>(entry_config_path.string());
             } catch (const cannot_open_file& e) {
                 if (e.error == ENOENT) {
                     if ((mode & cfg_mode::autocreate_dir) && !create_dir_tried) {
@@ -2149,6 +2157,166 @@ private:
     cfg_section_replace_helper<cfg> section_replace_helper;
 };
 
+#ifdef _WIN32
+
+/* Windows has no inotify: the watcher polls the last-write times of the
+ * watched files. */
+class cfg_watcher {
+public:
+    cfg_watcher(cfg* config): conf(config) {}
+
+    ~cfg_watcher() {
+        stop();
+    }
+
+    void watch_section(const cfg_section<true>& section) {
+        std::lock_guard lock{mtx};
+
+        auto file_node = section.begin().raw_node()->file;
+        auto [pos, was_insert] = watched_sections.emplace(file_node->path, std::set<std::string>{});
+        pos->second.emplace(section.section_name());
+
+        if (!mrunning)
+            start();
+
+        if (was_insert)
+            file_last_write[file_node->path] = file_last_write_time(file_node->path);
+    }
+
+    bool remove_section(const cfg_section<true>& section) {
+        auto file_node = section.begin().raw_node()->file;
+        std::lock_guard lock{mtx};
+
+        auto pos = watched_sections.find(file_node->path);
+        if (pos == watched_sections.end())
+            return false;
+
+        if (!pos->second.erase(std::string(section.section_name())))
+            return false;
+
+        if (pos->second.empty()) {
+            watched_sections.erase(pos);
+            file_last_write.erase(file_node->path);
+        }
+
+        if (watched_sections.empty() && mrunning)
+            stop();
+
+        return true;
+    }
+
+    std::vector<std::string> watched_section_names() const {
+        std::vector<std::string> result;
+        std::lock_guard lock{mtx};
+        for (auto& [_, sections] : watched_sections) {
+            for (auto& sect_name : sections)
+                result.push_back(sect_name);
+        }
+        return result;
+    }
+
+    void worker() {
+        glog().info("config watcher start");
+
+        mrunning = true;
+
+        while (mrunning) {
+            std::vector<std::pair<std::string, std::set<std::string>>> to_update;
+
+            {
+                std::lock_guard lock{mtx};
+                for (auto& [path, sections] : watched_sections) {
+                    auto time = file_last_write_time(path);
+                    auto&    last = file_last_write[path];
+                    if (time != last) {
+                        last        = time;
+                        to_update.emplace_back(path, sections);
+                    }
+                }
+            }
+
+            for (auto& [path, sections] : to_update)
+                update(path, sections);
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+
+        glog().info("config watcher stop");
+    }
+
+    void update(const std::string& file, const std::set<std::string>& sections) {
+        std::vector<std::string> to_remove;
+
+        for (auto& section_name : sections) {
+            try {
+                auto sect_conf = cfg(file, section_name);
+                if (sect_conf.get_files().size() > 1)
+                    throw cfg_exception("Updating section splitted into different files is not supported now");
+                conf->schedule_section_replace(std::move(sect_conf));
+            }
+            catch (const cfg_section_not_found&) {
+                conf->schedule_section_replace(cfg(cfg::uninitialized_construct{}, section_name));
+                to_remove.push_back(section_name);
+            }
+            catch (const std::exception& e) {
+                glog().error("Update section [{}] failed: {}", section_name);
+            }
+        }
+
+        for (auto& section_name : to_remove) {
+            auto found_sects = watched_sections.find(file);
+            if (found_sects == watched_sections.end())
+                continue;
+
+            auto& sects = found_sects->second;
+            sects.erase(section_name);
+
+            glog().info("section [{}] has been removed from watch list", section_name);
+
+            if (sects.empty()) {
+                watched_sections.erase(found_sects);
+                file_last_write.erase(file);
+                glog().info("file {} has been removed from watch list", file);
+            }
+        }
+    }
+
+    void start() {
+        if (!mrunning) {
+            task = std::thread(&cfg_watcher::worker, this);
+            while (!mrunning)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
+    void stop() {
+        if (mrunning) {
+            mrunning = false;
+            task.join();
+        }
+    }
+
+private:
+    static ULONGLONG file_last_write_time(const std::string& path) {
+        WIN32_FILE_ATTRIBUTE_DATA data = {};
+        if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &data))
+            return 0;
+        return (ULONGLONG(data.ftLastWriteTime.dwHighDateTime) << 32) |
+               data.ftLastWriteTime.dwLowDateTime;
+    }
+
+    std::thread                                      task;
+    std::atomic_bool                                 mrunning = false;
+    cfg*                                             conf;
+    std::map<std::string, std::set<std::string>>     watched_sections;
+
+    std::map<std::string, ULONGLONG> file_last_write;
+
+    mutable std::mutex mtx;
+};
+
+#else
+
 class cfg_watcher {
 public:
     cfg_watcher(cfg* config): conf(config), inotify_fd(inotify_init()) {
@@ -2346,6 +2514,8 @@ private:
 
     mutable std::mutex mtx;
 };
+
+#endif
 
 cfg_watcher cfg::get_watcher() {
     return {this};

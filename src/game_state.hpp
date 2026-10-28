@@ -879,7 +879,7 @@ public:
     [[nodiscard]]
     float bullet_catch_up_limit(float catch_up, const vec2f& pos, const vec2f& vel, const player* owner, int group,
                                 const player* skip = nullptr) const {
-        constexpr float near   = 30.f;  /* px */
+        constexpr float near_px = 30.f; /* px */
         constexpr float aside  = 150.f; /* px: passing further aside, the player is not its target */
         constexpr float span_k = 2.f;
 
@@ -896,7 +896,7 @@ public:
             auto along  = to.x * dir.x + to.y * dir.y;
             auto across = std::abs(to.x * dir.y - to.y * dir.x);
             if (along >= 0.f && across <= aside)
-                catch_up = std::min(catch_up, std::max(along - near, 0.f) / (span_k * speed));
+                catch_up = std::min(catch_up, std::max(along - near_px, 0.f) / (span_k * speed));
         }
         return catch_up;
     }
