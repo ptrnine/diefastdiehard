@@ -523,42 +523,21 @@ with its player.
 - **Remote players** are shown in the past: the bullet path delayed by
   `local_frame_time − render time` (`shown_delay`) is swept against them.
   The path from the muzzle up to there is hit-scanned on spawn.
-- **Drawing** (`bullet::framed_t::draw_offset`): the bullet is drawn in the
-  shown frame, `gap` (the shown position minus the local frame position,
-  ~`shown_delay·speed`) behind its simulated position. Drawn in the local
-  frame, it flew through a remote player it hit ~`shown_delay` before
-  the hit (and the knockback) showed up.
-  It converges to the local frame when it flies at the local player
-  (ahead of it on its path, < 150 px aside), over 2 gaps of the distance
-  (drawn ≤ 1.5× faster meanwhile), down to 30 px before the player: there
-  it hits in the local frame. The blend never grows back, so a bullet that
-  passed the local player stays in its frame and never looks like it flies
-  backwards. `net_client::frame_draw_update` updates the gap and the local
-  player each tick.
-  It is turned like its path where it is drawn (`gap_vel`: the velocity at
-  the shown flight minus the simulated one). Under bullet gravity the
-  simulated velocity is later in the flight, so a bullet turned by it
-  pointed below its drawn path (up to ~3.7° at 100 ms ping).
-- **Catch-up** (`framed_t::catch_up`): when the shooter is shown firing,
-  the shown frame is already `forward + rewind` (the shooter's lag and view
-  delay) into the flight: at 100 ms ping the bullet appeared ~300 px past
-  the barrel. So it is drawn `catch_up` earlier in its flight, from the
-  muzzle, and catches up at 2× its speed (`bullet::catch_up_speed`, smoothed
-  between ticks with `catch_up_vel`). It is visual only: the simulation,
-  the sweeps and the hits stay in their frames. `catch_up` never grows and
-  is gone 30 px before a remote player it may hit ahead on its path
-  (`game_state::bullet_catch_up_limit`: shortened over 2× the distance,
-  ≤ 1.5× faster meanwhile), so it reaches
-  the player when the hit shows up; near the local player the shown blend
-  removes it with the gap.
+- **Drawing:** the bullet is drawn at its physical (local frame) position,
+  turned like its simulated path, like on the server. Remote players are
+  shown in the past, so the bullet may fly through a shown remote player
+  ~`shown_delay` before the hit (and the knockback) shows up; it
+  disappears at a wall exactly when the local simulation kills it. When the
+  shooter is shown firing, the bullet is already drawn ~`frame_ahead +
+  rewind` of its flight past the muzzle (the shooter's lag and view delay).
 - Before the first acknowledged input there is no tick time: the bullet is
   forwarded by its state's age (present time) and collides physically.
 - Bullets the server already consumed are not spawned, and bullets missing
   from the alive set are removed.
 - **Cost:** a remote bullet is simulated further along its flight, about
-  `(shooter lag + own RTT and queue wait + shooter rewind)·speed`; the
-  catch-up hides it near the muzzle, but a bullet that hits a wall during
-  the catch-up disappears short of it.
+  `(shooter lag + own RTT and queue wait + shooter rewind)·speed`, and is
+  drawn there: it appears far past the muzzle while the shooter is still
+  shown firing.
 
 **Own bullet prediction** (client's predicted player):
 - The bullets spawn at once, without an id. Shots are deterministic:
@@ -730,10 +709,9 @@ across a teleport.
 - **Remote players vs. framed bullets:** they are swept by the bullet path
   delayed along the muzzle trajectory; that stops when the shown bullet
   dies, so a hit in the last `shown_delay` of its flight is not predicted
-  (the snapshots correct it). Drawn in the shown frame, the bullet
-  disappears ~`gap` before a wall it hits in the local frame. With a
-  remote player right next to the local player, a bullet flying at both
-  is drawn in the local frame, so it passes through the remote player.
+  (the snapshots correct it). The bullet is drawn at its physical position,
+  so it passes visibly through a shown remote player ~`shown_delay` before
+  the hit shows up.
 - **Unpredicted hits on remote players:** if the client simulation missed a
   hit that the server's lag compensation registered, it shows up as a
   smoothed correction about one view delay later. With fast-falling or

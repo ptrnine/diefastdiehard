@@ -193,61 +193,6 @@ public:
         float shown_flight;  // flight time the shown players were tested up to, s
         bool  own = false;   // the local player's predicted bullet: swept against the remote players only
         std::optional<double> view = {}; // own: the server time shown at the shot's tick (net::input::view_base)
-
-        /*
-         * Drawing: where the remote players see the bullet (the shown frame)
-         * is gap from it, its velocity there gap_vel from its own (earlier in
-         * its flight: under gravity, less bent). It is drawn there and turned
-         * that way, so it meets the remote players when they are hit, but
-         * converges to the local frame when it flies at the local player
-         * (local_center): it hits it in that frame.
-         * Catch-up: the shown frame is already the shooter's lag + rewind into
-         * the flight when the shooter is shown firing (far from the muzzle at
-         * ping), so it is drawn catch_up earlier in its flight, from the
-         * muzzle, catching up at bullet::catch_up_speed. catch_up never grows
-         * and is gone before the bullet reaches a player it may hit
-         */
-        vec2f                gap         = {0.f, 0.f};
-        vec2f                gap_vel     = {0.f, 0.f};
-        std::optional<vec2f> local_center = {};
-        float                shown_blend = 1.f; // 1: drawn in the shown frame, 0: in the local frame; never grows
-        float                catch_up    = 0.f; // s: drawn this much earlier in its flight than the shown frame
-        vec2f                catch_up_vel = {0.f, 0.f}; // how fast the catch-up moves it on until the next tick
-
-        /* Blend to the shown frame of the bullet at pos flying along vel: by its distance to the local player ahead */
-        [[nodiscard]]
-        float shown_blend_at(const vec2f& pos, const vec2f& vel) const {
-            constexpr float near_px = 30.f; /* px: in the local frame at the local player */
-            constexpr float aside  = 150.f; /* px: passing further aside, the local player is not its target */
-            constexpr float span_k = 2.f;   /* converges over 2 gaps: drawn at most 1.5x faster meanwhile */
-
-            auto speed = magnitude(vel);
-            if (!local_center || speed < 1.f)
-                return shown_blend;
-            auto dir    = vel / speed;
-            auto to     = *local_center - pos;
-            auto along  = to.x * dir.x + to.y * dir.y;
-            auto across = std::abs(to.x * dir.y - to.y * dir.x);
-            if (along < 0.f || across > aside)
-                return shown_blend;
-            auto span = std::max(span_k * magnitude(gap), 150.f);
-            return std::min(shown_blend, std::clamp((along - near_px) / span, 0.f, 1.f));
-        }
-
-        [[nodiscard]]
-        vec2f draw_offset(const vec2f& pos, const vec2f& vel, float since_tick = 0.f) const {
-            return (gap + catch_up_vel * since_tick) * shown_blend_at(pos, vel);
-        }
-
-        /*
-         * Where it is drawn and its velocity there, for the bullet at pos flying
-         * along vel, since_tick seconds after the tick it was updated at
-         */
-        [[nodiscard]]
-        std::pair<vec2f, vec2f> drawn(const vec2f& pos, const vec2f& vel, float since_tick = 0.f) const {
-            auto blend = shown_blend_at(pos, vel);
-            return {pos + (gap + catch_up_vel * since_tick) * blend, vel + gap_vel * blend};
-        }
     };
 
     /* Drawn behind its position, catching up: drawn this much faster until caught up */
@@ -435,15 +380,8 @@ public:
             auto next_pos = pos + ph->get_velocity() * timestep;
             pos = lerp(pos, next_pos, interpolation_factor);
             auto dir = ph->get_direction();
-            /* A server bullet on a client: drawn in the shown frame, turned like its path there */
-            if (auto& fr = b.framed(); fr && !fr->own) {
-                auto [drawn_pos, drawn_vel] = fr->drawn(pos, ph->get_velocity(), interpolation_factor * timestep);
-                pos                         = drawn_pos;
-                if (magnitude(drawn_vel) > 1.f)
-                    dir = normalize(drawn_vel);
-            }
-            /* Spawned ahead of the muzzle: drawn behind, catching up */
-            else if (auto& cu = b.catch_up()) {
+            /* Spawned ahead of the muzzle (server): drawn behind, catching up */
+            if (auto& cu = b.catch_up()) {
                 pos += cu->gap + cu->step_vel * (interpolation_factor * timestep);
                 if (auto drawn_vel = ph->get_velocity() + cu->gap_vel; magnitude(drawn_vel) > 1.f)
                     dir = normalize(drawn_vel);
