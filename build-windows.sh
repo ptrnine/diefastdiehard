@@ -592,9 +592,9 @@ $builddir/luajit/lib/libluajit-5.1.a \
     build_glew_shim "$builddir" "$hardening_flags"
 
     # Header-only / single-file submodules
-    if [ ! -f "$builddir/3rd/include/nuklear.h" ]; then
-        cp 'submodules/Nuklear/nuklear.h' "$builddir/3rd/include/"
-    fi
+    # Copied again when the submodule is updated
+    cmp -s submodules/Nuklear/nuklear.h "$builddir/3rd/include/nuklear.h" || \
+        cp submodules/Nuklear/nuklear.h "$builddir/3rd/include/" || fail "Can't copy nuklear.h"
     # source includes use <luaffi/...> (the luacpp submodule project name)
     mkdir -p "$builddir/3rd/include/luaffi"
     cp submodules/luacpp/src/*.hpp "$builddir/3rd/include/luaffi/"

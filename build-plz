@@ -629,11 +629,13 @@ $([ "$asan" == true ] && asan_flags)
     build_cmake_submodule "$builddir" $rebuild_submodules Catch2 -DCATCH_INSTALL_DOCS=OFF
     build_cmake_submodule "$builddir" $rebuild_submodules luacpp -DENABLE_TESTS=ON
 
-    if [ ! -f "$builddir/3rd/include/nuklear.h" ]; then
+    if [ ! -f submodules/Nuklear/nuklear.h ]; then
         git submodule init submodules/Nuklear || fail ""
         git submodule update submodules/Nuklear || fail ""
-        cp 'submodules/Nuklear/nuklear.h' "$builddir/3rd/include/"
     fi
+    # Copied again when the submodule is updated
+    cmp -s submodules/Nuklear/nuklear.h "$builddir/3rd/include/nuklear.h" || \
+        cp submodules/Nuklear/nuklear.h "$builddir/3rd/include/" || fail ""
 
     build_executable \
         hpp_depinfo \

@@ -672,16 +672,16 @@ public:
         return nk_color_pick(_ctx, &colorf, color_format) == nk_true;
     }
 
-    void property_int(const char* name, int min, int* val, int max, int step, float inc_per_pixel) {
-        return nk_property_int(_ctx, name, min, val, max, step, inc_per_pixel);
+    bool property_int(const char* name, int min, int* val, int max, int step, float inc_per_pixel) {
+        return nk_property_int(_ctx, name, min, val, max, step, inc_per_pixel) == nk_true;
     }
 
-    void property_float(const char* name, float min, float* val, float max, float step, float inc_per_pixel) {
-        return nk_property_float(_ctx, name, min, val, max, step, inc_per_pixel);
+    bool property_float(const char* name, float min, float* val, float max, float step, float inc_per_pixel) {
+        return nk_property_float(_ctx, name, min, val, max, step, inc_per_pixel) == nk_true;
     }
 
-    void property_double(const char* name, double min, double* val, double max, double step, float inc_per_pixel) {
-        return nk_property_double(_ctx, name, min, val, max, step, inc_per_pixel);
+    bool property_double(const char* name, double min, double* val, double max, double step, float inc_per_pixel) {
+        return nk_property_double(_ctx, name, min, val, max, step, inc_per_pixel) == nk_true;
     }
 
     int propertyi(const char* name, int min, int val, int max, int step, float inc_per_pixel) {
@@ -788,20 +788,20 @@ public:
         return nk_combo_callback(_ctx, item_getter, userdata, selected, count, item_height, nk_vec2(size.x, size.y));
     }
 
-    void combobox(const char** items, int count, int* selected, int item_height, vec2f size) {
-        return nk_combobox(_ctx, items, count, selected, item_height, nk_vec2(size.x, size.y));
+    bool combobox(const char** items, int count, int* selected, int item_height, vec2f size) {
+        return nk_combobox(_ctx, items, count, selected, item_height, nk_vec2(size.x, size.y)) == nk_true;
     }
 
-    void combobox_string(const char* items_separated_by_zeros, int* selected, int count, int item_height, vec2f size) {
-        return nk_combobox_string(_ctx, items_separated_by_zeros, selected, count, item_height, nk_vec2(size.x, size.y));
+    bool combobox_string(const char* items_separated_by_zeros, int* selected, int count, int item_height, vec2f size) {
+        return nk_combobox_string(_ctx, items_separated_by_zeros, selected, count, item_height, nk_vec2(size.x, size.y)) == nk_true;
     }
 
-    void combobox_separator(const char* items_separated_by_separator, int separator, int* selected, int count, int item_height, vec2f size) {
-        return nk_combobox_separator(_ctx, items_separated_by_separator, separator, selected, count, item_height, nk_vec2(size.x, size.y));
+    bool combobox_separator(const char* items_separated_by_separator, int separator, int* selected, int count, int item_height, vec2f size) {
+        return nk_combobox_separator(_ctx, items_separated_by_separator, separator, selected, count, item_height, nk_vec2(size.x, size.y)) == nk_true;
     }
 
-    void combobox_callback(nkfunc<void(void*, int, const char**)> item_getter, void* CHANGE_THIS_NAME, int* selected, int count, int item_height, vec2f size) {
-        return nk_combobox_callback(_ctx, item_getter, CHANGE_THIS_NAME, selected, count, item_height, nk_vec2(size.x, size.y));
+    bool combobox_callback(nkfunc<void(void*, int, const char**)> item_getter, void* CHANGE_THIS_NAME, int* selected, int count, int item_height, vec2f size) {
+        return nk_combobox_callback(_ctx, item_getter, CHANGE_THIS_NAME, selected, count, item_height, nk_vec2(size.x, size.y)) == nk_true;
     }
 
     bool combo_begin_text(const char* selected, int CHANGE_THIS_NAME, vec2f size) {
