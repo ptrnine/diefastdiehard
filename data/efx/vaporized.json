@@ -1,0 +1,32 @@
+{
+    "name": "vaporized",
+    "duration": 1.0,
+
+    "textures": {
+        "vaporized": { "path": "efx/events/vaporized.png" }
+    },
+
+    "animations": [
+        {
+            "name": "fade",
+            "type": "opacity",
+            "apply_to": "all",
+            "keys": [
+                { "value": 1.0, "time": 0.0 },
+                { "value": 0.0, "time": 1.0 }
+            ]
+        }
+    ],
+
+    "templates": {
+        "vaporized": {
+            "type": "sprite",
+            "texture": "vaporized",
+            "origin": [ 410, 100.5 ]
+        }
+    },
+
+    "primitives": [
+        { "template": "vaporized" }
+    ]
+}
