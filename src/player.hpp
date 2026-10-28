@@ -971,6 +971,12 @@ public:
     }
 
     [[nodiscard]]
+    bool holds_primary() const {
+        auto* wpn = _pistol.get_weapon();
+        return wpn && wpn->slot() == weapon::primary;
+    }
+
+    [[nodiscard]]
     const std::string& secondary_section() const {
         return _secondary_section;
     }

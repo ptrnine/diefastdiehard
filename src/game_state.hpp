@@ -1211,13 +1211,14 @@ public:
         for (auto& c : crates)
             c->update();
 
-        /* Pick up: the first player overlapping a crate takes it */
+        /* Pick up: the first player overlapping a crate takes it;
+         * a player holding a primary weapon does not take it (drop the gun first) */
         for (auto& [_, pl] : players) {
             auto pbb = pl->bb();
 
             for (auto it = crates.begin(); it != crates.end();) {
                 /* Net-synced crates are picked up on the server */
-                if ((*it)->net_synced() || !(*it)->bb().findIntersection(pbb)) {
+                if ((*it)->net_synced() || !(*it)->bb().findIntersection(pbb) || pl->holds_primary()) {
                     ++it;
                     continue;
                 }
