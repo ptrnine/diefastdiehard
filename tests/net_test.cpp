@@ -2599,6 +2599,65 @@ TEST_CASE("net: the long shot (adjust) mode of remote players is shown") {
     CHECK_FALSE(f.remote_bot().long_shot_enabled());
 }
 
+TEST_CASE("net: the client draws the bullets of a shooter with ping from the muzzle") {
+    using namespace std::chrono_literals;
+    hit_fixture f{25, 25};
+    /*
+     * A network shooter with ~100 ms ping: its bullets spawn far into their
+     * flight (forward + frame_ahead + rewind). The shooter is shown firing
+     * now: they must be drawn from the muzzle, catch up and never be drawn
+     * moving backwards
+     */
+    f.server_side().teleport({1400.f, 1040.f});
+    f.bot->lag_compensation({.lag = 0.1f, .rewind = 0.11f});
+    f.run_for(1500ms);
+
+    struct drawn_t {
+        std::vector<float> x; /* drawn x per tick (flying left) */
+        float              first_phys = 0.f;
+        bool               caught_up  = false;
+    };
+    std::map<u32, drawn_t> drawn;
+    auto muzzle_x  = f.bot->get_position().x;
+    auto last_tick = f.gs_cli.sim.tick();
+    REQUIRE(f.bot->shot());
+    f.run_for(500ms, [&] {
+        if (f.gs_cli.sim.tick() == last_tick)
+            return;
+        last_tick = f.gs_cli.sim.tick();
+        for (auto& blt : f.gs_cli.blt_mgr.bullets()) {
+            auto& ph = blt.physic();
+            if (blt.net_id() == 0 || ph->ready_delete_later())
+                continue;
+            auto& d = drawn[blt.net_id()];
+            if (d.x.empty())
+                d.first_phys = ph->get_position().x;
+            auto& cu = blt.catch_up();
+            d.x.push_back(ph->get_position().x + (cu ? cu->gap.x : 0.f));
+            d.caught_up = d.caught_up || !cu;
+        }
+    });
+    f.bot->relax();
+    REQUIRE(!drawn.empty());
+
+    size_t long_flights = 0;
+    for (auto& [id, d] : drawn) {
+        CAPTURE(id, muzzle_x, d.first_phys, d.x.front(), d.x.size());
+        /* Spawned far from the muzzle: without the catch-up it was drawn there */
+        CHECK(muzzle_x - d.first_phys > 150.f);
+        /* Drawn from the muzzle: up to a tick at the catch-up speed */
+        CHECK(muzzle_x - d.x.front() < 60.f);
+        /* Caught up within its flight (at 2x speed), unless fired at the end */
+        if (d.x.size() >= 40) {
+            ++long_flights;
+            CHECK(d.caught_up);
+        }
+        for (size_t i = 1; i < d.x.size(); ++i)
+            CHECK(d.x[i] <= d.x[i - 1]);
+    }
+    CHECK(long_flights > 0);
+}
+
 TEST_CASE("net: the server draws the bullets of a network shooter from the muzzle") {
     using namespace std::chrono_literals;
     hit_fixture f{25, 25};

@@ -527,17 +527,21 @@ with its player.
   turned like its simulated path, like on the server. Remote players are
   shown in the past, so the bullet may fly through a shown remote player
   ~`shown_delay` before the hit (and the knockback) shows up; it
-  disappears at a wall exactly when the local simulation kills it. When the
-  shooter is shown firing, the bullet is already drawn ~`frame_ahead +
-  rewind` of its flight past the muzzle (the shooter's lag and view delay).
+  disappears at a wall exactly when the local simulation kills it.
+- **Drawn from the muzzle** (`bullet::catch_up_t`): the shooter is shown
+  firing now, its bullet `flight` (~`forward + frame_ahead + rewind`) into
+  its flight. It is drawn that much earlier, from the muzzle, and catches
+  up at 2× its speed (`game_state::bullets_catch_up_update` every tick,
+  shared with the server's catch-up), visual only, gone 30 px before a
+  player it may hit ahead on its path (`game_state::bullet_catch_up_limit`).
 - Before the first acknowledged input there is no tick time: the bullet is
   forwarded by its state's age (present time) and collides physically.
 - Bullets the server already consumed are not spawned, and bullets missing
   from the alive set are removed.
 - **Cost:** a remote bullet is simulated further along its flight, about
-  `(shooter lag + own RTT and queue wait + shooter rewind)·speed`, and is
-  drawn there: it appears far past the muzzle while the shooter is still
-  shown firing.
+  `(shooter lag + own RTT and queue wait + shooter rewind)·speed`; the
+  catch-up hides it near the muzzle, but a bullet that hits a wall during
+  the catch-up disappears short of it.
 
 **Own bullet prediction** (client's predicted player):
 - The bullets spawn at once, without an id. Shots are deterministic:

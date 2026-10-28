@@ -200,9 +200,10 @@ public:
 
     /*
      * Spawned ahead of the muzzle (server: a network shooter's bullet,
-     * forwarded by the shooter's lag): drawn behind seconds earlier in its
-     * flight, from the muzzle, catching up at catch_up_speed (updated every
-     * tick: game_state::bullets_catch_up_update)
+     * forwarded by the shooter's lag; client: a server bullet in the local
+     * frame, see net_client::spawn_server_bullet): drawn behind seconds
+     * earlier in its flight, from the muzzle, catching up at catch_up_speed
+     * (updated every tick: game_state::bullets_catch_up_update)
      */
     struct catch_up_t {
         float behind;                // s
@@ -380,7 +381,7 @@ public:
             auto next_pos = pos + ph->get_velocity() * timestep;
             pos = lerp(pos, next_pos, interpolation_factor);
             auto dir = ph->get_direction();
-            /* Spawned ahead of the muzzle (server): drawn behind, catching up */
+            /* Spawned ahead of the muzzle: drawn behind, catching up */
             if (auto& cu = b.catch_up()) {
                 pos += cu->gap + cu->step_vel * (interpolation_factor * timestep);
                 if (auto drawn_vel = ph->get_velocity() + cu->gap_vel; magnitude(drawn_vel) > 1.f)
