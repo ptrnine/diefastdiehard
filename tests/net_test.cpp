@@ -789,6 +789,27 @@ TEST_CASE("player: server-driven bullet hit gives feedback without knockback") {
     CHECK(pl->get_velocity().x > 0.f);
 }
 
+TEST_CASE("player: a pwning hit knocks the hat off until the respawn") {
+    game_state gs;
+    auto pl = gs.player_create("hat_test");
+    REQUIRE(pl != nullptr);
+    pl->set_hat("player/hat0.png");
+
+    pl->on_bullet_hit({1000.f, 0.f}, pl->get_position());
+    CHECK_FALSE(pl->hat_knocked_off());
+
+    pl->on_bullet_hit({player::pwned_impulse + 100.f, 0.f}, pl->get_position());
+    CHECK(pl->hat_knocked_off());
+
+    pl->teleport({0.f, 0.f});
+    CHECK_FALSE(pl->hat_knocked_off());
+
+    /* No hat: nothing to knock off */
+    pl->set_hat("");
+    pl->on_bullet_hit({player::pwned_impulse + 100.f, 0.f}, pl->get_position());
+    CHECK_FALSE(pl->hat_knocked_off());
+}
+
 TEST_CASE("player: position_trace_lookup") {
     using namespace std::chrono_literals;
 

@@ -30,6 +30,13 @@ public:
         return {50.f, 90.f};
     }
 
+    /* A hit at least this hard "pwns": the headshot sound, the hat is knocked off */
+    static constexpr float pwned_impulse = 2200.f;
+
+    /* A knocked off hat falls for this long (s), rotating at hat_drop_angle_vel (deg/s, random direction) */
+    static constexpr float hat_drop_lifetime  = 5.f;
+    static constexpr float hat_drop_angle_vel = 90.f;
+
     static vec2f sprite_size_adjust_factors() {
         return {1.25f, 1.08f};
 
@@ -459,6 +466,17 @@ public:
         ++_teleports;
         place_legs();
         clear_attacker();
+        restore_hat();
+    }
+
+    /* Put the hat back on after it was knocked off (respawn) */
+    void restore_hat() {
+        _hat_knocked_off = false;
+    }
+
+    [[nodiscard]]
+    bool hat_knocked_off() const {
+        return _hat_knocked_off;
     }
 
     /** Number of teleports so far (wraps around) */
@@ -729,6 +747,9 @@ public:
                      bool               gravity_for_bullets   = false,
                      bool               spawn_bullet          = true,
                      F&&                bullet_spawn_callback = nullptr) {
+        _last_gravity    = sim.gravity();
+        _last_time_speed = sim.last_speed();
+
         /* Hit player sounds */
         if (_hit_sound_info) {
             sound_mgr().play(_hit_sound_info->pwned ? "player/headshot0.wav"s
@@ -957,7 +978,9 @@ public:
         /* The sprite frame is horizontally centered on the collision box and ends at pos.y */
         auto frame_size = sprite_size(_size);
         auto frame_pos  = pos - vec2f((frame_size.x - _size.x) * 0.5f, frame_size.y);
-        auto* hat       = _hat_txtr_path.empty() ? nullptr : &_hat;
+        draw_dropped_hats(wnd);
+
+        auto* hat       = _hat_txtr_path.empty() || _hat_knocked_off ? nullptr : &_hat;
         layout_body_sprites(frame_pos, frame_size, _on_left, _body, _head, _face, hat);
         for (auto* sprite : {&_body, &_head, &_face})
             wnd.draw(*sprite);
@@ -1019,6 +1042,7 @@ public:
     /* An empty path: no hat */
     void set_hat(const std::string& path) {
         _hat_txtr_path = path;
+        restore_hat();
         if (!path.empty())
             set_some(path, _hat_txtr, _hat, {255, 255, 255});
     }
@@ -1360,6 +1384,23 @@ private:
         _right_leg.setPosition(pos2);
     }
 
+    void draw_dropped_hats(sf::RenderWindow& wnd) {
+        std::erase_if(_dropped_hats, [&](dropped_hat_t& hat) {
+            auto elapsed_t = hat.since_drop.elapsed(_last_time_speed);
+            if (elapsed_t > hat_drop_lifetime)
+                return true;
+
+            wnd.draw(hat.sprite);
+
+            auto timestep = elapsed_t - hat.last_time;
+            hat.last_time = elapsed_t;
+            hat.vel += _last_gravity * timestep;
+            hat.sprite.move(hat.vel * timestep);
+            hat.sprite.rotate(sf::degrees(hat.angle_vel * timestep));
+            return false;
+        });
+    }
+
     /* The sprite is scaled and positioned on draw (layout_body_sprites) */
     static void set_some(const std::string& path, sf::Texture& txtr, sprite_t& sprite, const sf::Color& color) {
         txtr = texture_mgr().load(path);
@@ -1387,6 +1428,18 @@ private:
     sf::Texture _head_txtr;
     sf::Texture _face_txtr;
     sf::Texture _hat_txtr;
+
+    struct dropped_hat_t {
+        sprite_t sprite; /* a copy of the hat sprite where it was knocked off */
+        vec2f    vel;
+        float    angle_vel;
+        float    last_time  = 0.f;
+        timer    since_drop = {};
+    };
+    std::vector<dropped_hat_t> _dropped_hats;
+    bool                       _hat_knocked_off = false;
+    vec2f                      _last_gravity    = {0.f, 0.f};
+    float                      _last_time_speed = 1.f;
     sf::CircleShape _left_hand;
     sf::CircleShape _right_hand;
     sf::CircleShape _left_leg;
@@ -1753,7 +1806,24 @@ public:
             _attacker_cooldown = hit_cooldown(impulse);
         }
         set_on_hit_event();
-        play_hit_sound(hit_position, magnitude(impulse) > 2200.f);
+        bool pwned = magnitude(impulse) > pwned_impulse;
+        play_hit_sound(hit_position, pwned);
+        if (pwned)
+            knock_off_hat();
+    }
+
+    /**
+     * The hat falls off as a cosmetic sprite (not synced) with the velocity of
+     * the player before the hit (the player flies away from it), affected by
+     * the gravity, slowly rotating
+     */
+    void knock_off_hat() {
+        if (_hat_txtr_path.empty() || _hat_knocked_off)
+            return;
+        _hat_knocked_off = true;
+
+        auto angle_vel = rand_float(0.5f, 1.5f) * hat_drop_angle_vel;
+        _dropped_hats.push_back({_hat, get_velocity(), roll_the_dice(0.5f) ? angle_vel : -angle_vel});
     }
 
     /**
@@ -1768,6 +1838,8 @@ public:
      */
     void on_bullet_hit(const vec2f& impulse, const vec2f& hit_position, const bullet_ref& ref = {},
                        std::optional<double> at = {}) {
+        /* Before the knockback: a knocked off hat keeps the velocity before the hit */
+        hit_feedback(impulse, hit_position, ref);
         if (!_server_driven)
             apply_hit_physics(impulse);
         else {
@@ -1775,7 +1847,6 @@ public:
                 apply_hit_physics(impulse);
             _predicted_hits.push_back({ref, impulse, _collision_box->is_lock_y(), at});
         }
-        hit_feedback(impulse, hit_position, ref);
     }
 
     std::vector<predicted_hit_t> take_predicted_hits() {

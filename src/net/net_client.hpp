@@ -557,8 +557,10 @@ private:
         if (!teleported && (ack_seq < _last_ack || (ack_seq == _last_ack && ack_seq != 0)))
             return;
         _last_ack = std::max(_last_ack, ack_seq);
-        if (teleported)
+        if (teleported) {
             _local_teleports = teleports;
+            pl.restore_hat(); /* respawn */
+        }
 
         /*
          * A lag-compensated hit predicted on an acknowledged tick: the server
@@ -836,11 +838,12 @@ private:
         if (!e || !begin)
             return;
         e->extra.hits.emplace_back(ref, impulse);
+        /* Before the re-simulation: a knocked off hat keeps the shown velocity before the hit */
+        pl.hit_feedback(impulse, pos, ref);
         auto old_pos = pl.get_position();
         pl.restore_physic_state(*begin);
         replay_history(gs, pl, seq - 1, false);
         pl.add_render_offset(old_pos - pl.get_position());
-        pl.hit_feedback(impulse, pos, ref);
     }
 
     /**
@@ -1296,6 +1299,7 @@ private:
                 continuous = false;
                 (void)pl.take_predicted_hits();
                 pl.reset_render_offset();
+                pl.restore_hat(); /* respawn */
             }
 
             /*
