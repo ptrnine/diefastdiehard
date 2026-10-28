@@ -1813,8 +1813,10 @@ public:
         auto impulse_magn = magnitude(impulse);;
         bool pwned = impulse_magn > pwned_impulse;
         play_hit_sound(hit_position, pwned);
-        if (pwned)
+        if (pwned) {
             knock_off_hat();
+            efxmgr().play("vaporized", hit_position);
+        }
 
         if (impulse_magn < mid_impulse) {
             efxmgr().play("blood_low", hit_position);

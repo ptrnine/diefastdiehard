@@ -3,7 +3,7 @@
     "duration": 1.0,
 
     "textures": {
-        "vaporized": { "path": "efx/events/vaporized.png" }
+        "vaporized": { "path": "efx/events/vaporized2.png" }
     },
 
     "animations": [
@@ -15,6 +15,38 @@
                 { "value": 1.0, "time": 0.0 },
                 { "value": 0.0, "time": 1.0 }
             ]
+        },
+        {
+            "name": "rot",
+            "type": "rotation",
+            "apply_to": "all",
+            "keys": [
+                { "value": 0.0, "time": 0.0 },
+                { "value": 20.0, "time": 0.05 },
+                { "value": -50.0, "time": 0.1 },
+                { "value": 20.0, "time": 0.15 },
+                { "value": 0.0, "time": 0.2 },
+                { "value": 20.0, "time": 0.7 }
+            ]
+        },
+        {
+            "name": "pos",
+            "type": "position",
+            "apply_to": "all",
+            "keys": [
+                {"value": [0, -70], "time": 0.0 },
+                {"value": [0, -70], "time": 1.0 }
+            ]
+        },
+        {
+            "name": "scale",
+            "type": "scale",
+            "apply_to": "all",
+            "keys": [
+                {"value": [0.15, 0.15], "time": 0.0 },
+                {"value": [0.30, 0.30], "time": 0.1 },
+                {"value": [0.05, 0.05], "time": 1.0 }
+            ]
         }
     ],
 
@@ -23,7 +55,7 @@
             "type": "sprite",
             "texture": "vaporized",
             "scale": [ 0.15, 0.15 ],
-            "rotation": 1,
+            "rotation": -15,
             "origin": [ 410, 100.5 ]
         }
     },
