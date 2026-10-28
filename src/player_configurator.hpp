@@ -23,7 +23,7 @@ public:
 
     void read() {
         auto cfgpath = "data/settings/players_settings.cfg"s;
-        auto conf = cfg(cfgpath, cfg_mode::create_if_not_exists | cfg_mode::commit_at_destroy);
+        auto conf = cfg(cfgpath, cfg_mode::create_if_not_exists | cfg_mode::commit_at_destroy | cfg_mode::autocreate_dir);
 
         auto  sect_name = cfg_section_name{"player_settings_" + std::string(name)};
         auto& sect      = conf.get_or_create(sect_name);
@@ -48,7 +48,7 @@ public:
     void write() {
         auto  cfgpath   = "data/settings/players_settings.cfg"s;
         auto  sect_name = "player_settings_" + std::string(name);
-        auto  conf      = cfg(cfgpath, cfg_mode::create_if_not_exists | cfg_mode::commit_at_destroy);
+        auto  conf      = cfg(cfgpath, cfg_mode::create_if_not_exists | cfg_mode::commit_at_destroy | cfg_mode::autocreate_dir);
         auto& sect      = conf.get_or_create(sect_name);
 
         sect.set("pistol", pistol);

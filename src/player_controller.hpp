@@ -52,7 +52,7 @@ struct player_controller {
 
         auto sect_name = cfg_section_name{"player_controller_" + std::to_string(_id)};
         auto path      = "data/settings/players_settings.cfg"s;
-        auto conf      = cfg(path, cfg_mode::create_if_not_exists | cfg_mode::commit_at_destroy);
+        auto conf      = cfg(path, cfg_mode::create_if_not_exists | cfg_mode::commit_at_destroy | cfg_mode::autocreate_dir);
         auto sect      = conf.get_or_create(sect_name);
 
         up        = key_str_map().to_key(sect.value_or_default_and_set("key_up", "Up"s));
