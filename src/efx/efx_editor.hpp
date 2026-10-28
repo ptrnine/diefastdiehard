@@ -31,7 +31,7 @@
  *   "all" or an array of drawable indices.
  * - texture paths are relative to data/textures (dfdh::texture_mgr).
  * - templates: sprite/circle/rect with color/fill_color/position/origin/size/
- *   radius/rotation/source_rect/texture/point_count.
+ *   radius/rotation/source_rect/texture/point_count/scale.
  *
  * Adopted from fever_dream's src/grx/efx_editor.hpp.
  */
@@ -210,6 +210,7 @@ private:
     DEF_PARSE_SET(origin, setOrigin, value->second.get<vec2f>())
     DEF_PARSE_SET(radius, setRadius, value->second.get<float>())
     DEF_PARSE_SET(rotation, setRotation, sf::degrees(value->second.get<float>()))
+    DEF_PARSE_SET(scale, setScale, value->second.get<vec2f>())
     DEF_PARSE_SET(point_count, setPointCount, value->second.get<unsigned>())
 
 #undef DEF_PARSE_SET
@@ -225,6 +226,7 @@ private:
             parse_set_position(obj, drawable);
             parse_set_origin(obj, drawable);
             parse_set_rotation(obj, drawable);
+            parse_set_scale(obj, drawable);
             return drawable;
         }
         else if (type == "circle") {
@@ -236,6 +238,7 @@ private:
             parse_set_radius(obj, drawable);
             parse_set_rotation(obj, drawable);
             parse_set_point_count(obj, drawable);
+            parse_set_scale(obj, drawable);
             return drawable;
         }
         else if (type == "rect") {
@@ -246,6 +249,7 @@ private:
             parse_set_size(obj, drawable);
             parse_set_origin(obj, drawable);
             parse_set_rotation(obj, drawable);
+            parse_set_scale(obj, drawable);
             return drawable;
         }
         else {

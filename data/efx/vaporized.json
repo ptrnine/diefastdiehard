@@ -22,6 +22,8 @@
         "vaporized": {
             "type": "sprite",
             "texture": "vaporized",
+            "scale": [ 0.15, 0.15 ],
+            "rotation": 1,
             "origin": [ 410, 100.5 ]
         }
     },
