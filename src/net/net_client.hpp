@@ -956,15 +956,19 @@ private:
         blt.net_id(id);
         if (owner != gs.players.end())
             blt.owner(owner->second->name());
-        /* The shooter is shown firing now: drawn from the muzzle, catching up (like on the server) */
-        if (flight > 0.f) {
-            blt.catch_up() = bullet::catch_up_t{flight};
-            gs.bullet_catch_up_update(blt, false);
-        }
         if (frame_ahead) {
             /* The local player is swept from the tick it is at now on */
             auto from = gs.ballistic_forward(start, vel, gravity, std::max(flight - _tick_dt, 0.f)).first;
             blt.frame_on_client({start, vel, gravity, shot.rewind_s(), flight, shown_flight}, from);
+        }
+        /*
+         * The shooter is shown firing now: drawn from the muzzle, catching up
+         * (like on the server). After framing: the remote players limit it in
+         * its shown frame
+         */
+        if (flight > 0.f) {
+            blt.catch_up() = bullet::catch_up_t{flight};
+            gs.bullet_catch_up_update(blt, false);
         }
     }
 

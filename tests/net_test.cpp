@@ -2658,6 +2658,90 @@ TEST_CASE("net: the client draws the bullets of a shooter with ping from the muz
     CHECK(long_flights > 0);
 }
 
+/*
+ * Where the client draws its server bullets (bullet_mgr::draw at a tick):
+ * the leftmost live one at the height of the box (top .. bottom)
+ */
+static std::optional<float> leftmost_drawn_bullet(game_state& gs, float top, float bottom) {
+    std::optional<float> res;
+    for (auto& blt : gs.blt_mgr.bullets()) {
+        auto& ph = blt.physic();
+        if (blt.net_id() == 0 || ph->ready_delete_later())
+            continue;
+        auto pos = ph->get_position();
+        if (auto& cu = blt.catch_up())
+            pos += cu->gap;
+        if (pos.y >= top && pos.y <= bottom)
+            res = std::min(res.value_or(pos.x), pos.x);
+    }
+    return res;
+}
+
+TEST_CASE("net: the client draws server bullets drawn from the muzzle at the players they hit (100 ms ping)") {
+    using namespace std::chrono_literals;
+    hit_fixture f{25, 25};
+
+    /*
+     * A network shooter with ~100 ms ping (the bot at x = 1100, facing left)
+     * fires at a target: another server player (shown in the past, hit when
+     * the bullet's shown frame reaches it) or the local player (hit in the
+     * local frame). Drawn from the muzzle and catching up, the bullet must
+     * reach the drawn target when the knockback starts: not vanish short of
+     * it, nor fly through it first
+     */
+    auto remote = GENERATE(true, false);
+    auto i      = GENERATE(size_t(0), size_t(1));
+    /*
+     * Past where the bullet spawns (~480 px from the muzzle) or is shown
+     * (~280 px), nearer it is hit-scanned on spawn: no bullet is drawn
+     */
+    auto x = remote ? std::array{500.f, 650.f}[i] : std::array{250.f, 400.f}[i];
+    CAPTURE(remote, x);
+    f.bot->lag_compensation({.lag = 0.1f, .rewind = 0.11f});
+
+    player* srv_target = &f.server_side();
+    if (remote) {
+        srv_target = f.gs_srv.player_create("host");
+        REQUIRE(srv_target);
+        srv_target->group(2);
+        f.server_side().teleport({1400.f, 1040.f}); /* behind the bot */
+    }
+    srv_target->teleport({x, 1040.f});
+    f.run_for(1500ms);
+    auto& target = remote ? *f.gs_cli.players.at("host") : f.local();
+    auto  right  = x + target.get_size().x; /* the bullet flies left */
+
+    /*
+     * Single shots until a hit: the dispersion (random) can make a shot miss
+     * (above or below). One bullet in flight at a time
+     */
+    std::optional<float> last_drawn, drawn_at_hit;
+    float                min_drawn_before = std::numeric_limits<float>::max();
+    auto                 top              = target.get_position().y - target.get_size().y;
+    auto                 bottom           = target.get_position().y;
+    auto                 t0               = game_clock::now();
+    f.run_for(3000ms, [&] {
+        if (drawn_at_hit)
+            return;
+        if ((game_clock::now() - t0) % 700ms < 40ms)
+            f.bot->shot();
+        else
+            f.bot->relax();
+        if (target.get_position().x < x - 1.f) {
+            drawn_at_hit = last_drawn;
+            return;
+        }
+        if ((last_drawn = leftmost_drawn_bullet(f.gs_cli, top, bottom)))
+            min_drawn_before = std::min(min_drawn_before, *last_drawn);
+    });
+    f.bot->relax();
+
+    REQUIRE(drawn_at_hit);
+    /* Never drawn through the target before the hit, and at the target when it is hit (a tick of flight: ~24 px) */
+    CHECK(min_drawn_before > right - 30.f);
+    CHECK(*drawn_at_hit < right + 30.f);
+}
+
 TEST_CASE("net: the server draws the bullets of a network shooter from the muzzle") {
     using namespace std::chrono_literals;
     hit_fixture f{25, 25};

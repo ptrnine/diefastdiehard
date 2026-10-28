@@ -925,25 +925,22 @@ public:
     }
 
     /*
-     * How long a bullet drawn behind (catch-up, s) at pos flying vel may stay
-     * behind: it is gone 30 px before a player it may hit ahead on its path
-     * (not the owner nor its group, nor skip), so the bullet reaches the
-     * player when the hit shows up. Shortened over 2x the distance: drawn at
-     * most 1.5x faster meanwhile
+     * How far along its path (px) a bullet at pos flying vel is from the
+     * nearest player it may hit ahead (not the owner nor its group, only the
+     * tested ones); none: nullopt
      */
     [[nodiscard]]
-    float bullet_catch_up_limit(float catch_up, const vec2f& pos, const vec2f& vel, const player* owner, int group,
-                                const player* skip = nullptr) const {
-        constexpr float near_px = 30.f; /* px */
-        constexpr float aside  = 150.f; /* px: passing further aside, the player is not its target */
-        constexpr float span_k = 2.f;
+    std::optional<float> bullet_target_along(const vec2f& pos, const vec2f& vel, const player* owner, int group,
+                                             auto&& tested) const {
+        constexpr float aside = 150.f; /* px: passing further aside, the player is not its target */
 
         auto speed = magnitude(vel);
-        if (catch_up <= 0.f || speed < 1.f)
-            return catch_up;
+        if (speed < 1.f)
+            return {};
         auto dir = vel / speed;
+        std::optional<float> res;
         for (auto& [_, p] : players) {
-            if (p.get() == skip || p.get() == owner || p->eliminated() ||
+            if (!tested(*p) || p.get() == owner || p->eliminated() ||
                 (group != -1 && p->get_group() != -1 && p->get_group() == group))
                 continue;
             auto size   = p->get_size();
@@ -951,22 +948,67 @@ public:
             auto along  = to.x * dir.x + to.y * dir.y;
             auto across = std::abs(to.x * dir.y - to.y * dir.x);
             if (along >= 0.f && across <= aside)
-                catch_up = std::min(catch_up, std::max(along - near_px, 0.f) / (span_k * speed));
+                res = std::min(res.value_or(along), along);
         }
+        return res;
+    }
+
+    /*
+     * How long a bullet drawn behind (catch-up, s) at pos flying vel may stay
+     * behind: it is gone 30 px before a player it may hit ahead on its path
+     * (bullet_target_along), so the bullet reaches the player when the hit
+     * shows up. Shortened over 2x the distance: drawn at most 1.5x faster
+     * meanwhile
+     */
+    [[nodiscard]]
+    float bullet_catch_up_limit(float catch_up, const vec2f& pos, const vec2f& vel, const player* owner, int group,
+                                auto&& tested) const {
+        constexpr float near_px = 30.f; /* px */
+        constexpr float span_k  = 2.f;
+
+        if (catch_up <= 0.f)
+            return catch_up;
+        if (auto along = bullet_target_along(pos, vel, owner, group, tested))
+            catch_up = std::min(catch_up, std::max(*along - near_px, 0.f) / (span_k * magnitude(vel)));
         return catch_up;
     }
 
     /* Where a bullet drawn behind is drawn until the next tick; tick: it caught up for a tick first */
     void bullet_catch_up_update(bullet& blt, bool tick) {
-        auto& cu = blt.catch_up();
-        auto& ph = blt.physic();
-        auto  dt = std::chrono::duration<float>(sim.tick_period()).count();
-        if (tick)
-            cu->behind -= (bullet::catch_up_speed - 1.f) * dt;
+        auto& cu    = blt.catch_up();
+        auto& ph    = blt.physic();
+        auto  dt    = std::chrono::duration<float>(sim.tick_period()).count();
+        auto  step  = (bullet::catch_up_speed - 1.f) * dt;
+        auto  found = players.find(blt.owner());
+        auto  owner = found != players.end() ? found->second.get() : nullptr;
 
-        auto found = players.find(blt.owner());
-        auto owner = found != players.end() ? found->second.get() : nullptr;
-        cu->behind = bullet_catch_up_limit(cu->behind, ph->get_position(), ph->get_velocity(), owner, blt.group());
+        /*
+         * A server bullet on a client (bullet::framed_t) is in the local
+         * player's frame, but the remote players (server-driven, not
+         * predicted) are shown in the past: they are hit when its shown frame
+         * (fr->shown_flight, ahead seconds earlier in its flight) reaches
+         * them. While one is ahead there, it is not drawn past the shown
+         * frame and is limited in it: drawn at the player when the hit shows up
+         */
+        auto& fr     = blt.framed();
+        auto  framed = fr && !fr->own;
+        auto  ahead  = 0.f;
+        auto  held   = false;
+        auto  behind = tick ? cu->behind - step : cu->behind;
+        if (framed) {
+            auto [shown_pos, shown_vel] = ballistic_forward(fr->start, fr->velocity, fr->gravity, fr->shown_flight);
+            auto remote = [](const player& p) { return p.server_driven() && !p.predicted(); };
+            if (bullet_target_along(shown_pos, shown_vel, owner, blt.group(), remote)) {
+                ahead  = std::max(fr->flight - fr->shown_flight, 0.f);
+                held   = true;
+                behind = std::min(cu->behind, std::max(behind, ahead)); /* never grows */
+                if (behind > ahead)
+                    behind = ahead + bullet_catch_up_limit(behind - ahead, shown_pos, shown_vel, owner, blt.group(),
+                                                           remote);
+            }
+        }
+        cu->behind = bullet_catch_up_limit(behind, ph->get_position(), ph->get_velocity(), owner, blt.group(),
+                                           [&](const player& p) { return !framed || !p.server_driven() || p.predicted(); });
         if (cu->behind <= 0.f) {
             cu.reset();
             return;
@@ -976,7 +1018,9 @@ public:
             ballistic_forward(ph->get_position(), ph->get_velocity(), ph->is_gravity_enabled(), -cu->behind);
         cu->gap      = drawn_pos - ph->get_position();
         cu->gap_vel  = drawn_vel - ph->get_velocity();
-        cu->step_vel = drawn_vel * (std::min(cu->behind, (bullet::catch_up_speed - 1.f) * dt) / dt);
+        /* Held at the shown frame: it moves on with it (the limit's shortening is not foreseen) */
+        auto next    = held ? std::max(cu->behind - ahead, 0.f) : cu->behind;
+        cu->step_vel = drawn_vel * (std::min(next, step) / dt);
     }
 
     void bullets_catch_up_update() {

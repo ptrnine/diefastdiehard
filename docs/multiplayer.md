@@ -532,8 +532,14 @@ with its player.
   firing now, its bullet `flight` (~`forward + frame_ahead + rewind`) into
   its flight. It is drawn that much earlier, from the muzzle, and catches
   up at 2× its speed (`game_state::bullets_catch_up_update` every tick,
-  shared with the server's catch-up), visual only, gone 30 px before a
-  player it may hit ahead on its path (`game_state::bullet_catch_up_limit`).
+  shared with the server's catch-up), visual only, gone 30 px before the
+  local player if it may hit it ahead on its path
+  (`game_state::bullet_catch_up_limit`). A remote player (server-driven, not
+  predicted) is hit when the shown frame (`framed_t::shown_flight`) reaches
+  it: while one is ahead of the shown frame, the bullet is not drawn past
+  that frame (the catch-up stops there, never grows) and is limited in it,
+  so it reaches the shown player when the hit shows up instead of
+  vanishing short of it (`game_state::bullet_target_along`).
 - Before the first acknowledged input there is no tick time: the bullet is
   forwarded by its state's age (present time) and collides physically.
 - Bullets the server already consumed are not spawned, and bullets missing
@@ -713,9 +719,12 @@ across a teleport.
 - **Remote players vs. framed bullets:** they are swept by the bullet path
   delayed along the muzzle trajectory; that stops when the shown bullet
   dies, so a hit in the last `shown_delay` of its flight is not predicted
-  (the snapshots correct it). The bullet is drawn at its physical position,
-  so it passes visibly through a shown remote player ~`shown_delay` before
-  the hit shows up.
+  (the snapshots correct it). The bullet is drawn at its physical position
+  once caught up: if the catch-up was over before a remote player came
+  ahead of its shown frame (moving into its path), it
+  passes visibly through the shown player ~`shown_delay` before the hit
+  shows up. Held at the shown frame for a remote player, it disappears up
+  to `shown_delay·speed` short of a wall behind it.
 - **Unpredicted hits on remote players:** if the client simulation missed a
   hit that the server's lag compensation registered, it shows up as a
   smoothed correction about one view delay later. With fast-falling or
