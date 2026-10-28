@@ -557,8 +557,8 @@ public:
             for (auto& e : sim.point_primitives()) {
                 for (auto p : group_tree_view(e.get())) {
                     sf::RectangleShape s;
-                    s.setPosition(p->bb().getPosition());
-                    s.setSize({p->bb().width, std::max(p->bb().height, 2.f)});
+                    s.setPosition(p->bb().position);
+                    s.setSize({p->bb().size.x, std::max(p->bb().size.y, 2.f)});
                     s.setFillColor(sf::Color(0, 255, 0));
                     wnd.draw(s);
                 }
@@ -567,8 +567,8 @@ public:
             for (auto& e : sim.line_primitives()) {
                 for (auto p : group_tree_view(e.get())) {
                     sf::RectangleShape s;
-                    s.setPosition(p->bb().getPosition());
-                    s.setSize(p->bb().getSize());
+                    s.setPosition(p->bb().position);
+                    s.setSize(p->bb().size);
                     s.setOutlineColor(sf::Color(0, 255, 0));
                     s.setOutlineThickness(1.f);
                     wnd.draw(s);
@@ -580,7 +580,7 @@ public:
                     sf::Vertex(p.get_position()),
                     sf::Vertex(p.get_position() + vec2f(p.length(), 0.f)),
                 };
-                wnd.draw(line, 2, sf::Lines);
+                wnd.draw(line, 2, sf::PrimitiveType::Lines);
             }
         }
     }
@@ -745,8 +745,8 @@ public:
         auto bb = pl.bb();
         if (rewind_s > 0.f)
             if (auto past = pl.position_trace_lookup(sim.current_update_time(), rewind_s)) {
-                bb.left = past->x;
-                bb.top  = past->y - bb.height;
+                bb.position.x = past->x;
+                bb.position.y  = past->y - bb.size.y;
             }
         return bb;
     }
@@ -794,7 +794,7 @@ public:
             t1      = std::min(t1, std::max(ta, tb));
             return t0 <= t1;
         };
-        if (slab(a.x, d.x, bb.left, bb.left + bb.width) && slab(a.y, d.y, bb.top, bb.top + bb.height))
+        if (slab(a.x, d.x, bb.position.x, bb.position.x + bb.size.x) && slab(a.y, d.y, bb.position.y, bb.position.y + bb.size.y))
             return t0;
         return {};
     }
@@ -1217,7 +1217,7 @@ public:
 
             for (auto it = crates.begin(); it != crates.end();) {
                 /* Net-synced crates are picked up on the server */
-                if ((*it)->net_synced() || !(*it)->bb().intersects(pbb)) {
+                if ((*it)->net_synced() || !(*it)->bb().findIntersection(pbb)) {
                     ++it;
                     continue;
                 }

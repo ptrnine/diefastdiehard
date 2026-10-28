@@ -1,6 +1,7 @@
 #pragma once
 
 #include <SFML/System/Clock.hpp>
+#include <SFML/System/Time.hpp>
 #include <cmath>
 #include <SFML/Graphics/Rect.hpp>
 #include <SFML/Graphics/Color.hpp>
@@ -57,7 +58,7 @@ inline std::ostream& operator<<(std::ostream& o, const sf::Vector2f& v) {
 }
 
 inline std::ostream& operator<<(std::ostream& o, const sf::FloatRect& r) {
-    o << "{" << r.left << ", " << r.top << ", " << r.width << ", " << r.height << "}";
+    o << "{" << r.position.x << ", " << r.position.y << ", " << r.size.x << ", " << r.size.y << "}";
     return o;
 }
 
@@ -117,19 +118,19 @@ struct bounding_box {
     bounding_box() = default;
 
     bounding_box(const sf::FloatRect& r) {
-        min.x = r.left;
-        min.y = r.top;
-        max.x = r.left + r.width;
-        max.y = r.top + r.height;
+        min.x = r.position.x;
+        min.y = r.position.y;
+        max.x = r.position.x + r.size.x;
+        max.y = r.position.y + r.size.y;
     }
 
     [[nodiscard]]
     sf::FloatRect rect() const {
         sf::FloatRect r;
-        r.left   = min.x;
-        r.top    = min.y;
-        r.width  = max.x - min.x;
-        r.height = max.y - min.y;
+        r.position.x   = min.x;
+        r.position.y    = min.y;
+        r.size.x  = max.x - min.x;
+        r.size.y = max.y - min.y;
         return r;
     }
 

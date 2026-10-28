@@ -10,17 +10,21 @@ linking (ASan is incompatible with our static flags).
 
 Only the libraries the project pins are statically linked into `dfdh`:
 
-* **SFML 2.5.1** (`3rd/lib/libsfml-*-s.a`) — the submodule version, which is
-  not what most distros ship.
+* **SFML 3** (`3rd/lib/libsfml-*-s.a`) — the submodule version, which is
+  not what most distros ship. It is built with `SFML_USE_SYSTEM_DEPS=OFF`:
+  its CMake fetches and builds its dependencies as static libs in
+  `3rd/lib` (freetype, harfbuzz, FLAC/ogg/vorbis, mbedTLS, libssh2; SheenBidi
+  and miniaudio are inside the SFML archives). Configuring SFML needs network
+  access the first time.
 * **Nuklear** (`libnuklear.a`) — vendored single-file UI.
 * **LuaJIT 2.1** (`submodules/luacpp/3rd/lib/libluajit-5.1.a`) — pinned by the
   luacpp submodule.
 
 Everything else links against the system shared libraries: GL/GLX/GLdispatch
-(GLVND), GLEW, OpenAL, X11 (+Xext/Xcursor/Xrandr/Xfixes/Xrender/Xau/Xdmcp),
-freetype, FLAC/ogg/vorbis, udev, and glibc itself. These ABIs are stable and
-the packages exist in every Linux distro, so there is no reason to bundle
-them.
+(GLVND), GLEW, X11 (+Xext/Xcursor/Xrandr/Xi/Xfixes/Xrender/Xau/Xdmcp), udev,
+libresolv and glibc itself. These ABIs are stable and the packages exist in
+every Linux distro, so there is no reason to bundle them. The audio backend
+(miniaudio) dlopens the system's audio libraries at runtime.
 
 Rationale for keeping glibc dynamic: GLVND dlopens the GL vendor ICD at
 runtime (`libGLX_indirect.so.0` → `libGLX_mesa.so.0` → `libgallium` →
@@ -72,6 +76,8 @@ linked and need the same `LD_LIBRARY_PATH`; they must be run under a display
 
 1. SFML, Catch2, luacpp submodules (CMake, via `build_cmake_submodule`;
    SFML with `BUILD_SHARED_LIBS=OFF` in static mode, `ON` in dynamic mode).
+   The done-marker records the submodule commit and the cmake flags: an
+   updated submodule is rebuilt.
 2. Nuklear header copied to `3rd/include`.
 3. `dfdh` and the tests are compiled (GCH cache in `easybuild-debug/gch`)
    and linked.
@@ -81,8 +87,9 @@ Notes:
 * The linker is invoked with `-fno-lto` in static mode: this toolchain's GCC
   auto-attaches its LTO plugin at link time, which breaks extraction of
   plain (non-LTO) objects from static archives (LuaJIT).
-* The SFML module archives have cyclic internal dependencies, hence
-  `-Wl,--start-group … -Wl,--end-group` around them.
+* The SFML module archives (and their bundled dependencies) have cyclic
+  internal dependencies, hence `-Wl,--start-group … -Wl,--end-group` around
+  them.
 * `build_executable` always adds `-L 3rd/lib`, `-L 3rd/lib64`, `-L <builddir>`
   and the luacpp lib dirs; if a stale static archive with the same name as a
   needed shared library sits there (e.g. an old `libopenal.a`), `-lopenal`

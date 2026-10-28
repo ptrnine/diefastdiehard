@@ -2,43 +2,40 @@
 #include <string>
 #include <vector>
 
-static std::string_view trim_spaces(std::string_view str) {
-    while (!str.empty() && (str.front() == ' ' || str.front() == '\t')) str = str.substr(1);
-    while (!str.empty() && (str.back() == ' ' || str.back() == '\t'))
-        str = str.substr(0, str.size() - 1);
-    return str;
-}
-
+/* Parses the sf::Event subtypes (struct Closed, struct Resized, ...) from the preprocessed SFML/Window/Event.hpp */
 int main() {
     std::vector<std::string> event_types;
     std::string line;
-    bool on_enum = false;
 
+    bool on_class = false;
+
+    /* The input is the preprocessed header */
     while (std::getline(std::cin, line)) {
-        auto l = trim_spaces(line);
+        std::string_view l = line;
 
-        if (!on_enum) {
-            if (l.starts_with("enum EventType"))
-                on_enum = true;
+        if (!on_class) {
+            if (l.starts_with("class ") && l.ends_with(" Event"))
+                on_class = true;
             continue;
         }
 
-        if (l.empty() || l == "{")
-            continue;
-
-        if (l.starts_with("Count"))
+        if (l == "};")
             break;
-        else {
-            auto f = l.find(',');
-            if (f != std::string_view::npos) {
-                event_types.push_back(std::string(l.substr(0, f)));
-            }
-        }
+
+        /* The subtypes are the structs declared directly in class Event */
+        if (!l.starts_with("    struct "))
+            continue;
+
+        l = l.substr(std::string_view("    struct ").size());
+        if (l.empty() || l.find_first_of(" ;{") != std::string_view::npos)
+            continue;
+        event_types.emplace_back(l);
     }
 
     std::cout <<
         "#pragma once\n"
         "\n"
+        "#include <optional>\n"
         "#include <string>\n"
         "#include <map>\n"
         "#include <SFML/Window/Event.hpp>\n"
@@ -46,28 +43,27 @@ int main() {
         "\n"
         "namespace dfdh {\n"
         "\n"
-        "inline std::string sfml_event_type_to_str(sf::Event::EventType event_type) {\n"
-        "    switch (event_type) {\n";
+        "inline std::string sfml_event_type_to_str(const sf::Event& event) {\n";
     for (auto& event : event_types)
         std::cout <<
-            "        case sf::Event::" << event << ": return \"" << event << "\";\n";
+            "    if (event.is<sf::Event::" << event << ">()) return \"" << event << "\";\n";
     std::cout <<
-        "        default: return {};\n"
-        "    }\n"
+        "    return {};\n"
         "}\n"
-        "inline sf::Event::EventType sfml_str_to_event_type(std::string_view str) {\n"
+        "/* An event of the given type with the default values */\n"
+        "inline std::optional<sf::Event> sfml_str_to_event(std::string_view str) {\n"
         "    static auto map = []{\n"
-        "        return std::map<std::string_view, sf::Event::EventType>{\n";
+        "        return std::map<std::string_view, sf::Event>{\n";
     for (auto& event: event_types)
         std::cout <<
-        "        {\"" << event << "\", sf::Event::" << event << "},\n";
+        "        {\"" << event << "\", sf::Event::" << event << "{}},\n";
         std::cout << "    };\n"
             "    }();\n"
             "    auto found = map.find(str);\n"
             "    if (found != map.end())\n"
             "        return found->second;\n"
             "    glog().error(\"invalid sfml event type: {}\", str);\n"
-            "    return sf::Event::EventType(0);\n"
+            "    return {};\n"
             "}\n"
             "} // namespace dfdh\n";
 }

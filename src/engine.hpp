@@ -24,7 +24,7 @@ public:
     static constexpr auto config_path = "data/settings/engine.cfg";
 
     static sf::VideoMode video_mode(vec2u wnd_size) {
-        return {wnd_size.x, wnd_size.y};
+        return sf::VideoMode(wnd_size);
     }
 
     engine():
@@ -33,7 +33,8 @@ public:
         _wnd(video_mode(_engine_conf.value_or_default_and_set("window_size", defaults::window_size)), "diefastdiehard"),
         _devcons(ui) {
 
-        _wnd.setActive(true);
+        if (!_wnd.setActive(true))
+            glog().error("cannot activate the window context");
         ui = ui_ctx(_wnd);
     }
 
@@ -63,18 +64,18 @@ public:
             {
                 auto prof = loop_prof.scope("events");
                 ui.input_begin();
-                sf::Event evt;
-                while (_wnd.pollEvent(evt)) {
+                while (auto event = _wnd.pollEvent()) {
+                    auto& evt = *event;
                     ui.handle_event(evt);
                     _devcons.handle_event(evt);
 
-                    if (evt.type == sf::Event::Closed) {
+                    if (evt.is<sf::Event::Closed>()) {
                         _wnd.close();
                         goto end;
                     }
-                    else if (evt.type == sf::Event::Resized) {
-                        on_window_resize(evt.size.width, evt.size.height);
-                        _main_menu.set_size({float(evt.size.width), float(evt.size.height)});
+                    else if (auto resized = evt.getIf<sf::Event::Resized>()) {
+                        on_window_resize(resized->size.x, resized->size.y);
+                        _main_menu.set_size({float(resized->size.x), float(resized->size.y)});
                     }
                     else {
                         if (!_devcons.is_active())
@@ -181,7 +182,7 @@ end:
 
     vec2u screen_size() const {
         auto desktop_mode = sf::VideoMode::getDesktopMode();
-        return {desktop_mode.width, desktop_mode.height};
+        return desktop_mode.size;
     }
 
     void resize_window(vec2u size) {

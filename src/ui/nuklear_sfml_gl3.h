@@ -364,92 +364,101 @@ nk_sfml_handle_event(nk_sfml* sfml, sf::Event* evt)
         sf::Mouse::setPosition(sf::Vector2i(x, y), *sfml->window);
         ctx->input.mouse.ungrab = 0;
     }
-    if(evt->type == sf::Event::KeyReleased || evt->type == sf::Event::KeyPressed)
+    auto pressed = evt->getIf<sf::Event::KeyPressed>();
+    auto released = evt->getIf<sf::Event::KeyReleased>();
+    auto button_pressed = evt->getIf<sf::Event::MouseButtonPressed>();
+    auto button_released = evt->getIf<sf::Event::MouseButtonReleased>();
+    auto touch_began = evt->getIf<sf::Event::TouchBegan>();
+    auto touch_ended = evt->getIf<sf::Event::TouchEnded>();
+    if(pressed || released)
     {
-        int down = evt->type == sf::Event::KeyPressed;
-        sf::Keyboard::Key key = evt->key.code;
-        if(key == sf::Keyboard::RShift || key == sf::Keyboard::LShift)
+        int down = pressed != nullptr;
+        sf::Keyboard::Key key = pressed ? pressed->code : released->code;
+        auto ctrl = [&] { return sf::Keyboard::isKeyPressed(sf::Keyboard::Key::LControl); };
+        if(key == sf::Keyboard::Key::RShift || key == sf::Keyboard::Key::LShift)
             nk_input_key(ctx, NK_KEY_SHIFT, down);
-        else if(key == sf::Keyboard::Delete)
+        else if(key == sf::Keyboard::Key::Delete)
             nk_input_key(ctx, NK_KEY_DEL, down);
-        else if(key == sf::Keyboard::Return)
+        else if(key == sf::Keyboard::Key::Enter)
             nk_input_key(ctx, NK_KEY_ENTER, down);
-        else if(key == sf::Keyboard::Tab)
+        else if(key == sf::Keyboard::Key::Tab)
             nk_input_key(ctx, NK_KEY_TAB, down);
-        else if(key == sf::Keyboard::BackSpace)
+        else if(key == sf::Keyboard::Key::Backspace)
             nk_input_key(ctx, NK_KEY_BACKSPACE, down);
-        else if(key == sf::Keyboard::Home) {
+        else if(key == sf::Keyboard::Key::Home) {
             nk_input_key(ctx, NK_KEY_TEXT_START, down);
             nk_input_key(ctx, NK_KEY_SCROLL_START, down);
-        } else if(key == sf::Keyboard::End) {
+        } else if(key == sf::Keyboard::Key::End) {
             nk_input_key(ctx, NK_KEY_TEXT_END, down);
             nk_input_key(ctx, NK_KEY_SCROLL_END, down);
-        } else if(key == sf::Keyboard::PageDown)
+        } else if(key == sf::Keyboard::Key::PageDown) {
             nk_input_key(ctx, NK_KEY_SCROLL_DOWN, down);
-        else if(key == sf::Keyboard::PageUp)
+        } else if(key == sf::Keyboard::Key::PageUp) {
             nk_input_key(ctx, NK_KEY_SCROLL_DOWN, down);
-        else if(key == sf::Keyboard::Z)
-            nk_input_key(ctx, NK_KEY_TEXT_UNDO, down && sf::Keyboard::isKeyPressed(sf::Keyboard::LControl));
-        else if(key == sf::Keyboard::R)
-            nk_input_key(ctx, NK_KEY_TEXT_REDO, down && sf::Keyboard::isKeyPressed(sf::Keyboard::LControl));
-        else if(key == sf::Keyboard::C)
-            nk_input_key(ctx, NK_KEY_COPY, down && sf::Keyboard::isKeyPressed(sf::Keyboard::LControl));
-        else if(key == sf::Keyboard::V)
-            nk_input_key(ctx, NK_KEY_PASTE, down && sf::Keyboard::isKeyPressed(sf::Keyboard::LControl));
-        else if(key == sf::Keyboard::X)
-            nk_input_key(ctx, NK_KEY_CUT, down && sf::Keyboard::isKeyPressed(sf::Keyboard::LControl));
-        else if(key == sf::Keyboard::B)
-            nk_input_key(ctx, NK_KEY_TEXT_LINE_START, down && sf::Keyboard::isKeyPressed(sf::Keyboard::LControl));
-        else if(key == sf::Keyboard::E)
-            nk_input_key(ctx, NK_KEY_TEXT_LINE_END, down && sf::Keyboard::isKeyPressed(sf::Keyboard::LControl));
-        else if(key == sf::Keyboard::Up)
+        } else if(key == sf::Keyboard::Key::Z) {
+            nk_input_key(ctx, NK_KEY_TEXT_UNDO, down && ctrl());
+        } else if(key == sf::Keyboard::Key::R) {
+            nk_input_key(ctx, NK_KEY_TEXT_REDO, down && ctrl());
+        } else if(key == sf::Keyboard::Key::C) {
+            nk_input_key(ctx, NK_KEY_COPY, down && ctrl());
+        } else if(key == sf::Keyboard::Key::V) {
+            nk_input_key(ctx, NK_KEY_PASTE, down && ctrl());
+        } else if(key == sf::Keyboard::Key::X) {
+            nk_input_key(ctx, NK_KEY_CUT, down && ctrl());
+        } else if(key == sf::Keyboard::Key::B) {
+            nk_input_key(ctx, NK_KEY_TEXT_LINE_START, down && ctrl());
+        } else if(key == sf::Keyboard::Key::E) {
+            nk_input_key(ctx, NK_KEY_TEXT_LINE_END, down && ctrl());
+        } else if(key == sf::Keyboard::Key::Up) {
             nk_input_key(ctx, NK_KEY_UP, down);
-        else if(key == sf::Keyboard::Down)
+        } else if(key == sf::Keyboard::Key::Down) {
             nk_input_key(ctx, NK_KEY_DOWN, down);
-        else if(key == sf::Keyboard::Left) {
-            if(sf::Keyboard::isKeyPressed(sf::Keyboard::LControl))
+        } else if(key == sf::Keyboard::Key::Left) {
+            if(sf::Keyboard::isKeyPressed(sf::Keyboard::Key::LControl))
                 nk_input_key(ctx, NK_KEY_TEXT_WORD_LEFT, down);
             else nk_input_key(ctx, NK_KEY_LEFT, down);
-        } else if(key == sf::Keyboard::Right) {
-            if(sf::Keyboard::isKeyPressed(sf::Keyboard::LControl))
+        } else if(key == sf::Keyboard::Key::Right) {
+            if(sf::Keyboard::isKeyPressed(sf::Keyboard::Key::LControl))
                 nk_input_key(ctx, NK_KEY_TEXT_WORD_RIGHT, down);
             else nk_input_key(ctx, NK_KEY_RIGHT, down);
         } else return 0;
         return 1;
-    } else if(evt->type == sf::Event::MouseButtonPressed || evt->type == sf::Event::MouseButtonReleased) {
-        int down = evt->type == sf::Event::MouseButtonPressed;
-        const int x = evt->mouseButton.x, y = evt->mouseButton.y;
-        if(evt->mouseButton.button == sf::Mouse::Left)
+    } else if(button_pressed || button_released) {
+        int down = button_pressed != nullptr;
+        auto button = button_pressed ? button_pressed->button : button_released->button;
+        auto pos = button_pressed ? button_pressed->position : button_released->position;
+        const int x = pos.x, y = pos.y;
+        if(button == sf::Mouse::Button::Left)
             nk_input_button(ctx, NK_BUTTON_LEFT, x, y, down);
-        if(evt->mouseButton.button == sf::Mouse::Middle)
+        if(button == sf::Mouse::Button::Middle)
             nk_input_button(ctx, NK_BUTTON_MIDDLE, x, y, down);
-        if(evt->mouseButton.button == sf::Mouse::Right)
+        if(button == sf::Mouse::Button::Right)
             nk_input_button(ctx, NK_BUTTON_RIGHT, x, y, down);
         else return 0;
         return 1;
-    } else if(evt->type == sf::Event::MouseMoved) {
-        nk_input_motion(ctx, evt->mouseMove.x, evt->mouseMove.y);
+    } else if(auto moved = evt->getIf<sf::Event::MouseMoved>()) {
+        nk_input_motion(ctx, moved->position.x, moved->position.y);
         return 1;
-    } else if(evt->type == sf::Event::TouchBegan || evt->type == sf::Event::TouchEnded) {
-        int down = evt->type == sf::Event::TouchBegan;
-        const int x = evt->touch.x, y = evt->touch.y;
-        nk_input_button(ctx, NK_BUTTON_LEFT, x, y, down);
+    } else if(touch_began || touch_ended) {
+        int down = touch_began != nullptr;
+        auto pos = touch_began ? touch_began->position : touch_ended->position;
+        nk_input_button(ctx, NK_BUTTON_LEFT, pos.x, pos.y, down);
         return 1;
-    } else if(evt->type == sf::Event::TouchMoved) {
+    } else if(auto touch_moved = evt->getIf<sf::Event::TouchMoved>()) {
         if(ctx->input.mouse.grabbed) {
             int x = static_cast<int>(ctx->input.mouse.prev.x);
             int y = static_cast<int>(ctx->input.mouse.prev.y);
-            nk_input_motion(ctx, x + evt->touch.x, y + evt->touch.y);
-        } else nk_input_motion(ctx, evt->touch.x, evt->touch.y);
+            nk_input_motion(ctx, x + touch_moved->position.x, y + touch_moved->position.y);
+        } else nk_input_motion(ctx, touch_moved->position.x, touch_moved->position.y);
         return 1;
-    } else if(evt->type == sf::Event::TextEntered) {
-		/* 8 ~ backspace */
-		if (evt->text.unicode != 8 && evt->text.unicode != '\r') {
-			nk_input_unicode(ctx, evt->text.unicode);
-		}
+    } else if(auto text = evt->getIf<sf::Event::TextEntered>()) {
+        /* 8 ~ backspace */
+        if (text->unicode != 8 && text->unicode != '\r') {
+            nk_input_unicode(ctx, text->unicode);
+        }
         return 1;
-    } else if(evt->type == sf::Event::MouseWheelScrolled) {
-        nk_input_scroll(ctx, nk_vec2(0,evt->mouseWheelScroll.delta));
+    } else if(auto scrolled = evt->getIf<sf::Event::MouseWheelScrolled>()) {
+        nk_input_scroll(ctx, nk_vec2(0, scrolled->delta));
         return 1;
     }
     return 0;

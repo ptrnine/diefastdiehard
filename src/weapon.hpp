@@ -1,7 +1,7 @@
 #pragma once
 
 #include <SFML/Graphics/RenderWindow.hpp>
-#include <SFML/Graphics/Sprite.hpp>
+#include "sprite.hpp"
 #include <algorithm>
 #include <array>
 #include <utility>
@@ -161,10 +161,10 @@ public:
             _shell_dir   = normalize(sect.get<vec2f>("shell_dir").value());
             _shell_frame = sect.value<u32>("shell_frame");
             auto& txtr   = texture_mgr().load(sect.get<std::string>("shell_txtr").value());
-            _shell_sprite = sf::Sprite(txtr);
-            _shell_sprite.setOrigin(float(txtr.getSize().x) * 0.5f, float(txtr.getSize().y) * 0.5f);
+            _shell_sprite = sprite_t(txtr);
+            _shell_sprite.setOrigin({float(txtr.getSize().x) * 0.5f, float(txtr.getSize().y) * 0.5f});
             auto sz = sect.value<vec2f>("shell_size");
-            _shell_sprite.setScale(sz.x / float(txtr.getSize().x), sz.y / float(txtr.getSize().y));
+            _shell_sprite.setScale({sz.x / float(txtr.getSize().x), sz.y / float(txtr.getSize().y)});
             _shell_vel = sect.value<float>("shell_vel");
         }
     }
@@ -177,20 +177,20 @@ public:
                                      .get_section(cfg_section_name(_section))
                                      .try_get<std::string>("layer" + std::to_string(i))) {
             if (!layer_txtr->has_value()) {
-                new_layers.push_back(sf::Sprite());
+                new_layers.push_back(sprite_t());
                 ++i;
                 continue;
             }
 
             auto& txtr = texture_mgr().load(layer_txtr->value());
-            sf::Sprite sprite;
+            sprite_t sprite;
             sprite.setTexture(txtr);
             auto txtr_sz = txtr.getSize();
             _xf = _size.x / float(txtr_sz.x);
             _yf = _size.y / float(txtr_sz.y);
 
-            sprite.setOrigin(_arm_joint.x / _xf, _arm_joint.y / _yf);
-            sprite.setScale(_xf, _yf);
+            sprite.setOrigin({_arm_joint.x / _xf, _arm_joint.y / _yf});
+            sprite.setScale({_xf, _yf});
 
             new_layers.push_back(std::move(sprite));
 
@@ -228,14 +228,14 @@ public:
         shot_angle_degree *= invert;
         for (auto& sprite : _layers) {
             sprite.setPosition(start_pos);
-            sprite.setScale(_xf * invert * scale, _yf * scale);
-            sprite.setRotation(shot_angle_degree);
+            sprite.setScale({_xf * invert * scale, _yf * scale});
+            sprite.setRotation(sf::degrees(shot_angle_degree));
             wnd.draw(sprite);
         }
     }
 
 private:
-    static std::map<std::string, weapon_anim> load_animations(const std::vector<sf::Sprite>& layers,
+    static std::map<std::string, weapon_anim> load_animations(const std::vector<sprite_t>& layers,
                                                               const std::string&             section) {
         decltype(_animations) new_animations;
 
@@ -250,7 +250,7 @@ private:
         return new_animations;
     }
 
-    static weapon_anim load_anim(const std::vector<sf::Sprite>& layers, const std::string& section) {
+    static weapon_anim load_anim(const std::vector<sprite_t>& layers, const std::string& section) {
         auto sect = cfg::global().get_section(section);
 
         auto frames = sect.value<u32>("frames");
@@ -308,7 +308,7 @@ private:
     vec2f      _shell_dir;
     float      _shell_vel;
     u32        _shell_frame;
-    sf::Sprite _shell_sprite;
+    sprite_t _shell_sprite;
     float      _mass;
 
     vec2f _dropped_bb;
@@ -322,7 +322,7 @@ private:
     bool         _shot_flash;
     bool         _eject_shell;
 
-    std::vector<sf::Sprite> _layers;
+    std::vector<sprite_t> _layers;
     std::map<std::string, weapon_anim> _animations;
 
 public:
@@ -353,7 +353,7 @@ public:
         return tier_to_bullet_vel(_bullet_vel_tier);
     }
 
-    const std::vector<sf::Sprite>& layers() const {
+    const std::vector<sprite_t>& layers() const {
         return _layers;
     }
 
@@ -555,7 +555,7 @@ public:
 
             _shot_flash.setTexture(txtr);
             _shot_flash.setOrigin({float(txtr.getSize().x) * 0.5f, float(txtr.getSize().y) * 0.5f});
-            _shot_flash.setScale(scale.x, scale.y);
+            _shot_flash.setScale({scale.x, scale.y});
             _shot_flash.setColor({255, 255, 255, 0});
             _shot_flash_intensity = 0.f;
         }
@@ -878,7 +878,7 @@ public:
                 layers[i].setPosition(position + leftyfix(main_layer_keys.position, LF));
                 layers[i].setScale(
                     {LF * xf * main_layer_keys.scale.x, yf * main_layer_keys.scale.y});
-                layers[i].setRotation(main_layer_keys.angle * LF + shot_angle_deg * LF);
+                layers[i].setRotation(sf::degrees(main_layer_keys.angle * LF + shot_angle_deg * LF));
             }
             else {
                 auto addition = i == _wpn->_arm2_bone ? _wpn->_arm2_idle_pos : vec2f(0.f, 0.f);
@@ -888,7 +888,7 @@ public:
                 /* TODO: fix scale with rotations */
                 layers[i].setScale({LF * xf * main_layer_keys.scale.x * keys[i].scale.x,
                                     yf * main_layer_keys.scale.y * keys[i].scale.y});
-                layers[i].setRotation(main_layer_keys.angle * LF + keys[i].angle * LF + shot_angle_deg * LF);
+                layers[i].setRotation(sf::degrees(main_layer_keys.angle * LF + keys[i].angle * LF + shot_angle_deg * LF));
             }
             wnd.draw(layers[i]);
         }
@@ -1020,7 +1020,7 @@ private:
             }
 
             sprite.setPosition(i->_pos);
-            sprite.setRotation(i->_angle + (i->_left ? 180.f : 0.f));
+            sprite.setRotation(sf::degrees(i->_angle + (i->_left ? 180.f : 0.f)));
             wnd.draw(sprite);
 
             float timestep = elapsed_t - i->_last_time;
@@ -1105,7 +1105,7 @@ private:
         play_animation("shot");
 
         if (_wpn->_shot_flash) {
-            _shot_flash.setRotation(rand_float(0.f, 360.f));
+            _shot_flash.setRotation(sf::degrees(rand_float(0.f, 360.f)));
             _shot_flash.setColor({255, 255, 255, 255});
             _shot_flash_intensity = 1.f;
             _shot_flash_timer.restart();
@@ -1138,7 +1138,7 @@ private:
 
     sf::Color                  _last_tracer_color = {255, 255, 255};
 
-    sf::Sprite _shot_flash;
+    sprite_t _shot_flash;
     sf::Clock  _shot_flash_timer;
     float      _shot_flash_intensity = 0.f;
 

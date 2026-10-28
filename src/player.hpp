@@ -4,7 +4,7 @@
 #include <functional>
 
 #include <SFML/Graphics/RenderWindow.hpp>
-#include <SFML/Graphics/Sprite.hpp>
+#include "sprite.hpp"
 #include <SFML/Graphics/Texture.hpp>
 #include <SFML/Graphics/RenderTexture.hpp>
 #include <SFML/Window/Event.hpp>
@@ -45,14 +45,14 @@ public:
         hand.setOutlineColor(sf::Color(0, 0, 0));
         hand.setOutlineThickness(size.x * 0.045f);
         hand.setRadius(size.x * 0.14f);
-        hand.setOrigin(size.x * 0.14f, size.x * 0.14f);
+        hand.setOrigin({size.x * 0.14f, size.x * 0.14f});
     }
 
     static void default_leg_setup(sf::CircleShape& leg, const vec2f& size) {
         leg.setOutlineColor(sf::Color(0, 0, 0));
         leg.setOutlineThickness(size.x * 0.045f);
         leg.setRadius(size.x * 0.2f);
-        leg.setOrigin(size.x * 0.2f, size.x * 0.35f);
+        leg.setOrigin({size.x * 0.2f, size.x * 0.35f});
     }
 
     static std::shared_ptr<player> create(const player_name_t& name, physic_simulation& sim, const vec2f& size) {
@@ -95,8 +95,8 @@ public:
     bool update_input(const player_controller& ks, sf::Event evt) {
         bool update_was = false;
 
-        if (evt.type == sf::Event::KeyPressed) {
-            auto c = evt.key.code;
+        if (auto pressed = evt.getIf<sf::Event::KeyPressed>()) {
+            auto c = int(pressed->code);
             if (c == ks.up && !_jump_pressed) {
                 jump();
                 _jump_pressed = true;
@@ -127,8 +127,8 @@ public:
                 _long_shot_enabled = true;
             }
         }
-        else if (evt.type == sf::Event::KeyReleased) {
-            auto c = evt.key.code;
+        else if (auto released = evt.getIf<sf::Event::KeyReleased>()) {
+            auto c = int(released->code);
             if (c == ks.left && !is_float_zero(_cur_x_accel_l)) {
                 _cur_x_accel_l = 0.f;
                 update_was = true;
@@ -823,23 +823,24 @@ public:
             wpn ? size.x * wpn->arm_position_factors(false).x + wpn->barrel_pos().x * scale
                 : size.y;
 
-        target.create(u32(icon_x_size), u32(size.y));
+        if (!target.resize({u32(icon_x_size), u32(size.y)}))
+            glog().error("cannot create a player icon render texture");
         /* New FBO texture contents are undefined until cleared (driver may keep stale pixels) */
         target.clear({0, 0, 0, 0});
 
-        auto body_txtr_size = body.getTexture()->getSize();
-        auto face_txtr_size = face.getTexture()->getSize();
+        auto body_txtr_size = body.getTexture().getSize();
+        auto face_txtr_size = face.getTexture().getSize();
         auto body_f_x       = size.x / float(body_txtr_size.x);
         auto body_f_y       = size.y / float(body_txtr_size.y);
         auto face_f_x       = size.x / float(face_txtr_size.x);
         auto face_f_y       = size.y / float(face_txtr_size.y);
 
-        body.setScale(body_f_x, body_f_y);
-        face.setScale(face_f_x, face_f_y);
-        body.setPosition(0.f, 0.f);
-        face.setPosition(0.f, 0.f);
+        body.setScale({body_f_x, body_f_y});
+        face.setScale({face_f_x, face_f_y});
+        body.setPosition({0.f, 0.f});
+        face.setPosition({0.f, 0.f});
 
-        target.setView(sf::View(sf::FloatRect{0.f, size.y, icon_x_size, -size.y}));
+        target.setView(sf::View(sf::FloatRect({0.f, size.y}, {icon_x_size, -size.y})));
         target.draw(body);
         target.draw(face);
 
@@ -865,10 +866,10 @@ public:
 
 
         default_leg_setup(hand_or_leg, sz);
-        hand_or_leg.setPosition(size.x * 0.3f, size.y);
+        hand_or_leg.setPosition({size.x * 0.3f, size.y});
         target.draw(hand_or_leg);
 
-        hand_or_leg.setPosition(size.x * 0.7f, size.y);
+        hand_or_leg.setPosition({size.x * 0.7f, size.y});
         target.draw(hand_or_leg);
 
         target.display();
@@ -916,8 +917,8 @@ public:
             _right_hand.setPosition(rh);
         }
         else {
-            _left_hand.setPosition(pos.x, pos.y - _size.y / 2.5f);
-            _right_hand.setPosition(pos.x + _size.x, pos.y - _size.y / 2.5f);
+            _left_hand.setPosition({pos.x, pos.y - _size.y / 2.5f});
+            _right_hand.setPosition({pos.x + _size.x, pos.y - _size.y / 2.5f});
         }
         wnd.draw(_left_hand);
         wnd.draw(_right_hand);
@@ -1251,7 +1252,7 @@ private:
 
     void set_some(const std::string&  path,
                   sf::Texture&        txtr,
-                  sf::Sprite&         sprite,
+                  sprite_t&           sprite,
                   const vec2f& size,
                   const sf::Color&    color) {
         txtr = texture_mgr().load(path);
@@ -1263,7 +1264,7 @@ private:
         auto adj = sprite_size_adjust_factors();
         float xf = (size.x * adj.x) / float(sz.x);
         float yf = (size.y * adj.y) / float(sz.y);
-        sprite.setScale(_on_left ? -xf : xf, yf);
+        sprite.setScale({_on_left ? -xf : xf, yf});
     }
 
 private:
@@ -1275,9 +1276,9 @@ private:
     sf::Color     _body_color;
 
     std::shared_ptr<physic_group> _collision_box;
-    sf::Sprite  _body;
-    sf::Sprite  _face;
-    sf::Sprite  _hat;
+    sprite_t    _body;
+    sprite_t    _face;
+    sprite_t    _hat;
     sf::Texture _body_txtr;
     sf::Texture _face_txtr;
     sf::Texture _hat_txtr;
@@ -1479,7 +1480,7 @@ public:
         /* Flip the body sprites to match the new facing direction */
         for (auto* sprite : {&_body, &_face, &_hat}) {
             auto scale_x = std::fabs(sprite->getScale().x);
-            sprite->setScale(value ? -scale_x : scale_x, sprite->getScale().y);
+            sprite->setScale({value ? -scale_x : scale_x, sprite->getScale().y});
         }
     }
 
@@ -1529,7 +1530,7 @@ public:
     [[nodiscard]]
     sf::FloatRect bb() const {
         auto& pos = get_position();
-        return {pos.x, pos.y - _size.y, _size.x, _size.y};
+        return {{pos.x, pos.y - _size.y}, _size};
     }
 
     [[nodiscard]]

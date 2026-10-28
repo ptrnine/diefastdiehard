@@ -56,15 +56,15 @@ public:
         std::sort(ys.begin(), ys.end());
 
         //_bb = sf::FloatRect(-0.5f, -0.5f, 1.f, 1.f);
-        _bb.left   = xs.front();
-        _bb.top    = ys.front();
-        _bb.width  = xs.back() - xs.front();
-        _bb.height = ys.back() - ys.front();
+        _bb.position.x   = xs.front();
+        _bb.position.y    = ys.front();
+        _bb.size.x  = xs.back() - xs.front();
+        _bb.size.y = ys.back() - ys.front();
 
-        if (_bb.width < 0.1f)
-            _bb.width = 0.1f;
-        if (_bb.height < 0.1f)
-            _bb.height = 0.1f;
+        if (_bb.size.x < 0.1f)
+            _bb.size.x = 0.1f;
+        if (_bb.size.y < 0.1f)
+            _bb.size.y = 0.1f;
 
         record_dir_and_velocity();
     }
@@ -95,8 +95,8 @@ public:
 
     [[nodiscard]]
     bounding_box pos_bb() const override {
-        auto r1 = sf::FloatRect(get_position().x, get_position().y, 0.f, 0.f);
-        auto r2 = sf::FloatRect(r1.left+ displacement.x, r1.top + displacement.y, 0.f, 0.f);
+        auto r1 = sf::FloatRect(get_position(), {0.f, 0.f});
+        auto r2 = sf::FloatRect(r1.position + displacement, {0.f, 0.f});
         auto b = bounding_box::maximized();
         b.merge(r1);
         b.merge(r2);

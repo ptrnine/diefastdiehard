@@ -1,7 +1,7 @@
 #pragma once
 
 #include <SFML/Graphics/RenderWindow.hpp>
-#include <SFML/Graphics/Sprite.hpp>
+#include "sprite.hpp"
 #include <SFML/Graphics/Texture.hpp>
 
 #include <filesystem>
@@ -19,9 +19,9 @@ class level {
 public:
     struct platform_t {
         physic_platform ph;
-        sf::Sprite      start_pl;
-        sf::Sprite      end_pl;
-        sf::Sprite      pl;
+        sprite_t        start_pl;
+        sprite_t        end_pl;
+        sprite_t        pl;
     };
 
     static std::shared_ptr<level> create(const std::string& section) {
@@ -58,7 +58,7 @@ public:
 
 #define load_if_path_changed(txtr) \
         if (_##txtr##_path != txtr##_path) { \
-            _##txtr.loadFromFile(txtr##_path.string()); \
+            (void)_##txtr.loadFromFile(txtr##_path); /* SFML reports the failure */ \
             _##txtr##_path = txtr##_path.string(); \
         }
 
@@ -81,14 +81,14 @@ public:
         _background.setScale(vec2f(_level_size.x / float(background_size.x),
                                           _level_size.y / float(background_size.y)));
 
-        _background.setPosition(0.f, 0.f);
+        _background.setPosition({0.f, 0.f});
 
         _platforms = load_platforms(_section, _platform, _end_platform, _platform_sz);
     }
 
     static std::vector<platform_t> load_platforms(const std::string& sect_name,
-                                                  const sf::Sprite&  platform,
-                                                  const sf::Sprite&  platform_border,
+                                                  const sprite_t&    platform,
+                                                  const sprite_t&    platform_border,
                                                   float              platform_length) {
         std::vector<platform_t> platforms;
 
@@ -107,10 +107,10 @@ public:
 
             p.pl.setPosition(p.ph.get_position() + vec2f{platform_length, 0.f});
             float pl_len = p.ph.length() - platform_length * 2.f;
-            p.pl.scale(pl_len / platform_length, 1.f);
+            p.pl.scale({pl_len / platform_length, 1.f});
 
             p.end_pl.setPosition(p.pl.getPosition() + sf::Vector2f(pl_len, 0.f) + sf::Vector2f(platform_length, 0.f));
-            p.end_pl.setScale(-p.end_pl.getScale().x, p.end_pl.getScale().y);
+            p.end_pl.setScale({-p.end_pl.getScale().x, p.end_pl.getScale().y});
 
             ++pl;
         }
@@ -147,9 +147,9 @@ public:
 private:
     std::string _section;
 
-    sf::Sprite  _end_platform;
-    sf::Sprite  _platform;
-    sf::Sprite  _background;
+    sprite_t    _end_platform;
+    sprite_t    _platform;
+    sprite_t    _background;
 
     sf::Texture _end_platform_txtr;
     sf::Texture _platform_txtr;

@@ -17,6 +17,7 @@
 
 #include <format>
 
+#include <SFML/Network/Dns.hpp>
 #include <SFML/Network/IpAddress.hpp>
 #include <SFML/Graphics/RectangleShape.hpp>
 
@@ -493,9 +494,18 @@ private:
             return;
         }
 
-        auto ip = sf::IpAddress(addr_str.substr(0, pos));
+        auto host = std::string(addr_str.substr(0, pos));
+        auto ip   = sf::IpAddress::fromString(host);
+        if (!ip) {
+            /* A host name (the socket is IPv4) */
+            if (auto resolved = sf::Dns::resolve(host)) {
+                auto v4 = std::ranges::find_if(*resolved, [](const sf::IpAddress& a) { return a.isV4(); });
+                if (v4 != resolved->end())
+                    ip = *v4;
+            }
+        }
         auto port = ston<u16>(std::string(addr_str.substr(pos + 1)));
-        if (ip == sf::IpAddress::None) {
+        if (!ip) {
             glog().error("multiplayer: invalid server ip '{}'", std::string(addr_str.substr(0, pos)));
             return;
         }
@@ -508,7 +518,7 @@ private:
         pc.write_on_delete = false;
 
         net_cli = std::make_shared<net::net_client>(
-            ip, port, name, pc.pistol, pc.face_id, pc.body_id, pc.body_color, pc.tracer_color);
+            *ip, port, name, pc.pistol, pc.face_id, pc.body_id, pc.body_color, pc.tracer_color);
 
         auto interp_ms = [&](const char* key, double default_s) {
             auto value = args.by_key_opt<std::string>(key);

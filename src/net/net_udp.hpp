@@ -27,7 +27,7 @@ namespace dfdh::net {
  * A single received datagram (copied, always valid)
  */
 struct received_datagram {
-    sf::IpAddress          address;
+    sf::IpAddress          address   = sf::IpAddress::Any;
     u16                    port      = 0;
     std::vector<u8>        data;
     game_clock::time_point arrival; // when it arrived (not when it was read)
@@ -51,7 +51,7 @@ public:
         if (_open)
             return false;
 
-        if (_sock.bind(port) != sf::Socket::Done)
+        if (_sock.bind(port) != sf::Socket::Status::Done)
             return false;
 
         _sock.setBlocking(false);
@@ -59,7 +59,7 @@ public:
         return true;
     }
 
-    /* Set the peer for connected sends (SFML 2.5 has no udp connect; the peer is tracked here) */
+    /* Set the peer for connected sends (SFML has no udp connect; the peer is tracked here) */
     bool connect(const sf::IpAddress& address, u16 port) {
         /* Auto-open on an ephemeral port if the socket is not bound yet */
         if (!_open && !bind(0))
@@ -97,7 +97,7 @@ public:
             return true;
         }
 
-        return _sock.send(data.data(), data.size(), address, port) == sf::Socket::Done;
+        return _sock.send(data.data(), data.size(), address, port) == sf::Socket::Status::Done;
     }
 
     /* Send to the connected peer (connect() required) */
@@ -124,22 +124,21 @@ public:
         if (!game_clock::manual() && timeout.count() > 0) {
             sf::SocketSelector selector;
             selector.add(_sock);
-            selector.wait(sf::milliseconds(static_cast<i32>(timeout.count())));
-            if (!selector.isReady(_sock))
+            if (!selector.wait(sf::milliseconds(static_cast<i32>(timeout.count()))) || !selector.isReady(_sock))
                 return release_due_recvs();
         }
 
         for (;;) {
             size_t recv_size = 0;
             u8 data[max_datagram_size];
-            sf::IpAddress addr;
+            std::optional<sf::IpAddress> addr;
             u16 port = 0;
             auto status = _sock.receive(data, sizeof(data), recv_size, addr, port);
-            if (status != sf::Socket::Done || recv_size == 0)
+            if (status != sf::Socket::Status::Done || recv_size == 0 || !addr)
                 break;
 
             received_datagram d;
-            d.address = addr;
+            d.address = *addr;
             d.port    = port;
             d.data    = std::vector<u8>(data, data + recv_size);
             d.arrival = arrival_time();
@@ -208,7 +207,7 @@ private:
 
     struct delayed_send {
         std::chrono::steady_clock::time_point deadline;
-        sf::IpAddress          address;
+        sf::IpAddress          address = sf::IpAddress::Any;
         u16                    port = 0;
         std::vector<u8>        data;
     };
@@ -239,7 +238,7 @@ private:
         auto now = game_clock::now();
 #if defined(SIOCGSTAMP)
         timeval stamp{};
-        if (!game_clock::manual() && ioctl(_sock.getHandle(), SIOCGSTAMP, &stamp) == 0) {
+        if (!game_clock::manual() && ioctl(_sock.getNativeHandle(), SIOCGSTAMP, &stamp) == 0) {
             auto age = std::chrono::system_clock::now() -
                        (std::chrono::system_clock::time_point{} + std::chrono::seconds(stamp.tv_sec) +
                         std::chrono::microseconds(stamp.tv_usec));
@@ -256,7 +255,7 @@ private:
         auto it  = _pending_sends.begin();
         while (it != _pending_sends.end()) {
             if (it->deadline <= now) {
-                _sock.send(it->data.data(), it->data.size(), it->address, it->port);
+                (void)_sock.send(it->data.data(), it->data.size(), it->address, it->port); /* failed: a lost datagram */
                 it = _pending_sends.erase(it);
             }
             else {
@@ -288,13 +287,13 @@ private:
 
     /* The native handle (protected in SFML) reads the kernel's receive timestamps */
     struct socket_t : sf::UdpSocket {
-        using sf::UdpSocket::getHandle;
+        using sf::UdpSocket::getNativeHandle;
     };
 
     socket_t      _sock;
     bool          _open      = false;
     bool          _connected = false;
-    sf::IpAddress _peer;
+    sf::IpAddress _peer      = sf::IpAddress::Any;
     u16           _peer_port = 0;
 };
 

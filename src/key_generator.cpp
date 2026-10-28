@@ -1,3 +1,4 @@
+#include <cctype>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -9,6 +10,13 @@ static std::string_view trim_spaces(std::string_view str) {
     return str;
 }
 
+static std::string_view identifier_prefix(std::string_view str) {
+    size_t i = 0;
+    while (i < str.size() && (std::isalnum(static_cast<unsigned char>(str[i])) || str[i] == '_')) ++i;
+    return str.substr(0, i);
+}
+
+/* Parses sf::Keyboard::Key (enum class Key { Unknown = -1, A = 0, B, ... }) from the preprocessed SFML/Window/Keyboard.hpp */
 int main() {
     std::vector<std::string> keys;
     std::string line;
@@ -18,24 +26,18 @@ int main() {
         auto l = trim_spaces(line);
 
         if (!on_enum) {
-            if (l.starts_with("enum Key"))
+            if (l == "enum class Key")
                 on_enum = true;
             continue;
         }
 
-        if (l.empty() || l == "{" || l.starts_with("Unknown"))
-            continue;
-
-        if (l == "A = 0,")
-            keys.push_back("A");
-        else if (l.starts_with("KeyCount"))
+        if (l.starts_with("};"))
             break;
-        else {
-            auto f = l.find(',');
-            if (f != std::string_view::npos) {
-                keys.push_back(std::string(l.substr(0, f)));
-            }
-        }
+
+        auto key = identifier_prefix(l);
+        if (key.empty() || key == "Unknown")
+            continue;
+        keys.emplace_back(key);
     }
 
     std::cout <<
@@ -51,7 +53,7 @@ int main() {
         "    switch (key) {\n";
     for (auto& key : keys)
         std::cout <<
-            "        case sf::Keyboard::" << key << ": return \"" << key << "\";\n";
+            "        case sf::Keyboard::Key::" << key << ": return \"" << key << "\";\n";
     std::cout <<
         "        default: return {};\n"
         "    }\n"
@@ -61,7 +63,7 @@ int main() {
         "       return std::map<std::string_view, sf::Keyboard::Key>{\n";
     for (auto& key : keys)
         std::cout <<
-            "           {\"" << key << "\", sf::Keyboard::" << key << "},\n";
+            "           {\"" << key << "\", sf::Keyboard::Key::" << key << "},\n";
     std::cout <<
         "       };\n"
         "   };\n"
@@ -69,7 +71,7 @@ int main() {
         "   auto found = map.find(str);\n"
         "   if (found != map.end())\n"
         "       return found->second;\n"
-        "   return sf::Keyboard::Unknown;\n"
+        "   return sf::Keyboard::Key::Unknown;\n"
         "}\n"
         "} // namespace dfdh\n";
 }

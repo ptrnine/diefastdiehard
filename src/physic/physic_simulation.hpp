@@ -176,7 +176,7 @@ public:
                         if (!ni->allow_test_with(nj))
                             continue;
 
-                        if (ni->bb().intersects(nj->bb())) {
+                        if (ni->bb().findIntersection(nj->bb())) {
                             if (analyze(timestep, ni, nj)) {
                                 collide = true;
                                 break;
@@ -489,11 +489,11 @@ private:
             prim->move(timestep);
             auto bb2 = prim->pos_bb().rect();
 
-            auto low1 = bb1.top + bb1.height;
+            auto low1 = bb1.position.y + bb1.size.y;
             auto y_diff = low1 - pos_y;
-            auto low2 = bb2.top + bb2.height;
-            auto l = bb2.left;
-            auto r = l + bb2.width;
+            auto low2 = bb2.position.y + bb2.size.y;
+            auto l = bb2.position.x;
+            auto r = l + bb2.size.x;
             bool stay_on = false;
 
             for (auto& p : _platforms) {

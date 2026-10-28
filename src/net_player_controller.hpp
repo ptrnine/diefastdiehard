@@ -23,8 +23,8 @@ struct net_player_controller : public player_controller {
      * Feed SFML key events (mirrors player::update_input handling)
      */
     void track_event(const sf::Event& evt) {
-        if (evt.type == sf::Event::KeyPressed) {
-            auto c = evt.key.code;
+        if (auto pressed = evt.getIf<sf::Event::KeyPressed>()) {
+            auto c = int(pressed->code);
             if (c == up) {
                 _held_jump = true;
                 _edge_jump = true;
@@ -44,8 +44,8 @@ struct net_player_controller : public player_controller {
             else if (c == adjust_up)
                 _held_long_shot = true;
         }
-        else if (evt.type == sf::Event::KeyReleased) {
-            auto c = evt.key.code;
+        else if (auto released = evt.getIf<sf::Event::KeyReleased>()) {
+            auto c = int(released->code);
             if (c == up)
                 _held_jump = false;
             else if (c == down)

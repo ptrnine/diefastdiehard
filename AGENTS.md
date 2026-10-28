@@ -20,9 +20,10 @@ lives in `.hpp`, only a few `.cpp` translation units). Built with `./build-plz`.
 ```
 
 - `easybuild/` = release builddir, `easybuild-debug/` = debug builddir.
-- Linking (see BUILDING.md): **static** project-pinned libs only (SFML 2.5.1
-  `libsfml-*-s.a`, nuklear, LuaJIT) + **dynamic** system libs (GL/GLX, GLEW,
-  OpenAL, X11, codecs, freetype, udev, glibc). Do **not** try to statically
+- Linking (see BUILDING.md): **static** project-pinned libs only (SFML 3
+  `libsfml-*-s.a` + the deps it bundles: freetype, harfbuzz, codecs,
+  mbedTLS, libssh2; nuklear, LuaJIT) + **dynamic** system libs (GL/GLX,
+  GLEW, X11, udev, glibc). Do **not** try to statically
   link glibc or GLVND — GLVND dlopens the TLS-using Mesa ICD chain at
   runtime and static glibc cannot dlopen it.
 - `--dynamic` = all-dynamic link (needs LD_LIBRARY_PATH at runtime);
@@ -110,10 +111,16 @@ instead of sleeping. Use it for any new gameplay/network timer.
 
 ## API pitfalls (costly to rediscover)
 
-- **SFML is 2.5.1, not 2.6**: no `open()`/`isOpen()`, no `UdpSocket::connect()`,
-  no `setReceiveTimeout()`, no `sf::IpAddress::isValid()`. Use `bind()`,
-  `setBlocking(false)` + `SocketSelector` for timed receive.
-  `UdpSocket::receive` takes `std::size_t&` for the received size.
+- **SFML is 3.x**: events are a variant (`pollEvent()` returns
+  `std::optional<sf::Event>`, `evt.getIf<sf::Event::KeyPressed>()`), enums
+  are scoped (`sf::Keyboard::Key::A`), setters take vectors
+  (`setScale({x, y})`), rects are `{position, size}` (`findIntersection`),
+  rotations are `sf::Angle` (`sf::degrees`). `sf::IpAddress` has no default
+  constructor (`sf::IpAddress::Any`), `UdpSocket::receive` takes a
+  `std::optional<sf::IpAddress>&`, there is no `UdpSocket::connect()`.
+- `sf::Sprite` needs a texture: default constructible sprites are
+  `dfdh::sprite_t` (src/sprite.hpp), whose first `setTexture()` resets the
+  texture rect (SFML 2 behavior; plain SFML 3 keeps the empty rect).
 - `ss::serializer` must be constructed with **rvalue** storage to own its
   buffer: `auto ser = ss::serializer(std::vector<u8>{});`
 - `args_view`: `get(name)`, `next(err)`, `try_next()`, `by_key_opt<T>(name)` —
@@ -131,7 +138,9 @@ instead of sleeping. Use it for any new gameplay/network timer.
 - `3rd/lib` and `3rd/lib64` are always on `-L`: a stale `.a` with the same
   name as a system `.so` will **silently shadow** it (this bit us with an
   old `libopenal.a`).
-- CMake submodule done-markers don't track install-prefix contents: if you
-  delete `3rd/` or a submodule build dir, also delete its `.easybuild_done`.
+- CMake submodule done-markers track the submodule commit and flags, not
+  install-prefix contents: if you delete `3rd/` or a submodule build dir,
+  also delete its `.easybuild_done`. After a submodule update, remove the
+  previous version's installed headers/libs from `3rd/` (stale files stay).
 - The custom GCC 16.2 auto-attaches the LTO plugin; static links use
   `-fno-lto`. Cyclic SFML module archives need `-Wl,--start-group/--end-group`.

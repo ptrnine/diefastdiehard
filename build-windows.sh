@@ -14,8 +14,9 @@
 # + fs.cfg) when invoked with 'prod'.
 #
 # Notes:
-# - SFML 2.5.1 is cross-built via its own CMake (Win32 backend, bundled
-#   MinGW OpenAL/FLAC/OGG/Vorbis/freetype static libs from extlibs).
+# - SFML 3 is cross-built via its own CMake (Win32 backend); it fetches and
+#   builds its dependencies as static libs (freetype, harfbuzz, FLAC, ogg,
+#   vorbis, mbedTLS, libssh2). Audio goes through miniaudio: no OpenAL DLL.
 # - LuaJIT 2.1 is built with `make CROSS=... TARGET_SYS=Windows` (official
 #   cross-compilation path from its src/Makefile).
 # - GLEW is replaced by a generated shim (3rd/include/GL/glew.h +
@@ -76,7 +77,7 @@ build_static_lib() {
     local libs="$7"
     local includes="$8"
 
-    [ -z "$TARGET" ] || [ "$TARGET" = "$name" ] || return 0
+    # No TARGET check: the libraries are dependencies of the targets
 
     local cmd="$(command -v "$CXX_COMPILER") -c -std=c++20 \
         $([ "$debug" == true ] && echo "-O0 -g" || echo "-O2") \
@@ -152,7 +153,10 @@ build_cmake_submodule() {
     shift 2
 
     local marker="$builddir/.ezbld/$name-done"
-    if [ -f "$marker" ] && [ "$rebuild_submodules" = false ]; then
+    # The submodule commit and the flags: an updated submodule is rebuilt
+    local marker_key
+    marker_key="$(git -C "submodules/$name" rev-parse HEAD) $*"
+    if [ "$(cat "$marker" 2>/dev/null)" = "$marker_key" ] && [ "$rebuild_submodules" = false ]; then
         colored lpurple "Submodule '$name' already built"
         return 0
     fi
@@ -168,7 +172,7 @@ build_cmake_submodule() {
         fail "Build for $name failed (see $builddir/.ezbld/$name-cmake.log)"
     cmake --install "$builddir/submodules/$name" >> "$builddir/.ezbld/$name-cmake.log" 2>&1 || \
         fail "Install for $name failed (see $builddir/.ezbld/$name-cmake.log)"
-    touch "$marker"
+    printf '%s' "$marker_key" > "$marker"
     colored lgreen "done"
 }
 
@@ -460,7 +464,6 @@ build_dist() {
     mkdir -p "$builddir/dist"
     cp "$builddir/dfdh.exe" "$builddir/dist/"
     cp -r data "$builddir/dist/"
-    cp "$builddir/3rd/bin/openal32.dll" "$builddir/dist"
     cp fs.cfg "$builddir/dist/"
     colored lgreen "done ($builddir/dist)"
 }
@@ -543,8 +546,11 @@ _build() {
 # when we link its static libraries.
 local platform_defines=" -D_USE_MATH_DEFINES -DSFML_STATIC"
 
+    # winpthreads (miniaudio) is linked statically: no libwinpthread-1.dll in the dist
     local system_libs="
 -lglew32 -lopengl32 -lwinmm -lgdi32 -lws2_32 -lkernel32 -ldinput -ldxguid -ldxerr8 -lshell32 -lwinspool -luser32
+-ldnsapi -lcrypt32 -lbcrypt -lole32
+-Wl,-Bstatic -lpthread -Wl,-Bdynamic
 -lm
 "
 
@@ -556,28 +562,21 @@ $builddir/3rd/lib/libsfml-window-s.a \
 $builddir/3rd/lib/libsfml-graphics-s.a \
 $builddir/3rd/lib/libsfml-network-s.a \
 $builddir/3rd/lib/libsfml-audio-s.a \
-$builddir/3rd/lib/libopenal32.a \
-$builddir/3rd/lib/libFLAC.a \
 $builddir/3rd/lib/libfreetype.a \
-$builddir/3rd/lib/libogg.a \
-$builddir/3rd/lib/libvorbis.a \
+$builddir/3rd/lib/libharfbuzz.a \
+$builddir/3rd/lib/libFLAC.a \
 $builddir/3rd/lib/libvorbisenc.a \
 $builddir/3rd/lib/libvorbisfile.a \
+$builddir/3rd/lib/libvorbis.a \
+$builddir/3rd/lib/libogg.a \
+$builddir/3rd/lib/libssh2.a \
+$builddir/3rd/lib/libmbedtls.a \
+$builddir/3rd/lib/libmbedx509.a \
+$builddir/3rd/lib/libmbedcrypto.a \
 $builddir/luajit/lib/libluajit-5.1.a \
 -Wl,--end-group"
 
     mkdir -p "$builddir/3rd" "$builddir/.ezbld" "$builddir/luajit"
-
-    # Patch SFML's OpenAL finder for cross-compilation (see
-    # CMake/patches/FindOpenAL.cmake) — the system module never matches
-    # libopenal32.a on a case-sensitive host filesystem.
-    local openal_patch="$(pwd)/CMake/patches/FindOpenAL.cmake"
-    local openal_dst="submodules/SFML/cmake/Modules/FindOpenAL.cmake"
-    if ! cmp -s "$openal_patch" "$openal_dst" 2>/dev/null; then
-        colored yellow "Applying OpenAL finder patch to SFML submodule ..." n
-        cp "$openal_patch" "$openal_dst" || fail "Can't patch SFML"
-        colored lgreen "done"
-    fi
 
     build_cmake_submodule "$builddir" SFML \
         -DBUILD_SHARED_LIBS=OFF \
@@ -631,7 +630,7 @@ $builddir/luajit/lib/libluajit-5.1.a \
         "$builddir" \
         "$CXX_COMPILER" \
         "$debug" \
-        "$hardening_flags $define_flags $platform_defines" \
+        "$hardening_flags $static_flags $define_flags $platform_defines" \
         "-L $builddir/3rd/lib -lCatch2Main -lCatch2 $system_libs" \
         "$(include_list \
             "system:$(pwd)/$builddir/3rd/include" \
@@ -644,7 +643,7 @@ $builddir/luajit/lib/libluajit-5.1.a \
         "$builddir" \
         "$CXX_COMPILER" \
         "$debug" \
-        "$hardening_flags $define_flags $platform_defines" \
+        "$hardening_flags $static_flags $define_flags $platform_defines" \
         "-L $builddir/3rd/lib -lCatch2Main -lCatch2 $system_libs" \
         "$(include_list \
             "system:$(pwd)/$builddir/3rd/include" \

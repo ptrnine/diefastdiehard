@@ -4,6 +4,7 @@
 #include <string>
 #include <filesystem>
 #include <list>
+#include <optional>
 
 #include <SFML/Audio/SoundBuffer.hpp>
 #include <SFML/Audio/Sound.hpp>
@@ -50,14 +51,14 @@ public:
             }
 
             sound_use.push_front({path, id});
-            sound_pos->second.sound.setBuffer(sample_pos->second);
+            sound_pos->second.sound.emplace(sample_pos->second);
             sound_pos->second.use_i = sound_use.begin();
         }
 
         auto& snd = sound_pos->second;
         if (snd.use_i != sound_use.begin())
             sound_use.splice(sound_use.begin(), sound_use, snd.use_i, std::next(snd.use_i));
-        return snd.sound;
+        return *snd.sound;
     }
 
     void play(const std::string& path, int id, vec2f cam_relative_position, float pitch, float volume = 100.f) {
@@ -90,7 +91,7 @@ private:
     };
 
     struct sound_data_t {
-        sf::Sound                      sound;
+        std::optional<sf::Sound>       sound; /* constructed with its buffer */
         std::list<sound_key>::iterator use_i;
     };
 

@@ -511,7 +511,7 @@ TEST_CASE("udp channel: loopback") {
 
     SECTION("single datagram") {
         auto data = encode_msg(msg_type::welcome, welcome{"test"});
-        REQUIRE(cli.send_to(sf::IpAddress("127.0.0.1"), port, data));
+        REQUIRE(cli.send_to(sf::IpAddress::LocalHost, port, data));
 
         auto recvs = srv.recv(std::chrono::milliseconds(50));
         REQUIRE(recvs.size() == 1);
@@ -523,7 +523,7 @@ TEST_CASE("udp channel: loopback") {
     SECTION("drain multiple datagrams") {
         auto data = encode_msg(msg_type::input, input{.last_seq = 1, .bits = {in_bit_left}});
         for (int i = 0; i < 5; ++i)
-            REQUIRE(cli.send_to(sf::IpAddress("127.0.0.1"), port, data));
+            REQUIRE(cli.send_to(sf::IpAddress::LocalHost, port, data));
 
         auto recvs = srv.recv(std::chrono::milliseconds(50));
         REQUIRE(recvs.size() == 5);
@@ -536,7 +536,7 @@ TEST_CASE("udp channel: loopback") {
 
     SECTION("connected send") {
         udp_channel cli2;
-        REQUIRE(cli2.connect(sf::IpAddress("127.0.0.1"), port));
+        REQUIRE(cli2.connect(sf::IpAddress::LocalHost, port));
         auto data = encode_msg(msg_type::leave, leave{"x"});
         REQUIRE(cli2.send(data));
         auto recvs = srv.recv(std::chrono::milliseconds(50));
@@ -548,51 +548,45 @@ TEST_CASE("net_player_controller: key events to input state") {
     net_player_controller ctrl{0}; /* use the existing player_controller_0 section */
 
     auto keypress = [](sf::Keyboard::Key k) {
-        sf::Event evt;
-        evt.type  = sf::Event::KeyPressed;
-        evt.key.code = k;
-        return evt;
+        return sf::Event(sf::Event::KeyPressed{.code = k});
     };
     auto keyrelease = [](sf::Keyboard::Key k) {
-        sf::Event evt;
-        evt.type  = sf::Event::KeyReleased;
-        evt.key.code = k;
-        return evt;
+        return sf::Event(sf::Event::KeyReleased{.code = k});
     };
 
     SECTION("move keys") {
-        ctrl.track_event(keypress(sf::Keyboard::Left));
+        ctrl.track_event(keypress(sf::Keyboard::Key::Left));
         auto in = ctrl.take_input_state();
         CHECK(in.left == true);
         CHECK(in.right == false);
 
-        ctrl.track_event(keypress(sf::Keyboard::Right));
+        ctrl.track_event(keypress(sf::Keyboard::Key::Right));
         in = ctrl.take_input_state();
         CHECK(in.left == true);
         CHECK(in.right == true);
 
-        ctrl.track_event(keyrelease(sf::Keyboard::Left));
+        ctrl.track_event(keyrelease(sf::Keyboard::Key::Left));
         in = ctrl.take_input_state();
         CHECK(in.left == false);
         CHECK(in.right == true);
     }
 
     SECTION("jump is an edge") {
-        ctrl.track_event(keypress(sf::Keyboard::Up));
+        ctrl.track_event(keypress(sf::Keyboard::Key::Up));
         auto in = ctrl.take_input_state();
         CHECK(in.jump == true);
 
         in = ctrl.take_input_state();
         CHECK(in.jump == false);
 
-        ctrl.track_event(keyrelease(sf::Keyboard::Up));
-        ctrl.track_event(keypress(sf::Keyboard::Up));
+        ctrl.track_event(keyrelease(sf::Keyboard::Key::Up));
+        ctrl.track_event(keypress(sf::Keyboard::Key::Up));
         in = ctrl.take_input_state();
         CHECK(in.jump == true);
     }
 
     SECTION("jump down is an edge") {
-        ctrl.track_event(keypress(sf::Keyboard::Down));
+        ctrl.track_event(keypress(sf::Keyboard::Key::Down));
         auto in = ctrl.take_input_state();
         CHECK(in.jump_down == true);
         in = ctrl.take_input_state();
@@ -600,25 +594,25 @@ TEST_CASE("net_player_controller: key events to input state") {
     }
 
     SECTION("shot held and released") {
-        ctrl.track_event(keypress(sf::Keyboard::Comma));
+        ctrl.track_event(keypress(sf::Keyboard::Key::Comma));
         auto in = ctrl.take_input_state();
         CHECK(in.shot == true);
         in = ctrl.take_input_state();
         CHECK(in.shot == true); /* held, not consumed */
 
-        ctrl.track_event(keyrelease(sf::Keyboard::Comma));
+        ctrl.track_event(keyrelease(sf::Keyboard::Key::Comma));
         in = ctrl.take_input_state();
         CHECK(in.shot == false);
     }
 
     SECTION("long shot is held") {
-        ctrl.track_event(keypress(sf::Keyboard::M));
+        ctrl.track_event(keypress(sf::Keyboard::Key::M));
         auto in = ctrl.take_input_state();
         CHECK(in.long_shot == true);
         in = ctrl.take_input_state();
         CHECK(in.long_shot == true);
 
-        ctrl.track_event(keyrelease(sf::Keyboard::M));
+        ctrl.track_event(keyrelease(sf::Keyboard::Key::M));
         in = ctrl.take_input_state();
         CHECK(in.long_shot == false);
     }
@@ -826,7 +820,7 @@ TEST_CASE("net_server: handshake, rename and leave") {
     REQUIRE(srv.is_ready());
 
     net::udp_channel cli;
-    REQUIRE(cli.connect(sf::IpAddress("127.0.0.1"), port));
+    REQUIRE(cli.connect(sf::IpAddress::LocalHost, port));
 
     SECTION("join") {
         net::hello h;
@@ -1165,7 +1159,7 @@ TEST_CASE("net_client: join and state application") {
 
     bool joined = false;
     net::net_client cli{
-        sf::IpAddress("127.0.0.1"), port, "me", "wpn_glk17", 0, 0,
+        sf::IpAddress::LocalHost, port, "me", "wpn_glk17", 0, 0,
         sf::Color(255, 255, 255), sf::Color(255, 255, 0)};
     REQUIRE(cli.is_ready());
     cli.sig_joined.attach_function("mp_joined_test", [&](const player_name_t& name) {
@@ -1557,7 +1551,7 @@ struct net_game_fixture {
         REQUIRE(gs_cli.level_current("lvl_aes"));
         srv.channel().set_simulated_latency(latency_min_ms, latency_max_ms);
 
-        cli.emplace(sf::IpAddress("127.0.0.1"), port, "me", "wpn_glk17", 0, 0,
+        cli.emplace(sf::IpAddress::LocalHost, port, "me", "wpn_glk17", 0, 0,
                     sf::Color(255, 255, 255), sf::Color(255, 255, 0));
         cli->channel().set_simulated_latency(latency_min_ms, latency_max_ms);
         cli->input_source([this] { return input; });
@@ -2260,11 +2254,9 @@ TEST_CASE("game_state: local key events drive controlled players only") {
     REQUIRE(gs.controller_bind(0, "lol"));
     gs.rebuild_controlled_players();
 
-    sf::Event press;
-    press.type     = sf::Event::KeyPressed;
-    press.key.code = sf::Keyboard::Key(gs.controllers.at(0)->shot);
-    sf::Event release = press;
-    release.type      = sf::Event::KeyReleased;
+    auto key          = sf::Keyboard::Key(gs.controllers.at(0)->shot);
+    sf::Event press   = sf::Event::KeyPressed{.code = key};
+    sf::Event release = sf::Event::KeyReleased{.code = key};
 
     gs.handle_event(press);
     CHECK(pl->shotting());
@@ -3251,7 +3243,7 @@ TEST_CASE("udp_channel simulates latency") {
     const std::vector<u8> data = {1, 2, 3, 4};
     auto t0 = game_clock::now();
 
-    REQUIRE(cli.send_to(sf::IpAddress("127.0.0.1"), port, data));
+    REQUIRE(cli.send_to(sf::IpAddress::LocalHost, port, data));
 
     /*
      * The datagram must not arrive instantly: each one-way hop is delayed

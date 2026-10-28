@@ -741,7 +741,7 @@ private:
                 pos      = lerp(end->pos, begin->pos, test.rewind_lead);
                 hit_tick = seq;
             }
-            if (auto t = game_state::segment_hit(a, b, {pos.x, pos.y - size.y, size.x, size.y}))
+            if (auto t = game_state::segment_hit(a, b, {{pos.x, pos.y - size.y}, {size.x, size.y}}))
                 return tick_hit_t{hit_tick, seq, a + (b - a) * *t};
             return {};
         }
@@ -772,7 +772,7 @@ private:
                 lo = {std::min(lo.x, p.x), std::min(lo.y, p.y)};
                 hi = {std::max(hi.x, p.x), std::max(hi.y, p.y)};
             }
-            return sf::FloatRect{lo.x, lo.y, std::max(hi.x - lo.x, 0.1f), std::max(hi.y - lo.y, 0.1f)};
+            return sf::FloatRect{{lo.x, lo.y}, {std::max(hi.x - lo.x, 0.1f), std::max(hi.y - lo.y, 0.1f)}};
         };
 
         /* The player's collision lines: start, displacement */
@@ -784,7 +784,7 @@ private:
         for (auto& [offset, disp] : sides) {
             auto p0 = pos + offset;
             auto p1 = p0 + move;
-            if (!bounds({p0, p0 + disp, p1, p1 + disp}).intersects(point_bb))
+            if (!bounds({p0, p0 + disp, p1, p1 + disp}).findIntersection(point_bb))
                 continue;
 
             auto dist = [&](const vec2f& point, const vec2f& line) {
@@ -1067,7 +1067,7 @@ private:
                     return ref.id != 0 && std::ranges::find(snap->hits, ref.id) != snap->hits.end();
                 });
             auto size = pl.get_size();
-            if (auto hit = game_state::segment_hit(a, b, {pos.x, pos.y - size.y, size.x, size.y}); hit && *hit < best) {
+            if (auto hit = game_state::segment_hit(a, b, {{pos.x, pos.y - size.y}, {size.x, size.y}}); hit && *hit < best) {
                 best = *hit;
                 res  = own_hit_t{&pl, a + (b - a) * *hit, t};
             }

@@ -87,7 +87,7 @@ public:
     static constexpr auto idle_broadcast = std::chrono::milliseconds(100);
 
     struct client_t {
-        sf::IpAddress    address;
+        sf::IpAddress    address      = sf::IpAddress::Any;
         u16              port         = 0;
         player_name_t    player_name;
         bool             joined       = false;

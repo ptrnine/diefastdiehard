@@ -17,29 +17,29 @@ public:
         section(std::move(isection)), key(std::move(ikey)), steps(isteps) {}
 
     void handle_event(const sf::Event& evt) {
-        if (evt.type == sf::Event::KeyPressed) {
-            switch (evt.key.code) {
-            case sf::Keyboard::Z:
+        if (auto pressed = evt.getIf<sf::Event::KeyPressed>()) {
+            switch (pressed->code) {
+            case sf::Keyboard::Key::Z:
                 if (steps[0])
                     update(0, -*steps[0]);
                 break;
-            case sf::Keyboard::X:
+            case sf::Keyboard::Key::X:
                 if (steps[0])
                     update(0, *steps[0]);
                 break;
-            case sf::Keyboard::C:
+            case sf::Keyboard::Key::C:
                 if (steps[1])
                     update(1, -*steps[1]);
                 break;
-            case sf::Keyboard::V:
+            case sf::Keyboard::Key::V:
                 if (steps[1])
                     update(1, *steps[1]);
                 break;
-            case sf::Keyboard::B:
+            case sf::Keyboard::Key::B:
                 if (steps[2])
                     update(2, -*steps[2]);
                 break;
-            case sf::Keyboard::N:
+            case sf::Keyboard::Key::N:
                 if (steps[2])
                     update(2, *steps[2]);
                 break;

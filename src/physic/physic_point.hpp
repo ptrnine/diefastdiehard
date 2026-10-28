@@ -50,7 +50,7 @@ public:
         _allow_platform(false),
         _user_data(0),
         _distance(0.f) {
-        _bb = {0.f, 0.f, 0.f, 0.f};
+        _bb = {};
     }
 
     virtual ~physic_point() = default;
@@ -59,15 +59,15 @@ public:
         auto next = _position + get_velocity() * timestep;
         //_bb = sf::FloatRect(-0.5f, -0.5f, 1.f, 1.f);
 
-        _bb.left   = std::min(_position.x, next.x);
-        _bb.top    = std::min(_position.y, next.y);
-        _bb.width  = std::max(_position.x, next.x) - std::min(_position.x, next.x);
-        _bb.height = std::max(_position.y, next.y) - std::min(_position.y, next.y);
+        _bb.position.x   = std::min(_position.x, next.x);
+        _bb.position.y    = std::min(_position.y, next.y);
+        _bb.size.x  = std::max(_position.x, next.x) - std::min(_position.x, next.x);
+        _bb.size.y = std::max(_position.y, next.y) - std::min(_position.y, next.y);
 
-        if (_bb.width < 0.1f)
-            _bb.width = 0.1f;
-        if (_bb.height < 0.1f)
-            _bb.height = 0.1f;
+        if (_bb.size.x < 0.1f)
+            _bb.size.x = 0.1f;
+        if (_bb.size.y < 0.1f)
+            _bb.size.y = 0.1f;
 
         record_dir_and_velocity();
     }
@@ -308,7 +308,7 @@ public:
 
     [[nodiscard]]
     virtual bounding_box pos_bb() const {
-        return sf::FloatRect(get_position().x, get_position().y, 0.f, 0.f);
+        return sf::FloatRect(get_position(), {0.f, 0.f});
     }
 
     [[nodiscard]]

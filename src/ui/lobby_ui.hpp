@@ -234,13 +234,14 @@ private:
 
         /* Centered (a long gun is scaled down to fit) */
         auto w = u32(column_width), h = u32(icon_height());
-        icon.target->create(w, h);
+        if (!icon.target->resize({w, h}))
+            glog().error("cannot create a player icon render texture");
         icon.target->clear({0, 0, 0, 0});
         sf::Sprite sprite(icon.sprite->getTexture());
         auto       size  = icon.sprite->getSize();
         auto       scale = std::min({1.f, float(w) / float(size.x), float(h) / float(size.y)});
-        sprite.setScale(scale, scale);
-        sprite.setPosition((float(w) - float(size.x) * scale) * 0.5f, float(h) - float(size.y) * scale);
+        sprite.setScale({scale, scale});
+        sprite.setPosition({(float(w) - float(size.x) * scale) * 0.5f, float(h) - float(size.y) * scale});
         icon.target->draw(sprite);
         icon.target->display();
         icon.img = make_nk_image(*icon.target);

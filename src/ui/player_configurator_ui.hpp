@@ -34,25 +34,24 @@ public:
             auto& target = back.icon_trgt;
             float size_factor = 1.f;
             for (auto& layer : back.wpn->layers()) {
-                if (!layer.getTexture())
+                if (!layer.has_texture())
                     continue;
                 if (!back.trgt_created) {
-                    auto size = layer.getTexture()->getSize();
+                    auto size = layer.getTexture().getSize();
                     auto sizef = vec2f(float(size.x), float(size.y));
                     size_factor = wpn_icon_h / sizef.y;
-                    target->create(u32(sizef.x * size_factor), u32(sizef.y * size_factor));
+                    if (!target->resize({u32(sizef.x * size_factor), u32(sizef.y * size_factor)}))
+                        glog().error("cannot create a weapon icon render texture");
                     /* New FBO texture contents are undefined until cleared (driver may keep stale pixels) */
                     target->clear({0, 0, 0, 0});
-                    target->setView(sf::View(sf::FloatRect{0.f,
-                                                           float(sizef.y * size_factor),
-                                                           float(sizef.x * size_factor),
-                                                           -float(sizef.y * size_factor)}));
+                    target->setView(sf::View(sf::FloatRect({0.f, float(sizef.y * size_factor)},
+                                                           {float(sizef.x * size_factor), -float(sizef.y * size_factor)})));
                     back.trgt_created = true;
                 }
                 auto copy_layer = layer;
-                copy_layer.setOrigin(0.f, 0.f);
-                copy_layer.setPosition(0.f, 0.f);
-                copy_layer.setScale(size_factor, size_factor);
+                copy_layer.setOrigin({0.f, 0.f});
+                copy_layer.setPosition({0.f, 0.f});
+                copy_layer.setScale({size_factor, size_factor});
                 target->draw(copy_layer);
             }
             target->display();
@@ -222,7 +221,6 @@ public:
 
     void show(bool value) {
         wnd_show = value;
-        sf::Sprite sp;
     }
 
     void toggle() {
@@ -244,7 +242,7 @@ private:
     struct nk_rect wnd_rect{200, 100, 500, 500};
     bool           wnd_show = false;
 
-    sf::Sprite        sprt_body, sprt_face;
+    sprite_t          sprt_body, sprt_face;
     sf::CircleShape   hand_or_leg;
     sf::Texture       txtr_body, txtr_face;
     sf::RenderTexture player_icon;

@@ -120,7 +120,7 @@ public:
             return false;
 
         auto pos = _box->get_position();
-        auto gbb = sf::FloatRect(pos.x - _size.x * 0.5f, pos.y - _size.y * 0.5f, _size.x, _size.y);
+        auto gbb = sf::FloatRect(pos - _size * 0.5f, _size);
 
         for (auto& [_, p] : players) {
             /* Respect the owner's group: no collision with groupmates */
@@ -129,10 +129,10 @@ public:
 
             auto pbb = player_bb(*p, _rewind);
 
-            float ox1 = gbb.left + gbb.width  - pbb.left;
-            float ox2 = pbb.left + pbb.width  - gbb.left;
-            float oy1 = gbb.top  + gbb.height - pbb.top;
-            float oy2 = pbb.top  + pbb.height - gbb.top;
+            float ox1 = gbb.position.x + gbb.size.x  - pbb.position.x;
+            float ox2 = pbb.position.x + pbb.size.x  - gbb.position.x;
+            float oy1 = gbb.position.y  + gbb.size.y - pbb.position.y;
+            float oy2 = pbb.position.y  + pbb.size.y - gbb.position.y;
             if (ox1 <= 0.f || ox2 <= 0.f || oy1 <= 0.f || oy2 <= 0.f)
                 continue;
 

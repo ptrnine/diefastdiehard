@@ -80,9 +80,7 @@ build_static_lib() {
     local libs="$7"
     local includes="$8"
 
-    if [ ! -z "$TARGET" ] && [ "$TARGET" != "$name" ]; then
-        return
-    fi
+    # No TARGET check: the libraries are dependencies of the targets
 
     local already_built=false
     local depinfo=
@@ -308,9 +306,10 @@ build_cmake_submodule() {
     local submodule="$1"; shift
 
     local done_marker="$builddir/submodules/$submodule/.easybuild_done"
-    # Track the cmake flags so a changed configuration triggers a rebuild
+    # Track the submodule commit (the one 'git submodule update' checks out) and the cmake flags,
+    # so an updated submodule or a changed configuration triggers a rebuild
     local flags_key
-    flags_key="$(printf '%s' "$*" | tr ' ' '|')"
+    flags_key="$(git ls-files -s "submodules/$submodule" | cut -d' ' -f2)|$(printf '%s' "$*" | tr ' ' '|')"
 
     mkdir -p "$builddir/submodules/$submodule"
 
@@ -624,8 +623,11 @@ $([ "$asan" == true ] && asan_flags)
     mkdir -p "$builddir/3rd"
     mkdir -p "$builddir/.ezbld"
 
-    # static mode: SFML produces libsfml-*-s.a; dynamic mode: libsfml-*.so
-    build_cmake_submodule "$builddir" $rebuild_submodules SFML -DBUILD_SHARED_LIBS=$([ "$static_link" == true ] && echo OFF || echo ON)
+    # static mode: SFML produces libsfml-*-s.a; dynamic mode: libsfml-*.so.
+    # Bundled dependencies (fetched by SFML's CMake, built as static libs): no system mbedTLS needed
+    build_cmake_submodule "$builddir" $rebuild_submodules SFML \
+        -DBUILD_SHARED_LIBS=$([ "$static_link" == true ] && echo OFF || echo ON) \
+        -DSFML_USE_SYSTEM_DEPS=OFF
     build_cmake_submodule "$builddir" $rebuild_submodules Catch2 -DCATCH_INSTALL_DOCS=OFF
     build_cmake_submodule "$builddir" $rebuild_submodules luacpp -DENABLE_TESTS=ON
 
@@ -698,10 +700,12 @@ $([ "$asan" == true ] && asan_flags)
 
     local static_flags static_libs extra_link_path
     if [ "$static_link" == true ]; then
-        # Static = project-pinned libs only (SFML 2.5.1, nuklear, luajit):
-        # they are not in every distro at this version, so we bundle them.
-        # Everything with a stable ABI that ships in every distro stays
-        # dynamic: glibc, GL, GLEW, OpenAL, X11, codecs, freetype, udev.
+        # Static = project-pinned libs only (SFML 3 with the dependencies it
+        # bundles: freetype, harfbuzz, the audio codecs, mbedTLS, libssh2;
+        # nuklear, luajit): they are not in every distro at this version, so
+        # we bundle them. Everything with a stable ABI that ships in every
+        # distro stays dynamic: glibc, GL, GLEW, X11, udev (miniaudio, the
+        # SFML audio backend, dlopens the system's audio libraries).
         # glibc must be dynamic anyway: GLVND dlopens the mesa ICD
         # (libGLX_mesa -> libgallium -> libLLVM), which uses TLS, and
         # fully-static glibc cannot dlopen TLS-using libraries (glibc 2.41
@@ -710,8 +714,11 @@ $([ "$asan" == true ] && asan_flags)
         # extraction of plain objects from static archives (luajit).
         static_flags="-static-libgcc -static-libstdc++ -fno-lto"
         extra_link_path=""
+        local lib3rd="$(pwd)/$builddir/3rd/lib"
+        local sfml_libs="$lib3rd/libsfml-system-s.a $lib3rd/libsfml-window-s.a $lib3rd/libsfml-graphics-s.a $lib3rd/libsfml-network-s.a $lib3rd/libsfml-audio-s.a"
+        local sfml_deps="$lib3rd/libfreetype.a $lib3rd/libharfbuzz.a $lib3rd/libFLAC.a $lib3rd/libvorbisenc.a $lib3rd/libvorbisfile.a $lib3rd/libvorbis.a $lib3rd/libogg.a $lib3rd/libssh2.a $lib3rd/libmbedtls.a $lib3rd/libmbedx509.a $lib3rd/libmbedcrypto.a"
         # -start-group resolves cyclic deps between the SFML module archives.
-        static_libs="-Wl,--start-group $(pwd)/$builddir/libnuklear.a $(pwd)/$builddir/3rd/lib/libsfml-system-s.a $(pwd)/$builddir/3rd/lib/libsfml-window-s.a $(pwd)/$builddir/3rd/lib/libsfml-graphics-s.a $(pwd)/$builddir/3rd/lib/libsfml-network-s.a $(pwd)/$builddir/3rd/lib/libsfml-audio-s.a $(pwd)/$builddir/submodules/luacpp/3rd/lib/libluajit-5.1.a -Wl,--end-group -lGL -lGLX -lGLEW -lopenal -lfreetype -lFLAC -logg -lvorbis -lvorbisenc -lvorbisfile -lX11 -lXext -lXcursor -lXrandr -lXfixes -lXrender -lXau -lXdmcp -ludev -lpthread -ldl -lm"
+        static_libs="-Wl,--start-group $(pwd)/$builddir/libnuklear.a $sfml_libs $sfml_deps $(pwd)/$builddir/submodules/luacpp/3rd/lib/libluajit-5.1.a -Wl,--end-group -lGL -lGLX -lGLEW -lX11 -lXext -lXcursor -lXrandr -lXi -lXfixes -lXrender -lXau -lXdmcp -ludev -lresolv -lpthread -ldl -lm"
     else
         extra_link_path=""
         static_flags=""

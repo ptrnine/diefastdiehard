@@ -1,7 +1,7 @@
 #pragma once
 
 #include <SFML/Graphics/RenderWindow.hpp>
-#include <SFML/Graphics/Sprite.hpp>
+#include "sprite.hpp"
 #include <SFML/Graphics/Texture.hpp>
 #include <SFML/Graphics/Rect.hpp>
 
@@ -139,7 +139,7 @@ public:
         _txtr = texture_mgr().load("items/crate.png");
         auto txtr_sz = _txtr.getSize();
         _sprite.setTexture(_txtr);
-        _sprite.setScale(sz.x / float(txtr_sz.x), sz.y / float(txtr_sz.y));
+        _sprite.setScale({sz.x / float(txtr_sz.x), sz.y / float(txtr_sz.y)});
     }
 
     ~crate() {
@@ -217,7 +217,7 @@ public:
     [[nodiscard]]
     sf::FloatRect bb() const {
         auto p = _box->get_position();
-        return sf::FloatRect(p.x, p.y - _size.y, _size.x, _size.y);
+        return sf::FloatRect({p.x, p.y - _size.y}, _size);
     }
 
     void draw(sf::RenderWindow& wnd, float interpolation_factor, float timestep) {
@@ -225,7 +225,7 @@ public:
         auto next_pos = pos + _box->get_velocity() * timestep;
         pos = lerp(pos, next_pos, interpolation_factor);
 
-        _sprite.setPosition(pos.x, pos.y - _size.y);
+        _sprite.setPosition({pos.x, pos.y - _size.y});
         wnd.draw(_sprite);
     }
 
@@ -238,7 +238,7 @@ private:
     u32                           _id          = 0;
 
     sf::Texture _txtr;
-    sf::Sprite  _sprite;
+    sprite_t    _sprite;
 };
 
 } // namespace dfdh

@@ -5,7 +5,7 @@
 #include <filesystem>
 #include <list>
 #include <optional>
-#include <SFML/Graphics/Sprite.hpp>
+#include "sprite.hpp"
 #include <SFML/Graphics/Texture.hpp>
 
 #include "base/types.hpp"
@@ -66,15 +66,15 @@ public:
     bullet_sprite_cache(const bullet_sprite_cache&) = delete;
     bullet_sprite_cache& operator=(const bullet_sprite_cache&) = delete;
 
-    sf::Sprite& sprite(const sf::Color& color) {
+    sprite_t& sprite(const sf::Color& color) {
         auto [it, inserted] = _sprites.try_emplace(color);
         if (inserted) {
             auto& sprite = it->second;
             sprite.setTexture(_txtr);
             sprite.setColor(color);
             auto sz = _txtr.getSize();
-            sprite.setOrigin(float(sz.x), float(sz.y) / 2.f);
-            sprite.setScale(_xf, _yf);
+            sprite.setOrigin({float(sz.x), float(sz.y) / 2.f});
+            sprite.setScale({_xf, _yf});
         }
         return it->second;
     }
@@ -86,7 +86,7 @@ public:
 
 private:
     bullet_sprite_cache() {
-        _txtr.loadFromFile((std::filesystem::current_path() / "data/textures/bullet.png").string());
+        (void)_txtr.loadFromFile(std::filesystem::current_path() / "data/textures/bullet.png"); // SFML reports the failure
         _txtr.setSmooth(true);
         auto sz = _txtr.getSize();
         _xf = bullet_x_max / float(sz.x);
@@ -102,7 +102,7 @@ private:
         }
     };
 
-    std::map<sf::Color, sf::Sprite, comparator_t> _sprites;
+    std::map<sf::Color, sprite_t, comparator_t> _sprites;
     sf::Texture _txtr;
     float       _xf;
     float       _yf;
@@ -458,9 +458,9 @@ public:
             auto yf = std::pow(ph->get_mass(), 0.4f) * scale_f.y;
 
             auto& blt_sprite = sprites.sprite(b.color());
-            blt_sprite.setScale(xf, yf);
+            blt_sprite.setScale({xf, yf});
             blt_sprite.setPosition(pos);
-            blt_sprite.setRotation(angle * 180.f / float(M_PI));
+            blt_sprite.setRotation(sf::radians(angle));
             wnd.draw(blt_sprite);
         }
     }

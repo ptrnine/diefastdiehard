@@ -28,22 +28,22 @@ public:
     devconsole& operator=(devconsole&&) = default;
 
     void handle_event(const sf::Event& evt) final {
-        if (evt.type == sf::Event::Resized) {
-            try_place_into_window({float(evt.size.width), float(evt.size.height)});
+        if (auto resized = evt.getIf<sf::Event::Resized>()) {
+            try_place_into_window({float(resized->size.x), float(resized->size.y)});
         }
-        else if (evt.type == sf::Event::KeyPressed) {
-            switch (evt.key.code) {
-            case sf::Keyboard::Tilde:
+        else if (auto pressed = evt.getIf<sf::Event::KeyPressed>()) {
+            switch (pressed->code) {
+            case sf::Keyboard::Key::Grave:
                 toggle();
                 break;
 
-            case sf::Keyboard::Up:
+            case sf::Keyboard::Key::Up:
                 if (!is_active())
                     return;
                 history_up();
                 break;
 
-            case sf::Keyboard::Down:
+            case sf::Keyboard::Key::Down:
                 if (!is_active())
                     return;
                 history_down();

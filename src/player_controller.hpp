@@ -9,8 +9,21 @@ namespace dfdh {
 
 struct key_str_map_t {
     key_str_map_t() {
-        for (int i = sf::Keyboard::A; i < sf::Keyboard::KeyCount; ++i)
+        for (int i = 0; i < int(sf::Keyboard::KeyCount); ++i)
             str_to_key[sfml_key_to_str(sf::Keyboard::Key(i))] = i;
+
+        /* SFML 2 names of the renamed keys (the saved settings) */
+        static constexpr std::pair<const char*, sf::Keyboard::Key> sfml2_names[] = {
+            {"Return", sf::Keyboard::Key::Enter},
+            {"BackSpace", sf::Keyboard::Key::Backspace},
+            {"BackSlash", sf::Keyboard::Key::Backslash},
+            {"SemiColon", sf::Keyboard::Key::Semicolon},
+            {"Dash", sf::Keyboard::Key::Hyphen},
+            {"Quote", sf::Keyboard::Key::Apostrophe},
+            {"Tilde", sf::Keyboard::Key::Grave},
+        };
+        for (auto [name, key] : sfml2_names)
+            str_to_key.emplace(name, int(key));
     }
 
     [[nodiscard]]
