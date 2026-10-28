@@ -642,6 +642,8 @@ public:
         _since_shot   = s.since_shot;
         _on_reload    = s.on_reload;
         _on_shot      = s.on_shot;
+        _ticked_on_shot = s.on_shot;
+        _step_ticks     = 0;
         _shot_index   = s.shot_index;
         _seed_base    = s.seed_base != 0 ? std::optional{s.seed_base} : std::nullopt;
         _input_tick         = input_seq;
@@ -651,17 +653,20 @@ public:
     /**
      * Re-simulate one tick of the weapon logic without any effect (no
      * bullets, sounds or flash; client rollback). Returns the recoil if it
-     * fires
+     * fires (of every shot of a multi-tick step)
      */
     std::optional<float> replay_tick(float timestep) {
-        if (!_wpn || !tick(timestep))
+        if (!_wpn)
             return {};
-        ++_shot_index; /* as shot() does */
-        play_animation("shot");
-        --_ammo_elapsed;
-        _on_reload = false;
-        shot_fired();
-        return _wpn->_recoil;
+        std::optional<float> recoil;
+        for (bool fires = tick(timestep); fires; fires = shot_fired()) {
+            ++_shot_index; /* as shot() does */
+            play_animation("shot");
+            --_ammo_elapsed;
+            _on_reload = false;
+            recoil     = recoil.value_or(0.f) + _wpn->_recoil;
+        }
+        return recoil;
     }
 
     template <typename F = int, typename F2 = void (*)(const vec2f&, const vec2f&, float)>
@@ -682,7 +687,9 @@ public:
 
         _last_time_speed = sim.last_speed();
         _anim_tick_timer.restart();
-        if (tick(sim.last_timestep())) {
+        /* Every shot of the step (merged input ticks can hold more than one) */
+        std::optional<float> recoil;
+        for (bool fires = tick(sim.last_timestep()); fires; fires = shot_fired()) {
             shot(position,
                  cam_position,
                  direction,
@@ -692,14 +699,15 @@ public:
                  _last_tracer_color,
                  gravity_for_bullets,
                  spawn_bullet,
-                 std::forward<F2>(bullet_spawn_callback),
+                 bullet_spawn_callback,
                  std::is_same_v<F, int> ? -1 : group,
-                 std::move(player_group_getter),
+                 player_group_getter,
                  rand_pool);
             _on_reload = false;
-            shot_fired();
-            return _wpn->_recoil;
+            recoil     = recoil.value_or(0.f) + _wpn->_recoil;
         }
+        if (recoil)
+            return recoil;
 
         if (_anim_sound_to_play) {
             sound_mgr().play(*_anim_sound_to_play, group, position - cam_position, sim.last_speed());
@@ -741,6 +749,11 @@ public:
     /* Network input tick currently applied to the owner (its fire rate counts input ticks) */
     void input_tick(u32 seq) {
         _input_tick = seq;
+    }
+
+    /* Triggers of the input ticks the server merged away before the current one (seq -> held) */
+    void merged_triggers(std::map<u32, bool> triggers) {
+        _merged_triggers.merge(triggers);
     }
 
     /* Index of the shot being fired (inside the bullet spawn callback) or of the next one */
@@ -912,20 +925,58 @@ private:
      * while waiting for one), so the shots and reloads land on the same input
      * ticks on the server and in the client's prediction. A tick without a
      * new input tick (the server waits for one) is skipped: the prediction
-     * has no such tick to fire or start a reload on. Returns whether the
-     * weapon fires
+     * has no such tick to fire or start a reload on. Input ticks merged away
+     * by the server are run one by one, like the prediction ran them: a
+     * reload that ends on a merged tick refills before the next one fires
+     * (one longer step fired a tick later). A merged tick runs with its own
+     * trigger (merged_triggers; a lost one with the trigger before it), a
+     * pull on it seeds the shots by its seq. Returns whether the weapon fires
      */
     bool tick(float timestep) {
+        u32 ticks = 1;
         if (_input_tick) {
-            auto ticks          = _counted_input_tick ? *_input_tick - *_counted_input_tick : 1u;
+            ticks               = _counted_input_tick ? *_input_tick - *_counted_input_tick : 1u;
             _counted_input_tick = _input_tick;
             if (ticks == 0) {
                 _anim_tick_dt = 0.f;
                 return false;
             }
-            timestep *= float(ticks);
         }
-        _anim_tick_dt = timestep;
+        _anim_tick_dt = timestep * float(ticks);
+        _tick_dt      = timestep;
+        _step_ticks   = ticks;
+        _step_seq     = _input_tick ? *_input_tick - ticks + 1 : 0;
+        return run_step();
+    }
+
+    /* Run the rest of the step tick by tick, up to a shot (the rest runs in shot_fired) */
+    bool run_step() {
+        for (; _step_ticks != 0; --_step_ticks, ++_step_seq) {
+            auto trigger = _ticked_on_shot;
+            if (_step_ticks == 1)
+                trigger = _on_shot;
+            else if (auto found = _merged_triggers.find(_step_seq); found != _merged_triggers.end())
+                trigger = found->second;
+
+            /* A pull on a merged tick (on the last one shot() seeded it already) */
+            if (trigger && !_ticked_on_shot && _input_tick && _seed_base)
+                seed_shots(_step_seq);
+            _ticked_on_shot = trigger;
+
+            if (single_tick(_tick_dt, trigger)) {
+                --_step_ticks;
+                ++_step_seq;
+                return true;
+            }
+        }
+        if (_input_tick)
+            _merged_triggers.erase(_merged_triggers.begin(), _merged_triggers.upper_bound(*_input_tick));
+        else
+            _merged_triggers.clear();
+        return false;
+    }
+
+    bool single_tick(float timestep, bool on_shot) {
         advance_animation(timestep);
 
         if (_ammo_elapsed == 0 && _ammo_reserve != 0 && !_current_anim && !_on_reload) {
@@ -935,7 +986,7 @@ private:
         }
 
         _since_shot += timestep;
-        if (_on_shot && _ammo_elapsed && _since_shot > 60.f / _wpn->_fire_rate)
+        if (on_shot && _ammo_elapsed && _since_shot > 60.f / _wpn->_fire_rate)
             return true;
 
         if (_on_reload && !_current_anim) {
@@ -950,11 +1001,14 @@ private:
      * fire the time past the shot period (less than the tick) is carried
      * over, so the gun fires at its fire rate at any tick rate (a reset made
      * an 850 rpm gun fire every 5th 60 Hz tick: 720 rpm). A shot after a
-     * pause carries nothing (no burst)
+     * pause carries nothing (no burst). Then the rest of a multi-tick step
+     * (merged input ticks) runs: returns whether it fires again
      */
-    void shot_fired() {
+    [[nodiscard]]
+    bool shot_fired() {
         auto carry  = _since_shot - 60.f / _wpn->_fire_rate;
-        _since_shot = carry <= _anim_tick_dt ? carry : 0.f;
+        _since_shot = carry <= _tick_dt ? carry : 0.f;
+        return run_step();
     }
 
     /* Advance the current animation, switching to the next one at its end (shotgun shells, ...) */
@@ -1148,7 +1202,12 @@ private:
     float                 _last_time_speed = 1.f;
 
     timer _anim_tick_timer; /* since the last tick: animations are drawn in between the ticks */
-    float _anim_tick_dt = 0.f;
+    float _anim_tick_dt = 0.f; /* the last step (merged input ticks included) */
+    float _tick_dt      = 0.f; /* a tick of it */
+    u32   _step_ticks       = 0;     /* ticks of the step left to run */
+    u32   _step_seq         = 0;     /* input tick of the next one */
+    bool  _ticked_on_shot   = false; /* the trigger at the last tick */
+    std::map<u32, bool> _merged_triggers; /* input tick -> trigger of the ticks the server merged away */
 
     bool  _on_shot   = false;
     bool  _on_reload = false;

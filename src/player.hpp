@@ -1067,6 +1067,19 @@ public:
     }
 
     /**
+     * Triggers of the input ticks the server merged away before this one
+     * (seq -> held): the weapon runs their ticks with them (a throw holds no
+     * trigger, like shot())
+     */
+    void merged_triggers(std::map<u32, bool> triggers) {
+        if (_throw)
+            for (auto& [_, held] : triggers)
+                held = false;
+        if (_pistol)
+            _pistol.merged_triggers(std::move(triggers));
+    }
+
+    /**
      * Marked for players driven by the network server (no local controller needed
      * so the host keyboard does not drive them); they get full simulation,
      * including local bullet spawning

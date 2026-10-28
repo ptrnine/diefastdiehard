@@ -205,19 +205,23 @@ the client: the old player is deleted.
     the backlog of a client hitch (a stall, then the ticks at once) stayed
     queued for good;
   - above `max(16, target + 8)` queued ticks, merges the oldest repeated
-    tick away: the same held bits as the previous tick, no edges, and a
-    held trigger stays held on the next tick (preferably the next tick is
-    the same input too). Only a tick of time is lost: every trigger press
-    and release stays on its tick, a shot due on the merged tick fires on
-    the next one. Merging the oldest tick dropped short presses and
+    tick away: the same held bits as the previous tick, no edges
+    (preferably the next tick is the same input too). Only a tick of time
+    is lost: every trigger press and release stays on its tick. Merging
+    the oldest tick dropped short presses and
     releases: the server fired fewer (or more) shots than the client
     predicted, and the client reloaded while the server's gun still had
-    ammo. No repeated tick: merges the oldest, its edges and trigger pull
-    carry over to the next tick. A merged seq is consumed
-    (`client_t::merged_seqs`): newer input windows still carry it and
-    re-queued it, undoing the merge (and applying its edges twice). Merged
-    ticks are not simulated, so the client's prediction of them diverges
-    and gets corrected (physics and weapon timing);
+    ammo. No repeated tick: merges the oldest, its edges carry over to the
+    next tick. A merged seq is consumed (`client_t::merged_seqs`, -> its
+    trigger): newer input windows still carry it and re-queued it, undoing
+    the merge (and applying its edges twice). Merged ticks are not
+    simulated, so the client's prediction of their physics diverges and
+    gets corrected. The weapon runs them, though: it counts input ticks,
+    and a step over merged ticks runs them one by one with their own
+    triggers (`player::merged_triggers`; a pull on one seeds the shots by
+    its seq), firing every shot due in the step. One longer step instead
+    fired once at most, a tick late after a reload ended in it, and with
+    the trigger of the next tick: the client saw its ammo corrected;
   - after 0.5 s without input, applies a neutral input.
 - **View:** with every input tick the client reports its view: the server
   time it was showing then (`_shown_time`, the render time of the last

@@ -3210,6 +3210,66 @@ TEST_CASE("weapon: seeded shots are deterministic") {
     }
 }
 
+TEST_CASE("weapon: input ticks merged away fire and reload like the ticks one by one") {
+    /*
+     * The server merges queued input ticks away (net_server::apply_inputs):
+     * its weapon runs them in one step, with their triggers. A trigger
+     * pattern with reloads, run tick by tick (the client's prediction) and
+     * with merged ticks (the server), is in the same state at every applied
+     * tick. A reload that ended on a merged tick refilled after the next
+     * tick fired, a pull on it was a tick late, a step fired once at most
+     */
+    auto          trigger  = [](u32 seq) { return (seq / 4) % 2 == 1; };
+    auto          merged   = [](u32 seq) { return seq % 3 == 0 || (seq >= 200 && seq < 215); };
+    constexpr u32 last_seq = 1400;
+
+    auto run = [&](bool merge) {
+        game_state gs;
+        REQUIRE(gs.level_current("lvl_aes"));
+        auto pl = gs.player_create("shooter");
+        REQUIRE(pl != nullptr);
+        gs.game_run(true);
+        pl->teleport({1300.f, 1040.f});
+        pl->setup_pistol("wpn_ak9");
+
+        std::map<u32, weapon_instance::sync_state> states;
+        std::map<u32, bool>                        merged_triggers;
+        for (u32 seq = 1; seq <= last_seq; ++seq) {
+            if (merge && merged(seq)) {
+                merged_triggers.emplace(seq, trigger(seq));
+                continue;
+            }
+            pl->teleport({1300.f, 1040.f}); /* the recoil would push it off the platform: only the weapon is compared */
+            pl->last_input_seq(seq);
+            pl->merged_triggers(std::exchange(merged_triggers, {}));
+            pl->apply_input({.shot = trigger(seq)});
+            sim_tick(gs);
+            states.emplace(seq, pl->get_gun().get_sync_state());
+        }
+        return states;
+    };
+
+    auto one_by_one = run(false);
+    auto merged_run = run(true);
+    REQUIRE(merged_run.size() < one_by_one.size() * 3 / 4);
+
+    /* Reloads in the pattern */
+    u32 reloads = 0;
+    for (auto it = one_by_one.begin(); std::next(it) != one_by_one.end(); ++it)
+        if (std::next(it)->second.ammo > it->second.ammo)
+            ++reloads;
+    CHECK(reloads >= 3);
+
+    for (auto& [seq, st] : merged_run) {
+        CAPTURE(seq);
+        auto& expected = one_by_one.at(seq);
+        CHECK(st.ammo == expected.ammo);
+        CHECK(st.shot_index == expected.shot_index);
+        CHECK(st.seed_base == expected.seed_base);
+        CHECK_FALSE(st.diverged(expected));
+    }
+}
+
 TEST_CASE("net: unconfirmed bullet predictions expire") {
     using namespace std::chrono_literals;
     net_game_fixture f{80, 170};

@@ -100,7 +100,11 @@ public:
             std::optional<double> view_s;   // the server time the client was showing at the tick
         };
         std::map<u32, queued_input> inputs;
-        std::set<u32>               merged_seqs; // queued seqs merged away: a newer window must not queue them again
+        /*
+         * Queued seqs merged away (-> their trigger): a newer window must not
+         * queue them again. The weapon runs their ticks with their trigger
+         */
+        std::map<u32, bool>         merged_seqs;
         float                       input_wait_s = 0.f; // time the last applied input tick waited in the queue
         /*
          * Input margin (sent in STATE, the client aligns its ticks with it):
@@ -113,7 +117,7 @@ public:
         u32                next_seq      = 0; // first seq not applied yet, 0 = none received yet
         u32                ack_seq       = 0; // last applied seq
         u8                 held_bits     = 0; // held part of the last applied input
-        u8                 pending_edges = 0; // edges and shots of inputs merged away, applied with the next one
+        u8                 pending_edges = 0; // edges of inputs merged away, applied with the next one
         bool               buffering     = true; // refilling the jitter buffer
         clock::time_point  last_input_time;
         server_clock       input_jitter;               // input arrivals: offset = arrival - client send time
@@ -520,23 +524,21 @@ private:
                 client.target_inputs = target_queued_inputs;
 
             auto merge = [&](auto it) {
-                client.merged_seqs.insert(it->first);
+                client.merged_seqs.emplace(it->first, (it->second.bits & in_bit_shot) != 0);
                 q.erase(it);
             };
 
             /*
              * The tick repeats the previous one (the same input, no edges):
              * merging it away loses a tick of time only, every press and
-             * release stays on its tick. A shot due on it fires on the next
-             * tick: the trigger must stay held there. by_next: the next tick
-             * is the same input too
+             * release stays on its tick. by_next: the next tick is the same
+             * input too
              */
             auto repeated = [&](auto it, bool by_next) {
                 auto bits = it->second.bits;
                 auto next = std::next(it);
                 bool contiguous = next != q.end() && next->first == it->first + 1;
-                if ((bits & in_edge_bits) != 0 || (by_next && !(contiguous && next->second.bits == bits)) ||
-                    ((bits & in_bit_shot) && !(contiguous && (next->second.bits & in_bit_shot))))
+                if ((bits & in_edge_bits) != 0 || (by_next && !(contiguous && next->second.bits == bits)))
                     return false;
                 if (it == q.begin())
                     return client.ack_seq != 0 && it->first == client.ack_seq + 1 && client.pending_edges == 0 &&
@@ -547,10 +549,10 @@ private:
 
             /*
              * Too many queued ticks (client clock runs faster, burst after a
-             * stall): merge the oldest repeated one. A merged trigger press or
-             * release would desync the weapon (the client's prediction fires
-             * and reloads by every tick). None repeated: merge the oldest,
-             * its edges and trigger pull carry over to the next one
+             * stall): merge the oldest repeated one. None repeated: merge the
+             * oldest, its edges carry over to the next one. The weapon runs
+             * the merged ticks with their own trigger (merged_seqs), so the
+             * shots and reloads stay on the client's predicted ticks
              */
             while (q.size() > std::max(max_queued_inputs, client.target_inputs + max_queued_excess)) {
                 auto it = q.end();
@@ -560,7 +562,7 @@ private:
                             it = i;
                 if (it == q.end()) {
                     it = q.begin();
-                    client.pending_edges |= u8(it->second.bits & (in_edge_bits | in_bit_shot));
+                    client.pending_edges |= u8(it->second.bits & in_edge_bits);
                 }
                 merge(it);
             }
@@ -592,6 +594,7 @@ private:
 
             u8  bits;
             std::optional<double> view_s;
+            std::map<u32, bool>   merged_triggers;
             if (!client.buffering) {
                 /* Missing seqs before the head are lost for good (they would be in every newer window) */
                 auto head            = q.begin();
@@ -601,7 +604,9 @@ private:
                 client.next_seq      = head->first + 1;
                 client.held_bits     = u8(head->second.bits & ~in_edge_bits);
                 client.pending_edges = 0;
-                client.merged_seqs.erase(client.merged_seqs.begin(), client.merged_seqs.lower_bound(client.next_seq));
+                auto merged_end = client.merged_seqs.lower_bound(client.next_seq);
+                merged_triggers = std::map<u32, bool>(client.merged_seqs.begin(), merged_end);
+                client.merged_seqs.erase(client.merged_seqs.begin(), merged_end);
                 /* Measured at the tick's time (catch-up ticks run late) */
                 client.input_wait_s =
                     std::max(std::chrono::duration<float>(gs.sim.current_update_time() - head->second.received).count(), 0.f);
@@ -625,6 +630,7 @@ private:
             }
 
             found->second->last_input_seq(client.ack_seq);
+            found->second->merged_triggers(std::move(merged_triggers));
             found->second->apply_input(player_input_state::from_bits(bits));
 
             /* A starving tick keeps the compensation of the last applied one */
