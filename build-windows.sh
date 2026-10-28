@@ -453,6 +453,9 @@ build_luajit() {
     cp submodules/luacpp/submodules/LuaJIT/src/libluajit.a "$builddir/luajit/lib/libluajit-5.1.a" || fail "libluajit.a not found"
     cp submodules/luacpp/submodules/LuaJIT/src/{lua.h,lua.hpp,lauxlib.h,lualib.h,luajit.h,luaconf.h} \
         "$builddir/3rd/include/luajit-2.1/" || fail "LuaJIT headers not found"
+    # The Linux build (luacpp) copies this source tree: the Windows objects
+    # would be taken as up to date there
+    make -C submodules/luacpp/submodules/LuaJIT/src clean > /dev/null 2>&1
     touch "$marker"
     colored lgreen "done"
 }
