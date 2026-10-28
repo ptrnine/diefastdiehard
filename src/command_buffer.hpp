@@ -238,18 +238,23 @@ public:
     }
 
     void remove_handler(const std::string& command) {
-        std::unique_ptr<command_node>* node = &cmd_tree;
+        command_node* parent = nullptr;
+        command_node* node   = cmd_tree.get();
+        std::string   name;
 
         for (auto cmd_view : command / split_when(skip_whitespace_outside_quotes())) {
-            auto cmd = std::string(cmd_view.begin(), cmd_view.end());
-            auto found = (*node)->subcmds.find(cmd);
-            if (found == (*node)->subcmds.end())
+            name = std::string(cmd_view.begin(), cmd_view.end());
+            auto found = node->subcmds.find(name);
+            if (found == node->subcmds.end())
                 return;
 
-            node = &found->second;
+            parent = node;
+            node   = found->second.get();
         }
 
-        node->release();
+        /* Erased with its subcommands: they can be registered again */
+        if (parent)
+            parent->subcmds.erase(name);
     }
 
     template <typename T, typename RetT, typename... ArgsT>
