@@ -26,13 +26,15 @@ struct game_mode {
     std::string section;
     float       bullet_gravity    = 0.f; /* bullet gravity y value, 0 = off */
     float       crate_drop_period = 0.f; /* crate drop cooldown period (seconds), 0 = crates never drop */
+    u32         crate_limit       = 0;   /* max crates alive at once, 0 = unlimited */
     u32         magazines_count   = 0;   /* magazines of a gun (pistols are unlimited), 0 = unlimited */
     score_system_t score_system   = score_system_t::kills;
     i32         start_lives       = 3;   /* lives score system: the starting score */
 
     bool operator==(const game_mode& gm) const {
         return section == gm.section && exactly_equal(bullet_gravity, gm.bullet_gravity) &&
-               exactly_equal(crate_drop_period, gm.crate_drop_period) && magazines_count == gm.magazines_count &&
+               exactly_equal(crate_drop_period, gm.crate_drop_period) && crate_limit == gm.crate_limit &&
+               magazines_count == gm.magazines_count &&
                score_system == gm.score_system && start_lives == gm.start_lives;
     }
 
@@ -50,6 +52,7 @@ struct game_mode {
         gm.section           = sect_name;
         gm.bullet_gravity    = sect.value_or_default("bullet_gravity", 0.f);
         gm.crate_drop_period = std::max(sect.value_or_default("crate_drop_period", 0.f), 0.f);
+        gm.crate_limit       = u32(std::max(sect.value_or_default("crate_limit", 0), 0));
         gm.magazines_count   = u32(std::max(sect.value_or_default("magazines_count", 0), 0));
         gm.score_system      = score_system_from_string(sect.value_or_default("score_system", std::string("default")));
         gm.start_lives       = std::max(sect.value_or_default("start_lives", 3), 1);
@@ -85,6 +88,11 @@ struct game_mode {
     [[nodiscard]]
     bool crates_enabled() const {
         return crate_drop_period > 0.f;
+    }
+
+    [[nodiscard]]
+    bool crate_limit_reached(size_t crate_count) const {
+        return crate_limit != 0 && crate_count >= crate_limit;
     }
 
     [[nodiscard]]

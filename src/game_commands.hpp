@@ -495,11 +495,12 @@ public:
     void cmd_game_mode(const std::optional<std::string>& value) {
         auto& gm = gs.cur_game_mode;
         if (!value) {
-            glog().info("game mode: {} (bullet_gravity = {}, crate_drop_period = {}, magazines_count = {}, "
-                        "score_system = {}, start_lives = {})",
+            glog().info("game mode: {} (bullet_gravity = {}, crate_drop_period = {}, crate_limit = {}, "
+                        "magazines_count = {}, score_system = {}, start_lives = {})",
                         gm.section,
                         gm.bullet_gravity,
                         gm.crate_drop_period,
+                        gm.crate_limit,
                         gm.magazines_count,
                         game_mode::score_system_name(gm.score_system),
                         gm.start_lives);

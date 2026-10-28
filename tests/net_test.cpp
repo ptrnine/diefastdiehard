@@ -182,7 +182,7 @@ TEST_CASE("protocol: message round-trips") {
 
     SECTION("state with the game mode") {
         state st;
-        st.mode = game_mode_info{"gm_ballistic", 500.f, 5.f, 3, u8(game_mode::score_system_t::lives), 5};
+        st.mode = game_mode_info{"gm_ballistic", 500.f, 5.f, 6, 3, u8(game_mode::score_system_t::lives), 5};
 
         auto data = encode_msg(msg_type::state, st);
         auto r    = read_msg<state>(decode_msg({data.data(), data.size()}).payload);
@@ -190,6 +190,7 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(r.mode->section == "gm_ballistic");
         CHECK(r.mode->bullet_gravity == 500.f);
         CHECK(r.mode->crate_drop_period == 5.f);
+        CHECK(r.mode->crate_limit == 6);
         CHECK(r.mode->magazines_count == 3);
         CHECK(r.mode->score_system == u8(game_mode::score_system_t::lives));
         CHECK(r.mode->start_lives == 5);
@@ -3389,6 +3390,20 @@ TEST_CASE("game_state: crates drop by the game mode") {
     CHECK(gs.crates.empty());
     run_for(std::chrono::seconds(2));
     CHECK(gs.crates.size() == 1);
+
+    /* The crate limit caps the crates alive at once */
+    REQUIRE(gs.game_mode_apply("classic_dm"));
+    CHECK(gs.cur_game_mode.crate_limit == 6);
+    gs.crates_clear();
+    run_for(std::chrono::seconds(6));
+    CHECK(gs.crates.empty());
+    run_for(std::chrono::seconds(4));
+    CHECK(gs.crates.size() == 1);
+    run_for(std::chrono::seconds(55));
+    CHECK(gs.crates.size() == 6);
+    /* "spawn crate" (crates_spawn) ignores the limit */
+    gs.crates_spawn();
+    CHECK(gs.crates.size() == 7);
 }
 
 TEST_CASE("game_commands: game mode") {

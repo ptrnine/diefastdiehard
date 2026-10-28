@@ -1202,9 +1202,11 @@ public:
         if (crates_networked)
             return;
 
-        /* Drop period is defined by the game mode; no period means crates never drop */
+        /* Drop period is defined by the game mode; no period means crates never drop.
+         * The crate limit (0 = unlimited) caps the crates alive at once */
         if (cur_game_mode.crates_enabled() && crate_timer.elapsed() >= cur_game_mode.crate_drop_period) {
-            crates_spawn();
+            if (!cur_game_mode.crate_limit_reached(crates.size()))
+                crates_spawn();
             crate_timer.restart();
         }
 
