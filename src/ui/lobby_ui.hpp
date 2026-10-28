@@ -243,7 +243,7 @@ private:
         sprite.setPosition((float(w) - float(size.x) * scale) * 0.5f, float(h) - float(size.y) * scale);
         icon.target->draw(sprite);
         icon.target->display();
-        icon.img = make_nk_image(icon.target->getTexture());
+        icon.img = make_nk_image(*icon.target);
         return icon;
     }
 

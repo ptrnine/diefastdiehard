@@ -898,71 +898,59 @@ public:
                 impl_close_posix(fd);
         });
 
-        auto h_file = reinterpret_cast<HANDLE>(impl_get_osfhandle(fd));
-        LARGE_INTEGER fsz = {};
-        if (h_file == INVALID_HANDLE_VALUE || !GetFileSizeEx(h_file, &fsz)) {
-            errno = ENOENT;
+        struct stat st = {};
+        if (impl_fstat_posix(fd, &st) < 0)
             throw stat_fd_failed(filename, errc::from_errno(), autoclose_fd_on_fail ? -1 : fd);
-        }
 
-        auto size = static_cast<size_t>(fsz.QuadPart) / sizeof(T);
-        if (size != 0) {
-            h_map = CreateFileMappingA(h_file,
-                                       nullptr,
-                                       Mutable ? PAGE_READWRITE : PAGE_READONLY,
-                                       0,
-                                       0,
-                                       nullptr);
-            if (!h_map) {
-                errno = ENOMEM;
+        auto total = static_cast<size_t>(st.st_size) / sizeof(T);
+
+        /*
+         * No file mappings here: on some Windows volumes (VMs, sync folders) the size a
+         * mapping is created with can disagree with fstat, so a view can be shorter than
+         * the reported size and reading past it faults. Plain sequential reads are always
+         * coherent; keep the same interface on a heap buffer instead.
+         */
+        auto* buf = new T[total](); // NOLINT (total == 0 gives a valid empty buffer)
+        auto* dst  = buf;
+        auto  left = total;
+        while (left != 0) {
+            auto avail = impl_read_posix(fd, dst, left * sizeof(T));
+            if (avail < 0) {
+                delete[] buf; // NOLINT
                 throw mmap_fd_failed(filename, errc::from_errno(), autoclose_fd_on_fail ? -1 : fd);
             }
-
-            start = static_cast<T*>(MapViewOfFile(h_map, Mutable ? FILE_MAP_WRITE : 0, 0, 0, 0)); // NOLINT
-            if (!start) {
-                CloseHandle(h_map);
-                h_map = nullptr;
-                errno = ENOMEM;
-                throw mmap_fd_failed(filename, errc::from_errno(), autoclose_fd_on_fail ? -1 : fd);
-            }
-
-            pend = start + size;
+            if (avail == 0)
+                break; // stale size metadata (some Windows volumes); use what was actually read
+            dst   += avail;
+            left -= static_cast<size_t>(avail);
         }
 
-        /* The mapping keeps the file open; close the CRT fd explicitly. */
         impl_close_posix(fd);
+        guard.dismiss();
+
+        start = buf;
+        pend  = start + (total - left);
     }
 
     ~mmap_file_range() {
-        if (start) {
-            UnmapViewOfFile(start);
-            if (h_map)
-                CloseHandle(h_map);
-        }
+        delete[] start; // NOLINT
     }
 
-    mmap_file_range(mmap_file_range&& mfr) noexcept: start(mfr.start), pend(mfr.pend), h_map(mfr.h_map) {
+    mmap_file_range(mmap_file_range&& mfr) noexcept: start(mfr.start), pend(mfr.pend) {
         mfr.start = nullptr;
         mfr.pend  = nullptr;
-        mfr.h_map = nullptr;
     }
 
     mmap_file_range& operator=(mmap_file_range&& mfr) noexcept {
         if (&mfr == this)
             return *this;
 
-        if (start) {
-            UnmapViewOfFile(start);
-            if (h_map)
-                CloseHandle(h_map);
-        }
+        delete[] start; // NOLINT
 
         start     = mfr.start;
         pend      = mfr.pend;
-        h_map     = mfr.h_map;
         mfr.start = nullptr;
         mfr.pend  = nullptr;
-        mfr.h_map = nullptr;
         return *this;
     }
 
@@ -1055,9 +1043,6 @@ public:
 private:
     T* start = nullptr;
     T* pend  = nullptr;
-#ifdef _WIN32
-    HANDLE h_map = nullptr;
-#endif
 };
 
 template <typename T>

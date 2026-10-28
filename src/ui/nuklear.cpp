@@ -15,7 +15,11 @@
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #include <nuklear.h>
 #pragma GCC diagnostic pop
+#if defined(_WIN32)
+#include "nuklear_sfml_gl3_win.h"
+#else
 #include "nuklear_sfml_gl3.h"
+#endif
 
 NK_LIB void nk_draw_selectable_icon(struct nk_command_buffer*         out,
                                     nk_flags                          state,

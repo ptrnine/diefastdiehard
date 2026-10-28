@@ -12,8 +12,14 @@
 #include <memory>
 #include <cstring>
 
+#include <SFML/Graphics/RenderTexture.hpp>
+
 #include <nuklear.h>
+#if defined(_WIN32)
+#include "nuklear_sfml_gl3_win.h"
+#else
 #include "nuklear_sfml_gl3.h"
+#endif
 
 #include "nuklear_binding.hpp"
 #include "texture_mgr.hpp"
@@ -115,12 +121,26 @@ inline struct nk_image make_nk_image(const sf::Texture& txtr) {
 
     auto size = txtr.getSize();
 
+#if defined(_WIN32)
+    /* the Windows backend draws through SFML (nuklear_sfml_gl3_win.h) */
+    image.handle.ptr = const_cast<sf::Texture*>(&txtr); // NOLINT
+#else
     image.handle.id = static_cast<int>(txtr.getNativeHandle());
+#endif
     image.w         = static_cast<u16>(size.x);
     image.h         = static_cast<u16>(size.y);
     image.region[2] = static_cast<u16>(size.x);
     image.region[3] = static_cast<u16>(size.y);
 
+    return image;
+}
+
+/* The render texture's pixels in OpenGL (bottom-up) order, as the Linux backend samples them */
+inline struct nk_image make_nk_image(const sf::RenderTexture& target) {
+    auto image = make_nk_image(target.getTexture());
+#if defined(_WIN32)
+    image.handle.ptr = nk_sfml_flipped_texture_handle(&target.getTexture());
+#endif
     return image;
 }
 

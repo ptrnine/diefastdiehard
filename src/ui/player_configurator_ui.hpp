@@ -56,7 +56,7 @@ public:
                 target->draw(copy_layer);
             }
             target->display();
-            back.icon = make_nk_image(target->getTexture());
+            back.icon = make_nk_image(*target);
         }
 
         for (auto& face : faces) {
@@ -85,7 +85,7 @@ public:
         wpn = &weapon_mgr().load(pconf.pistol);
         player::draw_to_texture_target(
             player_icon, player_size, 1.5f, sprt_body, sprt_face, hand_or_leg, wpn);
-        player_icon_img = make_nk_image(player_icon.getTexture());
+        player_icon_img = make_nk_image(player_icon);
     }
 
     void update(ui_ctx& ui) {

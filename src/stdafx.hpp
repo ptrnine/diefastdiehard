@@ -1,5 +1,9 @@
 #include "ui/nuklear.hpp"
+#if defined(_WIN32)
+#include "ui/nuklear_sfml_gl3_win.h"
+#else
 #include "ui/nuklear_sfml_gl3.h"
+#endif
 #include "ui/nuklear_binding.hpp"
 #include "base/types.hpp"
 #include "base/log.hpp"

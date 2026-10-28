@@ -88,7 +88,10 @@ build_static_lib() {
 
     local cmd_path="$builddir/.ezbld/$name-command"
     local already_built=false
-    [ -f "$builddir/lib$name.a" ] && is_commands_equal "$cmd" "$cmd_path" && already_built=true
+    # No header dependency tracking: the source's directory (its local headers) must not be newer
+    [ -f "$builddir/lib$name.a" ] && is_commands_equal "$cmd" "$cmd_path" && \
+        [ -z "$(find "$(dirname "$build_source")" -maxdepth 1 -type f -newer "$builddir/lib$name.a" | head -1)" ] && \
+        already_built=true
 
     if [ $already_built = true ]; then
         colored lpurple "lib$name.a already built"
@@ -279,6 +282,14 @@ GLAPI void    GLAPIENTRY glBindVertexArray(GLuint array);
 GLAPI void    GLAPIENTRY glGenVertexArrays(GLsizei n, GLuint* arrays);
 GLAPI GLboolean GLAPIENTRY glIsVertexArray(GLuint array);
 
+/* missing from MinGW's gl.h */
+#define GL_INFO_LOG_LENGTH 0x8B84
+#define GL_CONTEXT_PROFILE_MASK 0x9146
+GLAPI void    GLAPIENTRY glGetShaderInfoLog(GLuint shader, GLsizei bufSize, GLsizei* length, GLchar* infoLog);
+GLAPI void    GLAPIENTRY glGetProgramInfoLog(GLuint program, GLsizei bufSize, GLsizei* length, GLchar* infoLog);
+typedef long long GLintptr;
+GLAPI void    GLAPIENTRY glGetBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, void* data);
+
 /* GLEW API surface actually used by the project */
 typedef int GLError;
 GLAPI GLboolean GLAPIENTRY glewInit(void);
@@ -304,15 +315,43 @@ EOF
 #include <windows.h>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
+#include <unordered_map>
 
-template <typename F>
-static F gl_resolved(const char* name) {
-    static F fn = reinterpret_cast<F>(wglGetProcAddress(name));
-    if (!fn) {
+/*
+ * Resolution cache keyed by entry point name. (A single per-template-type static
+ * would alias every entry point with the same signature to whichever of them
+ * was resolved first: glCompileShader/glLinkProgram/glUseProgram/... all share
+ * one void(*)(GLuint) type and must not share one pointer.)
+ */
+static void* gl_resolve_ptr(const char* name) {
+    static std::unordered_map<std::string, void*> cache;
+    auto pos = cache.find(name);
+    if (pos != cache.end())
+        return pos->second;
+    PROC p = nullptr;
+    /*
+     * wglGetProcAddress only works with a current GL context, and some drivers
+     * (e.g. the Intel GL-on-DX bridge) return NULL intermittently. Retry a while
+     * instead of failing on the first miss.
+     */
+    for (int i = 0; i < 100 && !p; ++i) {
+        p = wglGetProcAddress(name);
+        if (!p)
+            Sleep(10);
+    }
+    if (!p) {
         std::fprintf(stderr, "GLEW shim: failed to resolve %s\n", name);
         std::abort();
     }
-    return fn;
+    void* fp = reinterpret_cast<void*>(p);
+    cache[name] = fp;
+    return fp;
+}
+
+template <typename F>
+static F gl_resolved(const char* name) {
+    return reinterpret_cast<F>(gl_resolve_ptr(name));
 }
 
 extern "C" {
@@ -356,6 +395,15 @@ void    glDeleteVertexArrays(GLsizei n, const GLuint* a) { gl_resolved<void (*)(
 void    glBindVertexArray(GLuint a) { gl_resolved<void (*)(GLuint)>("glBindVertexArray")(a); }
 void    glGenVertexArrays(GLsizei n, GLuint* a) { gl_resolved<void (*)(GLsizei, GLuint*)>("glGenVertexArrays")(n, a); }
 GLboolean glIsVertexArray(GLuint a) { return gl_resolved<GLboolean (*)(GLuint)>("glIsVertexArray")(a); }
+void    glGetShaderInfoLog(GLuint s, GLsizei b, GLsizei* l, GLchar* i) {
+    gl_resolved<void (*)(GLuint, GLsizei, GLsizei*, GLchar*)>("glGetShaderInfoLog")(s, b, l, i);
+}
+void    glGetProgramInfoLog(GLuint p, GLsizei b, GLsizei* l, GLchar* i) {
+    gl_resolved<void (*)(GLuint, GLsizei, GLsizei*, GLchar*)>("glGetProgramInfoLog")(p, b, l, i);
+}
+void    glGetBufferSubData(GLenum t, GLintptr o, GLsizeiptr s, void* d) {
+    gl_resolved<void (*)(GLenum, GLintptr, GLsizeiptr, void*)>("glGetBufferSubData")(t, o, s, d);
+}
 
 /* SFML already loaded the GL driver via glad when it created the WGL
  * context, so there is nothing left to initialize. */

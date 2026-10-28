@@ -571,6 +571,85 @@ private:
 };
 }
 
+#ifdef _WIN32
+
+#include <windows.h>
+#include <tlhelp32.h>
+
+/* Print the faulting address (with the module it lies in) and keep the console open */
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
+    auto addr = reinterpret_cast<std::uintptr_t>(info->ExceptionRecord->ExceptionAddress);
+
+    char       mod_name[MAX_PATH] = "?";
+    uintptr_t  mod_base          = 0;
+    auto       snap              = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    MODULEENTRY32W me;
+    me.dwSize = sizeof me;
+    if (snap != INVALID_HANDLE_VALUE && Module32FirstW(snap, &me)) {
+        do {
+            auto lo = reinterpret_cast<std::uintptr_t>(me.modBaseAddr);
+            if (addr >= lo && addr < lo + me.modBaseSize) {
+                mod_base = lo;
+                WideCharToMultiByte(CP_UTF8, 0, me.szModule, -1, mod_name, static_cast<int>(sizeof mod_name) - 1, 0, 0);
+                break;
+            }
+        } while (Module32NextW(snap, &me));
+        CloseHandle(snap);
+    }
+
+    std::fprintf(stderr, "fatal: exception 0x%08X at %p in module %s (base %p, offset 0x%lx)\n",
+                 info->ExceptionRecord->ExceptionCode,
+                 static_cast<void*>(info->ExceptionRecord->ExceptionAddress),
+                 mod_name,
+                 reinterpret_cast<void*>(mod_base),
+                 (unsigned long)(mod_base ? addr - mod_base : 0));
+
+    /* stack backtrace: module+offset per frame */
+    void* frames[24];
+    auto depth = CaptureStackBackTrace(0, 24, frames, nullptr);
+    for (auto i = 0u; i < depth; ++i) {
+        char       nm[MAX_PATH] = "?";
+        std::uintptr_t mb = 0;
+        auto       s2     = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+        auto       fp     = reinterpret_cast<std::uintptr_t>(frames[i]);
+        MODULEENTRY32W m2;
+        m2.dwSize = sizeof m2;
+        if (s2 != INVALID_HANDLE_VALUE && Module32FirstW(s2, &m2)) {
+            do {
+                auto lo = reinterpret_cast<std::uintptr_t>(m2.modBaseAddr);
+                if (fp >= lo && fp < lo + m2.modBaseSize) {
+                    mb = lo;
+                    WideCharToMultiByte(CP_UTF8, 0, m2.szModule, -1, nm, static_cast<int>(sizeof nm) - 1, 0, 0);
+                    break;
+                }
+            } while (Module32NextW(s2, &m2));
+            CloseHandle(s2);
+        }
+        std::fprintf(stderr, "  #%u %s+0x%lx\n", i, nm, (unsigned long)(mb ? fp - mb : fp));
+    }
+    std::fflush(stderr);
+    std::system("pause");
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+#endif
+
 int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
-    return std::make_unique<dfdh::diefastdiehard>()->run(dfdh::args_view(argc, argv));
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(crash_filter);
+#endif
+    try {
+        return std::make_unique<dfdh::diefastdiehard>()->run(dfdh::args_view(argc, argv));
+    }
+    catch (const std::exception& e) {
+        std::fprintf(stderr, "fatal: %s\n", e.what());
+    }
+    catch (...) {
+        std::fprintf(stderr, "fatal: unknown error\n");
+    }
+    std::fflush(stderr);
+#ifdef _WIN32
+    std::system("pause");
+#endif
+    return 1;
 }

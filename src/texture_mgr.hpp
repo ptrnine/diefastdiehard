@@ -13,8 +13,13 @@ namespace dfdh {
 class texture_mgr_singleton {
 public:
     static texture_mgr_singleton& instance() {
-        static texture_mgr_singleton inst;
-        return inst;
+        /*
+         * Intentionally leaked: destroying the Texture map at process exit runs
+         * sf::Texture destructors after the window/GL context is already gone,
+         * which crashes in the GL driver (on Windows, inside gdi32full.dll).
+         */
+        static texture_mgr_singleton* inst = new texture_mgr_singleton; // NOLINT
+        return *inst;
     }
 
     sf::Texture& load(const std::string& path) {

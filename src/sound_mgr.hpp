@@ -21,8 +21,12 @@ public:
     static constexpr float  position_coef = 0.0002f;
 
     static sound_mgr_singleton& instance() {
-        static sound_mgr_singleton inst;
-        return inst;
+        /*
+         * Intentionally leaked: destroying the OpenAL-backed sf::Sound/sf::SoundBuffer
+         * objects at process exit races with the audio device/library teardown.
+         */
+        static sound_mgr_singleton* inst = new sound_mgr_singleton; // NOLINT
+        return *inst;
     }
 
     sf::Sound& get(std::string path, int id) {

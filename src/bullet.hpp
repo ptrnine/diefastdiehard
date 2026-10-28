@@ -54,8 +54,13 @@ public:
     static constexpr float bullet_y = 19.f;
 
     static bullet_sprite_cache& instance() {
-        static bullet_sprite_cache inst;
-        return inst;
+        /*
+         * Intentionally leaked: destroying the cached Texture at process exit runs
+         * sf::Texture destructors after the window/GL context is already gone,
+         * which crashes in the GL driver (on Windows, inside gdi32full.dll).
+         */
+        static bullet_sprite_cache* inst = new bullet_sprite_cache; // NOLINT
+        return *inst;
     }
 
     bullet_sprite_cache(const bullet_sprite_cache&) = delete;
