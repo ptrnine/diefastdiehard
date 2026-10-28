@@ -23,9 +23,12 @@
  *     "primitives": [ { "template": "square1" }, { "template": "ball" } ]
  * }
  *
- * - animations: position/scale/rotation, keys with value/time and optional
- *   type ("hold"/"linear"/"bezier"), in/out bezier handles; apply_to is "all"
- *   or an array of drawable indices.
+ * - animations: position/scale/rotation/opacity (keyed), velocity_random
+ *   (angle/speed/acceleration) and position_random (x/y ranges). Keyed ones
+ *   have keys with value/time and optional type ("hold"/"linear"/"bezier"),
+ *   in/out bezier handles; scale additionally takes an optional anchor
+ *   ([0-1] point of the drawable's bounds to scale around); apply_to is
+ *   "all" or an array of drawable indices.
  * - texture paths are relative to data/textures (dfdh::texture_mgr).
  * - templates: sprite/circle/rect with color/fill_color/position/origin/size/
  *   radius/rotation/source_rect/texture/point_count.
@@ -304,7 +307,10 @@ private:
             }
             else if (type == "scale") {
                 auto keys_result = parse_keys<vec2f>(anim_obj);
-                auto& handler    = result.effect.add_handler(name, efx::efx_handlers::scale(keys_result.keys));
+                vec2f anchor{0.5f, 0.5f};
+                if (auto anchor_p = anim_obj.find("anchor"); anchor_p != anim_obj.end())
+                    anchor = anchor_p->second.get<vec2f>();
+                auto& handler = result.effect.add_handler(name, efx::efx_handlers::scale(keys_result.keys, anchor));
                 if (keys_result.apply_to_all)
                     handler.set_affects_all(true);
                 else
@@ -313,6 +319,27 @@ private:
             else if (type == "rotation") {
                 auto keys_result = parse_keys<float>(anim_obj);
                 auto& handler    = result.effect.add_handler(name, efx::efx_handlers::rotation(keys_result.keys));
+                if (keys_result.apply_to_all)
+                    handler.set_affects_all(true);
+                else
+                    handler.set_affected_indices(keys_result.affected_indices);
+            }
+            else if (type == "position_random") {
+                auto x_range = anim_obj.at("x").get<std::array<float, 2>>();
+                auto y_range = anim_obj.at("y").get<std::array<float, 2>>();
+                auto& handler = result.effect.add_handler(name, efx::efx_handlers::position_random(x_range, y_range));
+
+                if (auto apply_to_p = anim_obj.find("apply_to"); apply_to_p != anim_obj.end()) {
+                    if (apply_to_p->second.is_string() && apply_to_p->second.get<std::string>() == "all")
+                        handler.set_affects_all(true);
+                    else
+                        handler.set_affected_indices(
+                            apply_to_p->second.get<std::vector<efx::efx::handler_t::index_t>>());
+                }
+            }
+            else if (type == "opacity") {
+                auto keys_result = parse_keys<float>(anim_obj);
+                auto& handler    = result.effect.add_handler(name, efx::efx_handlers::opacity(keys_result.keys));
                 if (keys_result.apply_to_all)
                     handler.set_affects_all(true);
                 else

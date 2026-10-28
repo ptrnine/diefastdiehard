@@ -98,6 +98,9 @@ public:
         if (keys.size() == 1)
             return keys.back().value;
 
+        if (time <= keys.front().time)
+            return keys.front().value;
+
         auto i = keys.begin();
         while (i != keys.end() && i->time < time)
             ++i;

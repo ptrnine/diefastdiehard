@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <list>
 #include <optional>
+#include "efx/efx.hpp"
 #include "sprite.hpp"
 #include <SFML/Graphics/Texture.hpp>
 
@@ -462,6 +463,10 @@ public:
             blt_sprite.setPosition(pos);
             blt_sprite.setRotation(sf::radians(angle));
             wnd.draw(blt_sprite);
+
+            if (magnitude(ph->impulse()) > 2200.f) {
+                efxmgr().play("bullet_trail", ph->get_position());
+            }
         }
     }
 

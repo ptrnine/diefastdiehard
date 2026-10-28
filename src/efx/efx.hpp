@@ -6,11 +6,14 @@
  * sf::RenderTarget instead of fever_dream's scene batches.
  */
 
+#include <algorithm>
+#include <array>
 #include <functional>
 #include <limits>
 #include <list>
 #include <map>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <SFML/Graphics/RenderStates.hpp>
@@ -276,15 +279,88 @@ namespace efx_handlers
         };
     }
 
-    inline auto scale(const anim_key_sequence<vec2f>& keys) {
-        return [keys = keys](sf::Transformable& obj, const efx_state& state) {
-            obj.setScale(keys.lookup(state.time_elapsed_coef));
+    /*
+     * Scales the drawable around the given anchor: a 0-1 point of the drawable's
+     * local bounds (0,0 = top-left, 0.5/0.5 = center). The drawable's position is
+     * adjusted so that the anchor point stays fixed in the world space.
+     */
+    inline auto scale(const anim_key_sequence<vec2f>& keys, const vec2f& anchor = {0.5f, 0.5f}) {
+        return [keys = keys, anchor = anchor](auto& obj, const efx_state& state) {
+            auto scale_new = keys.lookup(state.time_elapsed_coef);
+            auto scale_old = obj.getScale();
+
+            /* The drawable's local bounds (its geometry space, before the origin shift). */
+            vec2f bounds_min{0, 0};
+            vec2f bounds_size{};
+
+            /*
+             * Circle and rect geometry starts at the drawable's position (top-left
+             * corner), not centered, so bounds_min stays {0, 0}.
+             */
+            if constexpr (std::is_same_v<std::decay_t<decltype(obj)>, sf::CircleShape>) {
+                bounds_size = {2.f * obj.getRadius(), 2.f * obj.getRadius()};
+            }
+            else if constexpr (std::is_same_v<std::decay_t<decltype(obj)>, sf::RectangleShape>) {
+                bounds_size = vec2f(obj.getSize());
+            }
+            else if constexpr (std::is_same_v<std::decay_t<decltype(obj)>, sf::ConvexShape>) {
+                if (auto count = obj.getPointCount(); count > 0) {
+                    auto min = obj.getPoint(0);
+                    auto max = min;
+                    for (std::size_t i = 1; i < count; ++i) {
+                        auto point = obj.getPoint(i);
+                        min.x       = std::min(min.x, point.x);
+                        min.y       = std::min(min.y, point.y);
+                        max.x       = std::max(max.x, point.x);
+                        max.y       = std::max(max.y, point.y);
+                    }
+                    bounds_min  = vec2f(min);
+                    bounds_size = vec2f(max) - bounds_min;
+                }
+            }
+            else {
+                /* sprite */
+                auto rect = obj.getTextureRect();
+                bounds_min  = {float(rect.position.x), float(rect.position.y)};
+                bounds_size = {float(rect.size.x), float(rect.size.y)};
+            }
+
+            auto anchor_local = bounds_min + vec2f{anchor.x * bounds_size.x, anchor.y * bounds_size.y} - vec2f(obj.getOrigin());
+            auto delta         = vec2f{
+                (scale_old.x - scale_new.x) * anchor_local.x,
+                (scale_old.y - scale_new.y) * anchor_local.y
+            };
+
+            obj.setPosition(obj.getPosition() + delta);
+            obj.setScale(scale_new);
         };
     }
 
     inline auto rotation(const anim_key_sequence<float>& keys) {
         return [keys = keys](sf::Transformable& obj, const efx_state& state) {
             obj.setRotation(sf::degrees(keys.lookup(state.time_elapsed_coef)));
+        };
+    }
+
+    /*
+     * Animates the drawable's color alpha: 1.0 is fully visible, 0.0 is invisible.
+     * For shapes it keeps the current fill color and replaces its alpha;
+     * for sprites it replaces the color multiplier's alpha.
+     */
+    inline auto opacity(const anim_key_sequence<float>& keys) {
+        return [keys = keys](auto& obj, const efx_state& state) {
+            auto alpha = static_cast<unsigned char>(keys.lookup(state.time_elapsed_coef) * 255.f + 0.5f);
+
+            if constexpr (std::is_base_of_v<sf::Shape, std::decay_t<decltype(obj)>>) {
+                auto color = obj.getFillColor();
+                color.a = alpha;
+                obj.setFillColor(color);
+            }
+            else {
+                auto color = obj.getColor();
+                color.a = alpha;
+                obj.setColor(color);
+            }
         };
     }
 
@@ -347,6 +423,29 @@ namespace efx_handlers
             auto& v = (*velocities)[state.idx];
             v += acceleration * state.timestep;
             obj.move(v * state.timestep);
+        };
+    }
+
+    /*
+     * Shifts each drawable's position by a random offset within the given
+     * ranges. Applied once, on the instance's first update (i.e. on creation).
+     */
+    inline auto position_random(const std::array<float, 2>& x_range, const std::array<float, 2>& y_range) {
+        return [x_range, y_range,
+                moved = std::optional<std::vector<bool>>{}](sf::Transformable& obj, const efx_state& state) mutable {
+            if (!state.drawables)
+                return;
+
+            auto& bodies = *state.drawables;
+
+            if (!moved)
+                moved.emplace(bodies.size(), false);
+
+            if ((*moved)[state.idx])
+                return;
+
+            (*moved)[state.idx] = true;
+            obj.move({rand_float(x_range[0], x_range[1]), rand_float(y_range[0], y_range[1])});
         };
     }
 } // namespace efx_handlers

@@ -1,0 +1,49 @@
+{
+    "name": "bullet_trail",
+    "duration": 3,
+
+    "animations": [
+        {
+            "name": "grow",
+            "type": "scale",
+            "apply_to": "all",
+            "keys": [
+                { "value": [ 1.0, 1.0 ], "time": 0.0 },
+                { "value": [ 4, 4 ], "time": 0.5, "in": [0, 1], "out": [0, 1] }
+            ]
+        },
+        {
+            "name": "fade",
+            "type": "opacity",
+            "apply_to": "all",
+            "keys": [
+                { "value": 0.2, "time": 0.0 },
+                { "value": 0.0, "time": 1.0, "in": [0, 1], "out": [0, 1], "type": "bezier" }
+            ]
+        },
+        {
+            "name": "rise",
+            "type": "velocity_random",
+            "apply_to": "all",
+            "angle": [ -3.14, 3.14 ],
+            "speed": [ 2, 15 ]
+        },
+        {
+            "name": "pos",
+            "type": "position_random",
+            "apply_to": "all",
+            "x": [-20, 20],
+            "y": [-6, -3]
+        }
+    ],
+
+    "templates": {
+        "smoke1": { "type": "circle", "fill_color": "#888888", "radius": 2 },
+        "smoke2": { "type": "circle", "fill_color": "#989898", "radius": 3 }
+    },
+
+    "primitives": [
+        { "template": "smoke2", "count": 10},
+        { "template": "smoke1", "count": 10}
+    ]
+}

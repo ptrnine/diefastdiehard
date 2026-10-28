@@ -549,6 +549,8 @@ public:
 
         cur_level->draw(wnd);
 
+        efxmgr().draw(wnd);
+
         for (auto& [_, player] : players)
             if (!player->eliminated())
                 player->draw(wnd, sim.interpolation_factor(), sim.last_timestep(), gravity_for_bullets);
@@ -557,8 +559,6 @@ public:
             crate_->draw(wnd, sim.interpolation_factor(), sim.last_timestep());
 
         dropped_guns.draw(wnd, sim.interpolation_factor(), sim.last_timestep());
-
-        efxmgr().draw(wnd);
 
         blt_mgr.draw(wnd, sim.interpolation_factor(), sim.last_timestep());
 
@@ -1448,7 +1448,7 @@ public:
                 auto effect = efx_editor::efx_builder{texture_mgr(), entry.path()}.build();
                 efxmgr().add_effect(effect.name, std::move(effect.effect));
             } catch (const std::exception& e) {
-                glog().error("Cannot load effect '{}'", entry.path());
+                glog().error("Cannot load effect '{}': {}", entry.path(), e.what());
             }
         }
     }
