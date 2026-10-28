@@ -630,6 +630,13 @@ $builddir/luajit/lib/libluajit-5.1.a \
     # Copied again when the submodule is updated
     cmp -s submodules/Nuklear/nuklear.h "$builddir/3rd/include/nuklear.h" || \
         cp submodules/Nuklear/nuklear.h "$builddir/3rd/include/" || fail "Can't copy nuklear.h"
+    if [ ! -f submodules/nlohmann_json/single_include/nlohmann/json.hpp ]; then
+        git submodule init submodules/nlohmann_json || fail ""
+        git submodule update submodules/nlohmann_json || fail ""
+    fi
+    mkdir -p "$builddir/3rd/include/nlohmann"
+    cmp -s submodules/nlohmann_json/single_include/nlohmann/json.hpp "$builddir/3rd/include/nlohmann/json.hpp" || \
+        cp submodules/nlohmann_json/single_include/nlohmann/json.hpp "$builddir/3rd/include/nlohmann/" || fail "Can't copy nlohmann/json.hpp"
     # source includes use <luaffi/...> (the luacpp submodule project name)
     mkdir -p "$builddir/3rd/include/luaffi"
     cp submodules/luacpp/src/*.hpp "$builddir/3rd/include/luaffi/"

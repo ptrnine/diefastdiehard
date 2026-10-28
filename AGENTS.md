@@ -106,6 +106,15 @@ instead of sleeping. Use it for any new gameplay/network timer.
   `udp_channel::set_simulated_latency` / `--define=DFDH_DEBUG_PING`.
   Latency settings (input jitter buffer, interpolation delay, input
   margin): console `net` (on the screen: `hud net`), see `docs/multiplayer.md`.
+- `src/efx/` — effects: JSON-described animations applied to SFML drawables
+  (adopted from fever_dream). `efx.hpp`: `efx` (drawables + named handlers +
+  duration), `efx_instance`/`efx_mgr` (play/update/draw to any `sf::RenderTarget`),
+  `efx_handlers` (position/scale/rotation/gravity). `efx_editor.hpp`:
+  `efx_builder` parses effect JSON (nlohmann json, `submodules/nlohmann_json`);
+  effect files live in `data/efx/<name>.json` (`efx_builder::effect_path`),
+  texture paths in them are relative to `data/textures`. `keyframe_animation.hpp`
+  (keyframes: hold/linear/bezier), `sfml_types.hpp` (`drawable_t` variant +
+  `downcast`).
 - `src/script/` — LuaJIT via luacpp; user types in `src/script/typeinit/`.
   Scripts in `data/scripts/*.lua`; `assist.lua`/`assist_ai.lua` are
   **generated at runtime** — never edit or commit them.

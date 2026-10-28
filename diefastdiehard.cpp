@@ -9,6 +9,8 @@
 #include "game_commands.hpp"
 #include "game_state.hpp"
 
+#include "efx/efx_editor.hpp"
+
 #include "script/lua_init.hpp"
 
 #include "net/net_server.hpp"

@@ -637,6 +637,15 @@ $([ "$asan" == true ] && asan_flags)
     cmp -s submodules/Nuklear/nuklear.h "$builddir/3rd/include/nuklear.h" || \
         cp submodules/Nuklear/nuklear.h "$builddir/3rd/include/" || fail ""
 
+    if [ ! -f submodules/nlohmann_json/single_include/nlohmann/json.hpp ]; then
+        git submodule init submodules/nlohmann_json || fail ""
+        git submodule update submodules/nlohmann_json || fail ""
+    fi
+    # Copied again when the submodule is updated
+    mkdir -p "$builddir/3rd/include/nlohmann"
+    cmp -s submodules/nlohmann_json/single_include/nlohmann/json.hpp "$builddir/3rd/include/nlohmann/json.hpp" || \
+        cp submodules/nlohmann_json/single_include/nlohmann/json.hpp "$builddir/3rd/include/nlohmann/" || fail ""
+
     build_executable \
         hpp_depinfo \
         tools/hpp_depinfo.cpp \
