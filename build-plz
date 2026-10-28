@@ -793,16 +793,6 @@ $([ "$asan" == true ] && asan_flags)
             "$(pwd)/src" \
         )"
 
-
-#    build_executable \
-#        gui-test \
-#        gui_test.cpp \
-#        "$builddir" \
-#        "$CXX_COMPILER" \
-#        "$debug" \
-#        "$hardening_flags" \
-#        "-lnuklear -lsfml-system -lsfml-window -lsfml-graphics -lGL -lGLEW"
-
     [ "$prod" = true ] && build_dist "$builddir"
 
     [ "$compodb" = true ] && gen_compodb "$builddir" "$compodb_source"
