@@ -438,7 +438,7 @@ build_luajit() {
 
     colored yellow "Building LuaJIT 2.1 ... " n
     (
-        cd submodules/luacpp/submodules/luajit/src || exit 1
+        cd submodules/luacpp/submodules/LuaJIT/src || exit 1
         make clean > /dev/null 2>&1
         make -j"$JOBS" CROSS=$CROSS TARGET_SYS=Windows BUILDMODE=static || exit 1
     ) > "$builddir/.ezbld/luajit-make.log" 2>&1 || \
@@ -446,8 +446,8 @@ build_luajit() {
 
     mkdir -p "$builddir/luajit/lib" "$builddir/3rd/include/luajit-2.1"
     # mingw make produces libluajit.a; name it like the Linux build (-l name stays the same)
-    cp submodules/luacpp/submodules/luajit/src/libluajit.a "$builddir/luajit/lib/libluajit-5.1.a" || fail "libluajit.a not found"
-    cp submodules/luacpp/submodules/luajit/src/{lua.h,lua.hpp,lauxlib.h,lualib.h,luajit.h,luaconf.h} \
+    cp submodules/luacpp/submodules/LuaJIT/src/libluajit.a "$builddir/luajit/lib/libluajit-5.1.a" || fail "libluajit.a not found"
+    cp submodules/luacpp/submodules/LuaJIT/src/{lua.h,lua.hpp,lauxlib.h,lualib.h,luajit.h,luaconf.h} \
         "$builddir/3rd/include/luajit-2.1/" || fail "LuaJIT headers not found"
     touch "$marker"
     colored lgreen "done"
@@ -665,7 +665,9 @@ $builddir/luajit/lib/libluajit-5.1.a \
             "$(pwd)/src" \
         )"
 
-    [ "$prod" = true ] && build_dist "$builddir"
+    if [ "$prod" = true ]; then
+        build_dist "$builddir"
+    fi
 }
 
 _build "$@"
