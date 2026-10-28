@@ -59,13 +59,7 @@ public:
         }
 
         for (auto& face : faces) {
-            auto img         = load_nk_image(face.path);
-            auto sz          = vec2f(float(img.w), float(img.h));
-            img.region[0]    = u16(sz.x * 0.13f);
-            img.region[1]    = u16(sz.y * 0.03f);
-            img.region[2]    = u16(sz.x * 0.85f);
-            img.region[3]    = u16(sz.y * 0.54f);
-            face.icon        = img;
+            face.icon        = load_nk_image(face.path);
             face.texture_idx = player_configurator::texture_path_to_index(face.path);
             face.choosed     = face.texture_idx == pconf.face_id;
         }
@@ -75,15 +69,18 @@ public:
 
     void reload() {
         txtr_body = texture_mgr().load(pconf.body_texture_path());
+        txtr_head = texture_mgr().load(pconf.head_texture_path());
         txtr_face = texture_mgr().load(pconf.face_texture_path());
-        sprt_body.setTexture(txtr_body);
-        sprt_face.setTexture(txtr_face);
+        sprt_body.setTexture(txtr_body, true);
+        sprt_head.setTexture(txtr_head, true);
+        sprt_face.setTexture(txtr_face, true);
         sprt_body.setColor(pconf.body_color);
+        sprt_head.setColor(pconf.body_color);
         hand_or_leg.setFillColor(pconf.body_color);
         player_icon.clear({0, 0, 0, 0});
         wpn = &weapon_mgr().load(pconf.pistol);
         player::draw_to_texture_target(
-            player_icon, player_size, 1.5f, sprt_body, sprt_face, hand_or_leg, wpn);
+            player_icon, player_size, 1.5f, sprt_body, sprt_head, sprt_face, hand_or_leg, wpn);
         player_icon_img = make_nk_image(player_icon);
     }
 
@@ -242,9 +239,9 @@ private:
     struct nk_rect wnd_rect{200, 100, 500, 500};
     bool           wnd_show = false;
 
-    sprite_t          sprt_body, sprt_face;
+    sprite_t          sprt_body, sprt_head, sprt_face;
     sf::CircleShape   hand_or_leg;
-    sf::Texture       txtr_body, txtr_face;
+    sf::Texture       txtr_body, txtr_head, txtr_face;
     sf::RenderTexture player_icon;
     struct nk_image   player_icon_img;
     vec2f             player_size;

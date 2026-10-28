@@ -214,7 +214,7 @@ private:
 
     icon_t& icon_for(const player& pl) {
         auto color = pl.body_color();
-        auto key   = pl.body_texture_path() + "|" + pl.face_texture_path() + "|" + pl.pistol_section() + "|" +
+        auto key   = pl.body_texture_path() + "|" + pl.head_texture_path() + "|" + pl.face_texture_path() + "|" + pl.pistol_section() + "|" +
                    std::to_string(color.toInteger());
 
         auto& icon = _icons[pl.name()];
@@ -223,14 +223,16 @@ private:
         icon.key = key;
 
         sf::Sprite      body(texture_mgr().load(pl.body_texture_path()));
+        sf::Sprite      head(texture_mgr().load(pl.head_texture_path()));
         sf::Sprite      face(texture_mgr().load(pl.face_texture_path()));
         sf::CircleShape hand_or_leg;
         body.setColor(color);
+        head.setColor(color);
         hand_or_leg.setFillColor(color);
         weapon* wpn = pl.pistol_section().empty() ? nullptr : &weapon_mgr().load(pl.pistol_section());
 
         player::draw_to_texture_target(
-            *icon.sprite, player::default_sprite_size() * sprite_scale, sprite_scale, body, face, hand_or_leg, wpn);
+            *icon.sprite, player::default_sprite_size() * sprite_scale, sprite_scale, body, head, face, hand_or_leg, wpn);
 
         /* Centered (a long gun is scaled down to fit) */
         auto w = u32(column_width), h = u32(icon_height());

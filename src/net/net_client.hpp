@@ -117,6 +117,7 @@ public:
                const std::string&   pistol,
                u32                  face_id,
                u32                  body_id,
+               u32                  head_id,
                const sf::Color&     body_color,
                const sf::Color&     tracer_color):
         _server_ip(server_ip), _server_port(server_port), _name(name) {
@@ -130,13 +131,14 @@ public:
         glog().info("net client: DFDH_DEBUG_PING is enabled, delaying every sent and received datagram by 80..170ms (~500ms ping between two such ends)");
 #endif
 
-        send_hello(pistol, face_id, body_id, body_color, tracer_color);
+        send_hello(pistol, face_id, body_id, head_id, body_color, tracer_color);
     }
 
     /* Join, or change the player's appearance and gun after the join */
     void send_hello(const std::string& pistol,
                     u32                face_id,
                     u32                body_id,
+                    u32                head_id,
                     const sf::Color&   body_color,
                     const sf::Color&   tracer_color) {
         hello h;
@@ -144,6 +146,7 @@ public:
         h.pistol       = pistol;
         h.face_id      = face_id;
         h.body_id      = body_id;
+        h.head_id      = head_id;
         h.body_color   = pack_color(body_color);
         h.tracer_color = pack_color(tracer_color);
         _sock.send(encode_msg(msg_type::hello, h));
@@ -151,7 +154,7 @@ public:
 
     /* The local player config changed (player configurator): send it to the server */
     void resend_config(const player_configurator& pc) {
-        send_hello(pc.pistol, pc.face_id, pc.body_id, pc.body_color, pc.tracer_color);
+        send_hello(pc.pistol, pc.face_id, pc.body_id, pc.head_id, pc.body_color, pc.tracer_color);
     }
 
     /* The local player's lobby choice: sent right away, then resent until the lobby closes */
@@ -1792,8 +1795,11 @@ private:
 
         auto face = "player/face" + std::to_string(u32(cfg.face_id)) + ".png";
         auto body = "player/body" + std::to_string(u32(cfg.body_id)) + ".png";
+        auto head = "player/head" + std::to_string(u32(cfg.head_id)) + ".png";
         if (pl->body_texture_path() != body || pl->body_color() != unpack_color(cfg.body_color))
             pl->set_body(body, unpack_color(cfg.body_color));
+        if (pl->head_texture_path() != head)
+            pl->set_head(head);
         if (pl->face_texture_path() != face)
             pl->set_face(face);
         /* A dropped gun is replaced by the secondary one on the server (an

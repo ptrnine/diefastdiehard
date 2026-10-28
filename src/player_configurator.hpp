@@ -38,6 +38,7 @@ public:
 
         face_id    = sect.value_or_default_and_set<u32>("face_id", 0);
         body_id    = sect.value_or_default_and_set<u32>("body_id", 0);
+        head_id    = sect.value_or_default_and_set<u32>("head_id", 0);
         /* XXX: write better color serialization */
         body_color = rgba_t::from(
             sect.value_or_default_and_set<std::string>("body_color", rgba_t{sf::Color(255, 255, 255)}.to_string()));
@@ -54,6 +55,7 @@ public:
         sect.set("pistol", pistol);
         sect.set("face_id", face_id);
         sect.set("body_id", body_id);
+        sect.set("head_id", head_id);
         sect.set("body_color", dfdh::format("{}", body_color));
         sect.set("tracer_color", dfdh::format("{}", tracer_color));
     }
@@ -66,6 +68,11 @@ public:
     [[nodiscard]]
     std::string body_texture_path() const {
         return "player/body" + std::to_string(body_id) + ".png";
+    }
+
+    [[nodiscard]]
+    std::string head_texture_path() const {
+        return "player/head" + std::to_string(head_id) + ".png";
     }
 
 private:
@@ -132,6 +139,7 @@ public:
     std::string   pistol       = std::string(weapon::default_secondary);
     u32           face_id      = 0;
     u32           body_id      = 0;
+    u32           head_id      = 0;
     sf::Color     body_color   = {255, 255, 255};
     sf::Color     tracer_color = {255, 255, 255};
 

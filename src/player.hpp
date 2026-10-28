@@ -35,10 +35,56 @@ public:
 
     }
 
-    static vec2f default_sprite_size() {
+    /* Size of the sprite frame of a player of the size */
+    static vec2f sprite_size(const vec2f& size) {
         auto adj = sprite_size_adjust_factors();
-        auto sz = default_size();
-        return {sz.x * adj.x, sz.y * adj.y};
+        return {size.x * adj.x, size.y * adj.y};
+    }
+
+    static vec2f default_sprite_size() {
+        return sprite_size(default_size());
+    }
+
+    /*
+     * Body, head and face layout in the sprite frame (default_sprite_size), as
+     * factors of the frame size. The body sits at the bottom of the frame, the
+     * head (and the face over it) is centered on the top edge of the body,
+     * shifted to the facing direction
+     */
+    static vec2f body_size_factors() {
+        return {1.f, 0.72f};
+    }
+
+    static vec2f head_size_factors() {
+        return {0.8f, 0.5333f};
+    }
+
+    static vec2f head_center_factors(bool on_left) {
+        auto body_top = 1.f - body_size_factors().y;
+        return {on_left ? 0.455f : 0.545f, body_top};
+    }
+
+    /* Place the body, head and face sprites in the frame at frame_pos (top left) of frame_size */
+    static void layout_body_sprites(const vec2f& frame_pos,
+                                    const vec2f& frame_size,
+                                    bool         on_left,
+                                    sf::Sprite&  body,
+                                    sf::Sprite&  head,
+                                    sf::Sprite&  face) {
+        auto place = [&](sf::Sprite& sprite, const vec2f& center_f, const vec2f& size_f) {
+            auto txtr_size = sprite.getTexture().getSize();
+            auto txtr_w    = float(txtr_size.x);
+            auto txtr_h    = float(txtr_size.y);
+            auto xf        = frame_size.x * size_f.x / txtr_w;
+            sprite.setOrigin({txtr_w * 0.5f, txtr_h * 0.5f});
+            sprite.setScale({on_left ? -xf : xf, frame_size.y * size_f.y / txtr_h});
+            sprite.setPosition({frame_pos.x + frame_size.x * center_f.x, frame_pos.y + frame_size.y * center_f.y});
+        };
+
+        auto body_f = body_size_factors();
+        place(body, {0.5f, 1.f - body_f.y * 0.5f}, body_f);
+        place(head, head_center_factors(on_left), head_size_factors());
+        place(face, head_center_factors(on_left), head_size_factors());
     }
 
     static void default_hand_setup(sf::CircleShape& hand, const vec2f& size) {
@@ -816,6 +862,7 @@ public:
                                        const vec2f& size,
                                        float               scale,
                                        sf::Sprite&         body,
+                                       sf::Sprite&         head,
                                        sf::Sprite&         face,
                                        sf::CircleShape&    hand_or_leg,
                                        weapon*             wpn) {
@@ -828,20 +875,11 @@ public:
         /* New FBO texture contents are undefined until cleared (driver may keep stale pixels) */
         target.clear({0, 0, 0, 0});
 
-        auto body_txtr_size = body.getTexture().getSize();
-        auto face_txtr_size = face.getTexture().getSize();
-        auto body_f_x       = size.x / float(body_txtr_size.x);
-        auto body_f_y       = size.y / float(body_txtr_size.y);
-        auto face_f_x       = size.x / float(face_txtr_size.x);
-        auto face_f_y       = size.y / float(face_txtr_size.y);
-
-        body.setScale({body_f_x, body_f_y});
-        face.setScale({face_f_x, face_f_y});
-        body.setPosition({0.f, 0.f});
-        face.setPosition({0.f, 0.f});
+        layout_body_sprites({0.f, 0.f}, size, false, body, head, face);
 
         target.setView(sf::View(sf::FloatRect({0.f, size.y}, {icon_x_size, -size.y})));
         target.draw(body);
+        target.draw(head);
         target.draw(face);
 
         auto sz = size;
@@ -879,21 +917,17 @@ public:
         auto pos    = drawn_position(interpolation_factor, timestep);
         auto offset = pos - _collision_box->get_position(); /* the legs move with the body */
 
-        auto adj = sprite_size_adjust_factors();
-        auto dif = vec2f((_size.x * adj.x - _size.x) * 0.5f, _size.y * adj.y);
-
         if (_dir == dir_left && !_on_left)
             on_left(true);
         if (_dir == dir_right)
             on_left(false, true);
 
-        if (_on_left)
-            dif.x = -dif.x - _size.x;
-
-        for (auto* sprite : {&_body, &_face, &_hat}) {
-            sprite->setPosition(pos - dif);
+        /* The sprite frame is horizontally centered on the collision box and ends at pos.y */
+        auto frame_size = sprite_size(_size);
+        auto frame_pos  = pos - vec2f((frame_size.x - _size.x) * 0.5f, frame_size.y);
+        layout_body_sprites(frame_pos, frame_size, _on_left, _body, _head, _face);
+        for (auto* sprite : {&_body, &_head, &_face})
             wnd.draw(*sprite);
-        }
 
         /* Legs are positioned in absolute coordinates by the physics: shift them with the body */
         for (auto* leg : {&_left_leg, &_right_leg}) {
@@ -928,20 +962,23 @@ public:
         _body_txtr_path = path;
         _body_color = color;
 
-        set_some(path, _body_txtr, _body, _size, color);
+        set_some(path, _body_txtr, _body, color);
+        _head.setColor(color);
         _left_hand.setFillColor(color);
         _right_hand.setFillColor(color);
         _left_leg.setFillColor(color);
         _right_leg.setFillColor(color);
     }
 
-    void set_face(const std::string& path, const sf::Color& color = {255, 255, 255}) {
-        _face_txtr_path = path;
-        set_some(path, _face_txtr, _face, _size, color);
+    /* The head is colored with the body color */
+    void set_head(const std::string& path) {
+        _head_txtr_path = path;
+        set_some(path, _head_txtr, _head, _body_color);
     }
 
-    void set_hat(const std::string& path, const sf::Color& color = {255, 255, 255}) {
-        set_some(path, _hat_txtr, _hat, _size, color);
+    void set_face(const std::string& path, const sf::Color& color = {255, 255, 255}) {
+        _face_txtr_path = path;
+        set_some(path, _face_txtr, _face, color);
     }
 
     /**
@@ -1007,6 +1044,11 @@ public:
     [[nodiscard]]
     const std::string& body_texture_path() const {
         return _body_txtr_path;
+    }
+
+    [[nodiscard]]
+    const std::string& head_texture_path() const {
+        return _head_txtr_path;
     }
 
     [[nodiscard]]
@@ -1159,6 +1201,7 @@ public:
     void set_from_config(u32 magazines_count = 0) {
         player_configurator pc{_name};
         set_body(pc.body_texture_path(), pc.body_color);
+        set_head(pc.head_texture_path());
         set_face(pc.face_texture_path());
         setup_pistol(pc.pistol, magazines_count);
         tracer_color(pc.tracer_color);
@@ -1269,21 +1312,12 @@ private:
         _right_leg.setPosition(pos2);
     }
 
-    void set_some(const std::string&  path,
-                  sf::Texture&        txtr,
-                  sprite_t&           sprite,
-                  const vec2f& size,
-                  const sf::Color&    color) {
+    /* The sprite is scaled and positioned on draw (layout_body_sprites) */
+    static void set_some(const std::string& path, sf::Texture& txtr, sprite_t& sprite, const sf::Color& color) {
         txtr = texture_mgr().load(path);
         txtr.setSmooth(true);
-        sprite.setTexture(txtr);
+        sprite.setTexture(txtr, true);
         sprite.setColor(color);
-
-        auto sz = txtr.getSize();
-        auto adj = sprite_size_adjust_factors();
-        float xf = (size.x * adj.x) / float(sz.x);
-        float yf = (size.y * adj.y) / float(sz.y);
-        sprite.setScale({_on_left ? -xf : xf, yf});
     }
 
 private:
@@ -1291,16 +1325,17 @@ private:
     std::string   _pistol_section;
     std::string   _secondary_section;
     std::string   _body_txtr_path;
+    std::string   _head_txtr_path;
     std::string   _face_txtr_path;
     sf::Color     _body_color;
 
     std::shared_ptr<physic_group> _collision_box;
     sprite_t    _body;
+    sprite_t    _head;
     sprite_t    _face;
-    sprite_t    _hat;
     sf::Texture _body_txtr;
+    sf::Texture _head_txtr;
     sf::Texture _face_txtr;
-    sf::Texture _hat_txtr;
     sf::CircleShape _left_hand;
     sf::CircleShape _right_hand;
     sf::CircleShape _left_leg;
@@ -1495,12 +1530,6 @@ public:
 
         _on_left = value;
         _dir     = dir_none;
-
-        /* Flip the body sprites to match the new facing direction */
-        for (auto* sprite : {&_body, &_face, &_hat}) {
-            auto scale_x = std::fabs(sprite->getScale().x);
-            sprite->setScale({value ? -scale_x : scale_x, sprite->getScale().y});
-        }
     }
 
     [[nodiscard]]
