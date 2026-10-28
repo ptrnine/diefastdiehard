@@ -412,6 +412,7 @@ build_dist() {
     mkdir -p "$builddir/dist"
     cp "$builddir/dfdh.exe" "$builddir/dist/"
     cp -r data "$builddir/dist/"
+    cp "$builddir/3rd/bin/openal32.dll" "$builddir/dist"
     cp fs.cfg "$builddir/dist/"
     colored lgreen "done ($builddir/dist)"
 }
