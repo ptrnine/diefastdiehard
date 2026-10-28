@@ -18,6 +18,7 @@
 #include <SFML/Graphics/Transform.hpp>
 #include <SFML/System/Angle.hpp>
 
+#include "base/log.hpp"
 #include "base/vec_math.hpp"
 #include "keyframe_animation.hpp"
 #include "sfml_types.hpp"
@@ -230,8 +231,10 @@ public:
               const vec2f&       position = {0, 0},
               const vec2f&       scale    = {1.f, 1.f}) {
         auto found = effects.find(name);
-        if (found == effects.end())
+        if (found == effects.end()) {
+            glog().error("effect '{}' not exists", name);
             return false;
+        }
 
         running_effects.push_back(efx_instance(found->second));
         auto& instance = running_effects.back();
@@ -253,6 +256,11 @@ public:
     void draw(sf::RenderTarget& target, const sf::RenderStates& render_states = sf::RenderStates::Default) const {
         for (const auto& effect : running_effects)
             effect.draw(target, render_states);
+    }
+
+    void clear() {
+        effects.clear();
+        running_effects.clear();
     }
 
 private:
@@ -314,5 +322,57 @@ namespace efx_handlers
             obj.move(velocity * state.timestep);
         };
     }
+
+    inline auto velocity_random(
+        float angle_min_deg, float angle_max_deg, float speed_min, float speed_max, const vec2f& acceleration = {}) {
+        return [angle_min_deg,
+                angle_max_deg,
+                speed_min,
+                speed_max,
+                velocities = std::optional<std::vector<vec2f>>{},
+                acceleration](sf::Transformable& obj, const efx_state& state) mutable {
+            if (!state.drawables)
+                return;
+
+            if (!velocities) {
+                auto& bodies = *state.drawables;
+                velocities.emplace(bodies.size());
+                for (auto& v : *velocities) {
+                    auto theta = sf::radians(rand_float(angle_min_deg, angle_max_deg));
+                    auto speed = rand_float(speed_min, speed_max);
+                    v          = {std::cos(theta.asRadians()) * speed, std::sin(theta.asRadians()) * speed};
+                }
+            }
+
+            auto& v = (*velocities)[state.idx];
+            v += acceleration * state.timestep;
+            obj.move(v * state.timestep);
+        };
+    }
 } // namespace efx_handlers
 } // namespace dfdh::efx
+
+namespace dfdh {
+class efx_mgr_singleton {
+public:
+    efx_mgr_singleton(const efx_mgr_singleton&)            = delete;
+    efx_mgr_singleton& operator=(const efx_mgr_singleton&) = delete;
+    efx_mgr_singleton(efx_mgr_singleton&&)                 = delete;
+    efx_mgr_singleton& operator=(efx_mgr_singleton&&)      = delete;
+
+    static efx::efx_mgr& instance() {
+        static efx_mgr_singleton inst;
+        return inst._mgr;
+    }
+
+private:
+    efx_mgr_singleton()  = default;
+    ~efx_mgr_singleton() = default;
+
+    efx::efx_mgr _mgr;
+};
+
+static inline efx::efx_mgr& efxmgr() {
+    return efx_mgr_singleton::instance();
+}
+} // namespace dfdh

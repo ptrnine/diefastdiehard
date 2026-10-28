@@ -5,6 +5,8 @@
 #include "base/types.hpp"
 #include "base/cfg_value_control.hpp"
 #include "base/signals.hpp"
+#include "efx/efx.hpp"
+#include "efx/efx_editor.hpp"
 #include "ui/player_configurator_ui.hpp"
 #include "bullet.hpp"
 #include "physic/physic_simulation.hpp"
@@ -33,6 +35,8 @@ public:
                 p->physic_update(sim, timestep);
         });
 
+        load_effects();
+
         /* Authoritative per tick history of the players, for retroactive hits */
         sim.add_tick_begin_callback("history", [this](const physic_simulation&, float) { history_tick_begin(); }, 10);
         sim.add_tick_end_callback("history", [this](const physic_simulation&, float) { history_tick_end(); }, 100);
@@ -56,10 +60,13 @@ public:
         dropped_guns.set_collision_handlers(
             [this](const player& pl, float rewind) { return rewound_bb(pl, rewind); },
             [this](dropped_gun& gun, player& victim, const vec2f& impulse, const vec2f& pos) {
-                auto ref = bullet_ref{gun.hit_ref_id(), {}, gun.owner()};
+                auto ref = bullet_ref{.id = gun.hit_ref_id(), .key = {}, .owner = gun.owner()};
                 if (gun.rewind() > 0.f)
-                    rewound_gun_hits.push_back(
-                        {victim.name(), impulse, pos, ref, sim.current_update_time() - to_duration(gun.rewind())});
+                    rewound_gun_hits.push_back({.victim   = victim.name(),
+                                                .impulse  = impulse,
+                                                .position = pos,
+                                                .ref      = ref,
+                                                .when     = sim.current_update_time() - to_duration(gun.rewind())});
                 else
                     victim.on_bullet_hit(impulse, pos, ref);
             });
@@ -551,6 +558,8 @@ public:
 
         dropped_guns.draw(wnd, sim.interpolation_factor(), sim.last_timestep());
 
+        efxmgr().draw(wnd);
+
         blt_mgr.draw(wnd, sim.interpolation_factor(), sim.last_timestep());
 
         if (debug_physics) {
@@ -819,9 +828,28 @@ public:
                                      player::player_group_getter, player::owner_checker(&owner));
             blt.predicted_key(key);
             /* Its hits on the remote players are tested like the server does (net_client) */
-            blt.frame_on_client({start, velocity, gravity, 0.f, 0.f, 0.f, true}, start);
-            cur_frame_bullets.push_back(
-                {owner.name(), 0, key, start, start, velocity, velocity, 0.f, 0.f, mass, owner.tracer_color(), gravity, true, blt.physic()});
+            blt.frame_on_client({.start        = start,
+                                 .velocity     = velocity,
+                                 .gravity      = gravity,
+                                 .rewind       = 0.f,
+                                 .flight       = 0.f,
+                                 .shown_flight = 0.f,
+                                 .own          = true},
+                                start);
+            cur_frame_bullets.push_back({.owner           = owner.name(),
+                                         .id              = 0,
+                                         .key             = key,
+                                         .start           = start,
+                                         .position        = start,
+                                         .velocity        = velocity,
+                                         .muzzle_velocity = velocity,
+                                         .forward         = 0.f,
+                                         .rewind          = 0.f,
+                                         .hit_mass        = mass,
+                                         .tracer_color    = owner.tracer_color(),
+                                         .gravity         = gravity,
+                                         .predicted       = true,
+                                         .physic          = blt.physic()});
             return;
         }
 
@@ -838,10 +866,25 @@ public:
                 auto [b, bv] = ballistic_forward(start, velocity, gravity, f1);
                 auto back    = rewind + (lag - f1);
                 if (auto hit = hitscan(a, b, back, owner)) {
-                    apply_hit_at(*hit->target, bv * mass, hit->position, bullet_ref{id, {}, owner.name()},
+                    apply_hit_at(*hit->target,
+                                 bv * mass,
+                                 hit->position,
+                                 bullet_ref{.id = id, .key = {}, .owner = owner.name()},
                                  sim.current_update_time() - to_duration(back));
-                    cur_frame_bullets.push_back(
-                        {owner.name(), id, key, start, start, velocity, velocity, 0.f, 0.f, mass, owner.tracer_color(), gravity, false, {}});
+                    cur_frame_bullets.push_back({.owner           = owner.name(),
+                                                 .id              = id,
+                                                 .key             = key,
+                                                 .start           = start,
+                                                 .position        = start,
+                                                 .velocity        = velocity,
+                                                 .muzzle_velocity = velocity,
+                                                 .forward         = 0.f,
+                                                 .rewind          = 0.f,
+                                                 .hit_mass        = mass,
+                                                 .tracer_color    = owner.tracer_color(),
+                                                 .gravity         = gravity,
+                                                 .predicted       = false,
+                                                 .physic          = {}});
                     return;
                 }
             }
@@ -865,8 +908,20 @@ public:
             blt.catch_up() = bullet::catch_up_t{lag};
             bullet_catch_up_update(blt, false);
         }
-        cur_frame_bullets.push_back({owner.name(), id, key, start, pos, vel, velocity, lag, compensated ? rewind : 0.f, mass,
-                                     owner.tracer_color(), gravity, false, {}});
+        cur_frame_bullets.push_back({.owner           = owner.name(),
+                                     .id              = id,
+                                     .key             = key,
+                                     .start           = start,
+                                     .position        = pos,
+                                     .velocity        = vel,
+                                     .muzzle_velocity = velocity,
+                                     .forward         = lag,
+                                     .rewind          = compensated ? rewind : 0.f,
+                                     .hit_mass        = mass,
+                                     .tracer_color    = owner.tracer_color(),
+                                     .gravity         = gravity,
+                                     .predicted       = false,
+                                     .physic          = {}});
     }
 
     /*
@@ -1087,7 +1142,7 @@ public:
     [[nodiscard]]
     shot_key_t next_shot_key(const player& owner) const {
         auto& gun = owner.get_gun();
-        auto  key = shot_key_t{gun.seed_base().value_or(0), gun.shot_index(), 0};
+        auto  key = shot_key_t{.pull_seq = gun.seed_base().value_or(0), .shot_index = gun.shot_index(), .pellet = 0};
         for (auto& be : cur_frame_bullets)
             if (be.owner == owner.name() && be.key.pull_seq == key.pull_seq && be.key.shot_index == key.shot_index)
                 ++key.pellet;
@@ -1119,6 +1174,7 @@ public:
 
             kick_mgr.update();
             adj_box_mgr.update(sim);
+            efxmgr().update(sim.last_timestep());
 
             crates_update();
 
@@ -1317,12 +1373,10 @@ public:
 
     void ai_provide_player_level_sim_info() {
         ai_mgr().provide_bullets(blt_mgr.bullets(), [](const bullet& bl) {
-            return ai_bullet_t{
-                bl.physic()->get_position(),
-                bl.physic()->get_velocity(),
-                bl.physic()->get_mass(),
-                bl.group()
-            };
+            return ai_bullet_t{.pos      = bl.physic()->get_position(),
+                               .vel      = bl.physic()->get_velocity(),
+                               .hit_mass = bl.physic()->get_mass(),
+                               .group    = bl.group()};
         });
 
         /* Eliminated players are out of the AI's world */
@@ -1336,35 +1390,35 @@ public:
             auto* wpn = gun.get_weapon();
             auto  dir = vec2f(pl->get_on_left() ? -1.f : 1.f, 0.f);
 
-            return ai_player_t{pl->get_position(),
-                               pl->collision_box()->get_direction(),
-                               pl->get_size(),
-                               pl->get_velocity(),
-                               pl->movement_acceleration(),
-                               pl->barrel_pos(),
-                               pl->name(),
-                               pl->get_available_jumps(),
-                               pl->get_x_accel(),
-                               pl->get_x_slowdown(),
-                               pl->get_jump_speed(),
-                               pl->calc_max_jump_y_dist(gy),
-                               pl->get_max_speed(),
-                               wpn ? wpn->get_dispersion() : 0.01f,
-                               pl->get_group(),
-                               gun ? gun.get_bullet_vel() : 1500.f,
-                               wpn ? wpn->hit_power() : 0.f,
-                               wpn ? wpn->get_fire_rate() : 100.f,
-                               wpn ? wpn->mag_size() : 1,
-                               gun ? gun.ammo_elapsed() : 1,
-                               pl->get_on_left(),
-                               pl->collision_box()->is_lock_y(),
-                               pl->long_shot_enabled(),
-                               pl->is_walking(),
-                               wpn ? wpn->long_shot_dir(dir) : dir};
+            return ai_player_t{.pos               = pl->get_position(),
+                               .dir               = pl->collision_box()->get_direction(),
+                               .size              = pl->get_size(),
+                               .vel               = pl->get_velocity(),
+                               .acceleration      = pl->movement_acceleration(),
+                               .barrel_pos        = pl->barrel_pos(),
+                               .name              = pl->name(),
+                               .available_jumps   = pl->get_available_jumps(),
+                               .x_accel           = pl->get_x_accel(),
+                               .x_slowdown        = pl->get_x_slowdown(),
+                               .jump_speed        = pl->get_jump_speed(),
+                               .max_jump_dist     = pl->calc_max_jump_y_dist(gy),
+                               .max_vel_x         = pl->get_max_speed(),
+                               .gun_dispersion    = wpn ? wpn->get_dispersion() : 0.01f,
+                               .group             = pl->get_group(),
+                               .gun_bullet_vel    = gun ? gun.get_bullet_vel() : 1500.f,
+                               .gun_hit_power     = wpn ? wpn->hit_power() : 0.f,
+                               .gun_fire_rate     = wpn ? wpn->get_fire_rate() : 100.f,
+                               .gun_mag_size      = wpn ? wpn->mag_size() : 1,
+                               .gun_mag_elapsed   = gun ? gun.ammo_elapsed() : 1,
+                               .on_left           = pl->get_on_left(),
+                               .is_y_locked       = pl->collision_box()->is_lock_y(),
+                               .long_shot_enabled = pl->long_shot_enabled(),
+                               .is_walking        = pl->is_walking(),
+                               .long_shot_dir     = wpn ? wpn->long_shot_dir(dir) : dir};
         });
 
-        ai_mgr().provide_physic_sim(sim.gravity(), sim.last_speed(), sim.last_rps(), gravity_for_bullets,
-                                     sim.bullet_gravity().y);
+        ai_mgr().provide_physic_sim(
+            sim.gravity(), sim.last_speed(), sim.last_rps(), gravity_for_bullets, sim.bullet_gravity().y);
     }
 
     void ai_provide_level_info() {
@@ -1376,8 +1430,27 @@ public:
         ai_mgr().provide_platforms(cur_level->get_platforms(), [](const level::platform_t& pl) {
             auto pos = pl.ph.get_position();
             auto len = pl.ph.length();
-            return ai_platform_t{pos, vec2f(pos.x + len, pos.y)};
+            return ai_platform_t{.pos1 = pos, .pos2 = vec2f(pos.x + len, pos.y)};
         });
+    }
+
+    void load_effects() {
+        // TODO: save previous effects if new load not succeeded
+        efxmgr().clear();
+
+        auto path = std::filesystem::current_path() / "data/efx/";
+        for (auto&& entry : std::filesystem::directory_iterator(path)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+
+            try {
+                auto effect = efx_editor::efx_builder{texture_mgr(), entry.path()}.build();
+                efxmgr().add_effect(effect.name, std::move(effect.effect));
+            } catch (const std::exception& e) {
+                glog().error("Cannot load effect '{}'", entry.path());
+            }
+        }
     }
 
     physic_simulation  sim;

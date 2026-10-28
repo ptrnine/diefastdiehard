@@ -34,6 +34,7 @@ public:
         command_buffer().add_handler("ai profiler", &game_commands::cmd_ai_profiler, this);
         command_buffer().add_handler("shutdown", &game_commands::cmd_shutdown, this);
         command_buffer().add_handler("sound volume", &game_commands::cmd_sound_volume, this);
+        command_buffer().add_handler("efx reload", &game_commands::efx_reload, this);
 
         if (gs.lua_cmd_enabled)
             command_buffer().add_handler("lua", &game_commands::cmd_lua, this);
@@ -153,6 +154,10 @@ public:
         else if (cmd == "sound") {
             help = "Sound settings\n"
                    "sound volume [0 - 100]  - set or get sound volume";
+        }
+        else if (cmd == "efx") {
+            help = "Effects manipulation\n"
+                   "efx reload  - reload all effects in data/efx/";
         }
 
         if (!help.empty())
@@ -648,6 +653,11 @@ public:
         else {
             glog().info("sound volume: {}", sound_mgr().volume());
         }
+    }
+
+    void efx_reload() {
+        gs.load_effects();
+        glog().info("effects reloaded");
     }
 
     void cmd_shutdown() {

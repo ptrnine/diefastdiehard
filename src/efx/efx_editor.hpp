@@ -318,6 +318,24 @@ private:
                 else
                     handler.set_affected_indices(keys_result.affected_indices);
             }
+            else if (type == "velocity_random") {
+                auto  angle = anim_obj.at("angle").get<std::array<float, 2>>();
+                auto  speed = anim_obj.at("speed").get<std::array<float, 2>>();
+                vec2f acceleration{};
+                if (auto p = anim_obj.find("acceleration"); p != anim_obj.end())
+                    acceleration = p->second.get<vec2f>();
+
+                auto& handler = result.effect.add_handler(
+                    name, efx::efx_handlers::velocity_random(angle[0], angle[1], speed[0], speed[1], acceleration));
+
+                if (auto apply_to_p = anim_obj.find("apply_to"); apply_to_p != anim_obj.end()) {
+                    if (apply_to_p->second.is_string() && apply_to_p->second.get<std::string>() == "all")
+                        handler.set_affects_all(true);
+                    else
+                        handler.set_affected_indices(
+                            apply_to_p->second.get<std::vector<efx::efx::handler_t::index_t>>());
+                }
+            }
             else {
                 throw efx_builder_error("Invalid animation type '" + type + "'");
             }
@@ -343,7 +361,16 @@ private:
             if (template_p == templates.end())
                 throw efx_builder_error("Cannot find template '" + template_name + "'");
 
-            result.effect.push_element(template_p->second);
+            size_t count = 1;
+            auto count_p = prim_obj.find("count");
+            if (count_p != prim_obj.end()) {
+                count = count_p->second.get<size_t>();
+            }
+
+            // TODO: optimize this
+            for (size_t i = 0; i < count; ++i) {
+                result.effect.push_element(template_p->second);
+            }
         }
 
         return result;

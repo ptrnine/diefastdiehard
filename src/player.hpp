@@ -4,6 +4,8 @@
 #include <functional>
 
 #include <SFML/Graphics/RenderWindow.hpp>
+#include "base/vec_math.hpp"
+#include "efx/efx.hpp"
 #include "sprite.hpp"
 #include <SFML/Graphics/Texture.hpp>
 #include <SFML/Graphics/RenderTexture.hpp>
@@ -30,6 +32,7 @@ public:
         return {50.f, 90.f};
     }
 
+    static constexpr float mid_impulse = 1200.f;
     /* A hit at least this hard "pwns": the headshot sound, the hat is knocked off */
     static constexpr float pwned_impulse = 2200.f;
 
@@ -1806,10 +1809,22 @@ public:
             _attacker_cooldown = hit_cooldown(impulse);
         }
         set_on_hit_event();
-        bool pwned = magnitude(impulse) > pwned_impulse;
+
+        auto impulse_magn = magnitude(impulse);;
+        bool pwned = impulse_magn > pwned_impulse;
         play_hit_sound(hit_position, pwned);
         if (pwned)
             knock_off_hat();
+
+        if (impulse_magn < mid_impulse) {
+            efxmgr().play("blood_low", hit_position);
+        }
+        else if (impulse_magn < pwned_impulse) {
+            efxmgr().play("blood_mid", hit_position);
+        }
+        else {
+            efxmgr().play("blood_high", hit_position);
+        }
     }
 
     /**
@@ -1823,7 +1838,8 @@ public:
         _hat_knocked_off = true;
 
         auto angle_vel = rand_float(0.5f, 1.5f) * hat_drop_angle_vel;
-        _dropped_hats.push_back({_hat, get_velocity(), roll_the_dice(0.5f) ? angle_vel : -angle_vel});
+        _dropped_hats.push_back(
+            {.sprite = _hat, .vel = get_velocity(), .angle_vel = roll_the_dice(0.5f) ? angle_vel : -angle_vel});
     }
 
     /**
