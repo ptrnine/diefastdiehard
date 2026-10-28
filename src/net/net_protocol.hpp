@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 23;
+inline constexpr u16 protocol_version = 24;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -103,11 +103,12 @@ struct hello {
     u32           face_id      = 0;
     u32           body_id      = 0;
     u32           head_id      = 0;
+    i32           hat_id       = -1; // -1: no hat
     u32           body_color   = 0; // packed 0xRRGGBBAA
     u32           tracer_color = 0; // packed 0xRRGGBBAA
 
     void serialize(auto& s) const {
-        s.write(version, std::string(name), pistol, face_id, body_id, head_id, body_color, tracer_color);
+        s.write(version, std::string(name), pistol, face_id, body_id, head_id, hat_id, body_color, tracer_color);
     }
 
     void deserialize(auto& d) {
@@ -115,7 +116,7 @@ struct hello {
         d.read(version);
         if (version != protocol_version)
             return; /* the rest of the layout is unknown */
-        d.read(n, pistol, face_id, body_id, head_id, body_color, tracer_color);
+        d.read(n, pistol, face_id, body_id, head_id, hat_id, body_color, tracer_color);
         name = n;
     }
 };
@@ -223,6 +224,7 @@ struct player_config {
     u16           face_id      = 0;
     u16           body_id      = 0;
     u16           head_id      = 0;
+    i16           hat_id       = -1; // -1: no hat
     u32           body_color   = 0; // packed 0xRRGGBBAA
     u32           tracer_color = 0; // packed 0xRRGGBBAA
     i16           group        = 0;
@@ -230,12 +232,12 @@ struct player_config {
     bool operator==(const player_config&) const = default;
 
     void serialize(auto& s) const {
-        s.write(id, std::string(name), pistol, face_id, body_id, head_id, body_color, tracer_color, group);
+        s.write(id, std::string(name), pistol, face_id, body_id, head_id, hat_id, body_color, tracer_color, group);
     }
 
     void deserialize(auto& d) {
         std::string n;
-        d.read(id, n, pistol, face_id, body_id, head_id, body_color, tracer_color, group);
+        d.read(id, n, pistol, face_id, body_id, head_id, hat_id, body_color, tracer_color, group);
         name = n;
     }
 };

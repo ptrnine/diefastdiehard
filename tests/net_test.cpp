@@ -50,6 +50,7 @@ TEST_CASE("protocol: message round-trips") {
         h.face_id      = 1;
         h.body_id      = 2;
         h.head_id      = 4;
+        h.hat_id       = 5;
         h.body_color   = 0x11223344;
         h.tracer_color = 0x55667788;
 
@@ -64,6 +65,7 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(r.face_id == 1);
         CHECK(r.body_id == 2);
         CHECK(r.head_id == 4);
+        CHECK(r.hat_id == 5);
         CHECK(r.body_color == 0x11223344);
         CHECK(r.tracer_color == 0x55667788);
     }
@@ -133,7 +135,7 @@ TEST_CASE("protocol: message round-trips") {
         st.own_weapon          = weapon_sync{.ammo = 5, .anim = 2, .anim_time = 0.25f, .since_shot = 1.5f,
                                              .flags = weapon_sync::flag_reloading, .shot_index = 3, .seed_base = 99};
         st.configs.push_back(player_config{.id = 2, .name = "p2", .pistol = "wpn_m40", .face_id = 3,
-                                           .head_id = 1, .tracer_color = 0xFF00FF00, .group = -1});
+                                           .head_id = 1, .hat_id = 0, .tracer_color = 0xFF00FF00, .group = -1});
         st.players.push_back(state_player{.id = 1, .pos_x = 10.f, .pos_y = 20.f, .vel_x = -3.f, .vel_y = 4.f,
                                           .flags = state_player::flag_lock_y | state_player::flag_on_left |
                                                    state_player::flag_shooting,
@@ -262,7 +264,7 @@ TEST_CASE("protocol: message round-trips") {
         /* Configs ride along only when a client may not know them */
         for (u16 id = 1; id <= 4; ++id)
             st.configs.push_back(player_config{.id = id, .name = "client" + std::to_string(u32(id)), .pistol = "wpn_1887"});
-        CHECK(encode_msg(msg_type::state, st).size() <= 360 + 4 * 40);
+        CHECK(encode_msg(msg_type::state, st).size() <= 360 + 4 * 42); /* head_id and hat_id: +4 per config */
     }
 
     SECTION("leave") {
@@ -850,6 +852,7 @@ TEST_CASE("net_server: handshake, rename and leave") {
         auto& pl = *gs.players.at("test1");
         CHECK(pl.face_texture_path() == "player/face1.png");
         CHECK(pl.head_texture_path() == "player/head0.png");
+        CHECK(pl.hat_texture_path().empty()); /* hello default: no hat */
         CHECK(pl.pistol_section() == "wpn_glk17");
         CHECK(pl.body_color() == sf::Color(1, 2, 3, 4));
         CHECK(pl.tracer_color() == sf::Color(5, 6, 7, 8));
@@ -1163,7 +1166,7 @@ TEST_CASE("net_client: join and state application") {
 
     bool joined = false;
     net::net_client cli{
-        sf::IpAddress::LocalHost, port, "me", "wpn_glk17", 0, 0, 0,
+        sf::IpAddress::LocalHost, port, "me", "wpn_glk17", 0, 0, 0, -1,
         sf::Color(255, 255, 255), sf::Color(255, 255, 0)};
     REQUIRE(cli.is_ready());
     cli.sig_joined.attach_function("mp_joined_test", [&](const player_name_t& name) {
@@ -1555,7 +1558,7 @@ struct net_game_fixture {
         REQUIRE(gs_cli.level_current("lvl_aes"));
         srv.channel().set_simulated_latency(latency_min_ms, latency_max_ms);
 
-        cli.emplace(sf::IpAddress::LocalHost, port, "me", "wpn_glk17", 0, 0, 0,
+        cli.emplace(sf::IpAddress::LocalHost, port, "me", "wpn_glk17", 0, 0, 0, -1,
                     sf::Color(255, 255, 255), sf::Color(255, 255, 0));
         cli->channel().set_simulated_latency(latency_min_ms, latency_max_ms);
         cli->input_source([this] { return input; });

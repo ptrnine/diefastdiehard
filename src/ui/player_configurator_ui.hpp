@@ -23,7 +23,11 @@ public:
         reload();
 
         for (auto& face_path : pconf.available_face_textures())
-            faces.push_back({face_path});
+            faces.push_back({face_path, load_nk_image(face_path), i32(player_configurator::texture_path_to_index(face_path))});
+
+        hats.push_back({"", {}, player_configurator::no_hat}); /* "none" */
+        for (auto& hat_path : pconf.available_hat_textures())
+            hats.push_back({hat_path, load_nk_image(hat_path), player_configurator::hat_texture_path_to_id(hat_path)});
 
         for (auto& pistol_sect : weapon::get_secondary_sections()) {
             pistols.emplace_back();
@@ -58,12 +62,6 @@ public:
             back.icon = make_nk_image(*target);
         }
 
-        for (auto& face : faces) {
-            face.icon        = load_nk_image(face.path);
-            face.texture_idx = player_configurator::texture_path_to_index(face.path);
-            face.choosed     = face.texture_idx == pconf.face_id;
-        }
-
         pconf.write_on_delete = false;
     }
 
@@ -71,6 +69,10 @@ public:
         txtr_body = texture_mgr().load(pconf.body_texture_path());
         txtr_head = texture_mgr().load(pconf.head_texture_path());
         txtr_face = texture_mgr().load(pconf.face_texture_path());
+        if (!pconf.hat_texture_path().empty()) {
+            txtr_hat = texture_mgr().load(pconf.hat_texture_path());
+            sprt_hat.setTexture(txtr_hat, true);
+        }
         sprt_body.setTexture(txtr_body, true);
         sprt_head.setTexture(txtr_head, true);
         sprt_face.setTexture(txtr_face, true);
@@ -80,7 +82,7 @@ public:
         player_icon.clear({0, 0, 0, 0});
         wpn = &weapon_mgr().load(pconf.pistol);
         player::draw_to_texture_target(
-            player_icon, player_size, 1.5f, sprt_body, sprt_head, sprt_face, hand_or_leg, wpn);
+            player_icon, player_size, 1.5f, sprt_body, sprt_head, sprt_face, pconf.hat_texture_path().empty() ? nullptr : &sprt_hat, hand_or_leg, wpn);
         player_icon_img = make_nk_image(player_icon);
     }
 
@@ -95,7 +97,7 @@ public:
 
         if (ui.begin(wnd_title.data(), wnd_rect, wnd_flags)) {
             ui_layout_row(ui,
-                          player_size.y,
+                          float(player_icon.getSize().y),
                           {20.f, float(player_icon.getSize().x), 20.f, {200.f, ui_row::variable}});
 
             auto contents_size = ui.window_get_content_region_size();
@@ -127,37 +129,13 @@ public:
                 ui.group_end();
             }
 
-            ui.layout_row_dynamic(25.f, 1);
-            ui.label("Faces", NK_TEXT_CENTERED);
-            {
-                auto icons_width = float(faces.size()) * (face_icon_size + 5.f);
-                auto icons_spacing =
-                    icons_width < contents_size.x ? icons_width / contents_size.x : 1.f;
-                auto spacing  = (1.f - icons_spacing) * 0.5f;
-                icons_spacing = 1.f - spacing;
-                float ratio[] = {spacing, icons_spacing};
-                ui.layout_row(NK_DYNAMIC, face_icon_size + 20.f, 2, ratio);
-                ui.spacing(1);
-                if (ui.group_begin("faces", 0)) {
-                    ui.layout_row_begin(NK_STATIC, face_icon_size, int(faces.size()));
-                    for (auto& face : faces) {
-                        ui.layout_row_push(face_icon_size);
-                        auto choosed = face.choosed;
-                        if (ui.selectable_image(face.icon, &choosed)) {
-                            if (!face.choosed) {
-                                update_was = true;
-                                for (auto& f : faces)
-                                    if (f.texture_idx == pconf.face_id)
-                                        f.choosed = false;
-                                pconf.face_id = face.texture_idx;
-                                face.choosed = choosed;
-                            }
-                        }
-                    }
-                    ui.layout_row_end();
-                    ui.group_end();
-                }
+            i32 face_id = i32(pconf.face_id);
+            if (image_choice_row(ui, "Faces", faces, face_id)) {
+                update_was    = true;
+                pconf.face_id = u32(face_id);
             }
+            if (image_choice_row(ui, "Hats", hats, pconf.hat_id))
+                update_was = true;
 
             ui.layout_row_dynamic(25.f, 1);
             ui.label("Pistols", NK_TEXT_CENTERED);
@@ -216,6 +194,45 @@ public:
             reload();
     }
 
+    struct image_choice {
+        std::string     path;
+        struct nk_image icon        = {};
+        i32             texture_idx = 0; /* no_hat: none (no icon) */
+    };
+
+    /* A centered row of selectable images, chosen: texture_idx of the selected one. Returns true if changed */
+    bool image_choice_row(ui_ctx& ui, const char* label, const std::vector<image_choice>& choices, i32& chosen) {
+        auto contents_size = ui.window_get_content_region_size();
+        bool changed       = false;
+
+        ui.layout_row_dynamic(25.f, 1);
+        ui.label(label, NK_TEXT_CENTERED);
+
+        auto icons_width   = float(choices.size()) * (face_icon_size + 5.f);
+        auto icons_spacing = icons_width < contents_size.x ? icons_width / contents_size.x : 1.f;
+        auto spacing       = (1.f - icons_spacing) * 0.5f;
+        icons_spacing      = 1.f - spacing;
+        float ratio[]      = {spacing, icons_spacing};
+        ui.layout_row(NK_DYNAMIC, face_icon_size + 20.f, 2, ratio);
+        ui.spacing(1);
+        if (ui.group_begin(label, 0)) {
+            ui.layout_row_begin(NK_STATIC, face_icon_size, int(choices.size()));
+            for (auto& choice : choices) {
+                ui.layout_row_push(face_icon_size);
+                nk_bool selected = choice.texture_idx == chosen;
+                bool    clicked  = choice.path.empty() ? ui.selectable_label("none", NK_TEXT_CENTERED, &selected)
+                                                       : ui.selectable_image(choice.icon, &selected);
+                if (clicked && choice.texture_idx != chosen) {
+                    chosen  = choice.texture_idx;
+                    changed = true;
+                }
+            }
+            ui.layout_row_end();
+            ui.group_end();
+        }
+        return changed;
+    }
+
     void show(bool value) {
         wnd_show = value;
     }
@@ -239,9 +256,9 @@ private:
     struct nk_rect wnd_rect{200, 100, 500, 500};
     bool           wnd_show = false;
 
-    sprite_t          sprt_body, sprt_head, sprt_face;
+    sprite_t          sprt_body, sprt_head, sprt_face, sprt_hat;
     sf::CircleShape   hand_or_leg;
-    sf::Texture       txtr_body, txtr_head, txtr_face;
+    sf::Texture       txtr_body, txtr_head, txtr_face, txtr_hat;
     sf::RenderTexture player_icon;
     struct nk_image   player_icon_img;
     vec2f             player_size;
@@ -249,13 +266,8 @@ private:
     float             wpn_icon_h     = 70.f;
     float             face_icon_size = 80.f;
 
-    struct face_param {
-        std::string     path;
-        struct nk_image icon        = {};
-        u32             texture_idx = 0;
-        nk_bool         choosed     = false;
-    };
-    std::vector<face_param> faces;
+    std::vector<image_choice> faces;
+    std::vector<image_choice> hats;
 
     struct pistol_param {
         pistol_param(): icon_trgt(std::make_shared<sf::RenderTexture>()) {}

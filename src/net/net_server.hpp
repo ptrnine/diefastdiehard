@@ -302,6 +302,7 @@ private:
                 u16(player_configurator::texture_path_to_index(pl.face_texture_path())),
                 u16(player_configurator::texture_path_to_index(pl.body_texture_path())),
                 u16(player_configurator::texture_path_to_index(pl.head_texture_path())),
+                i16(player_configurator::hat_texture_path_to_id(pl.hat_texture_path())),
                 pack_color(pl.body_color()),
                 pack_color(pl.tracer_color()),
                 i16(pl.get_group())};
@@ -864,6 +865,7 @@ private:
     static void apply_player_config(player& pl, const hello& h, u32 magazines_count) {
         pl.set_body("player/body" + std::to_string(h.body_id) + ".png", unpack_color(h.body_color));
         pl.set_head("player/head" + std::to_string(h.head_id) + ".png");
+        pl.set_hat(player_configurator::hat_texture_path(h.hat_id));
         pl.set_face("player/face" + std::to_string(h.face_id) + ".png");
         /* Only a secondary gun can be configured */
         if (weapon::is_secondary_section(h.pistol))

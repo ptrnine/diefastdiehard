@@ -1,6 +1,7 @@
 #pragma once
 
 #include <SFML/Graphics/Color.hpp>
+#include <algorithm>
 #include <filesystem>
 
 #include "base/fixed_string.hpp"
@@ -12,6 +13,8 @@
 namespace dfdh {
 class player_configurator {
 public:
+    static constexpr i32 no_hat = -1;
+
     player_configurator(const player_name_t& player_name): name(player_name) {
         read();
     }
@@ -39,6 +42,7 @@ public:
         face_id    = sect.value_or_default_and_set<u32>("face_id", 0);
         body_id    = sect.value_or_default_and_set<u32>("body_id", 0);
         head_id    = sect.value_or_default_and_set<u32>("head_id", 0);
+        hat_id     = sect.value_or_default_and_set<i32>("hat_id", no_hat);
         /* XXX: write better color serialization */
         body_color = rgba_t::from(
             sect.value_or_default_and_set<std::string>("body_color", rgba_t{sf::Color(255, 255, 255)}.to_string()));
@@ -56,6 +60,7 @@ public:
         sect.set("face_id", face_id);
         sect.set("body_id", body_id);
         sect.set("head_id", head_id);
+        sect.set("hat_id", hat_id);
         sect.set("body_color", dfdh::format("{}", body_color));
         sect.set("tracer_color", dfdh::format("{}", tracer_color));
     }
@@ -73,6 +78,22 @@ public:
     [[nodiscard]]
     std::string head_texture_path() const {
         return "player/head" + std::to_string(head_id) + ".png";
+    }
+
+    /* Empty: no hat */
+    [[nodiscard]]
+    static std::string hat_texture_path(i32 hat_id) {
+        return hat_id < 0 ? std::string() : "player/hat" + std::to_string(hat_id) + ".png";
+    }
+
+    [[nodiscard]]
+    std::string hat_texture_path() const {
+        return hat_texture_path(hat_id);
+    }
+
+    /* no_hat for an empty path */
+    static i32 hat_texture_path_to_id(std::string_view path) {
+        return path.empty() ? no_hat : i32(texture_path_to_index(path));
     }
 
 private:
@@ -100,38 +121,35 @@ public:
         return u32(std::stoul(std::string(path.substr(idx))));
     }
 
-    static std::vector<std::string> available_face_textures() {
+    /* Texture paths (relative to data/textures) of data/textures/player/<prefix><number>.png */
+    static std::vector<std::string> available_textures(std::string_view prefix) {
         namespace fs = std::filesystem;
         std::vector<std::string> res;
 
         for (auto& f : fs::directory_iterator("data/textures/player/")) {
             if (f.is_regular_file()) {
                 auto fname = f.path().filename().string();
-                if (fname.starts_with("face") && fname.ends_with(".png") &&
-                    number_str(fname.data() + 4, fname.size() - 8)) {
+                if (fname.starts_with(prefix) && fname.ends_with(".png") && fname.size() > prefix.size() + 4 &&
+                    number_str(fname.data() + prefix.size(), fname.size() - prefix.size() - 4)) {
                     res.push_back(f.path().string().substr(sizeof("data/textures/") - 1));
                 }
             }
         }
+        std::ranges::sort(res, {}, [](const std::string& path) { return texture_path_to_index(path); });
 
         return res;
     }
 
+    static std::vector<std::string> available_face_textures() {
+        return available_textures("face");
+    }
+
     static std::vector<std::string> available_body_textures() {
-        namespace fs = std::filesystem;
-        std::vector<std::string> res;
+        return available_textures("body");
+    }
 
-        for (auto& f : fs::directory_iterator("data/textures/player/")) {
-            if (f.is_regular_file()) {
-                auto fname = f.path().filename().string();
-                if (fname.starts_with("body") && fname.ends_with(".png") &&
-                    number_str(fname.data() + 4, fname.size() - 8)) {
-                    res.push_back(f.path().string().substr(sizeof("data/textures/") - 1));
-                }
-            }
-        }
-
-        return res;
+    static std::vector<std::string> available_hat_textures() {
+        return available_textures("hat");
     }
 
 public:
@@ -140,6 +158,7 @@ public:
     u32           face_id      = 0;
     u32           body_id      = 0;
     u32           head_id      = 0;
+    i32           hat_id       = no_hat;
     sf::Color     body_color   = {255, 255, 255};
     sf::Color     tracer_color = {255, 255, 255};
 

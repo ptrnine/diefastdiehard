@@ -9,6 +9,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -209,12 +210,12 @@ private:
     };
 
     static float icon_height() {
-        return std::round(player::default_sprite_size().y * sprite_scale);
+        return std::round(player::default_sprite_size().y * (1.f + player::hat_overflow_factors().y) * sprite_scale);
     }
 
     icon_t& icon_for(const player& pl) {
         auto color = pl.body_color();
-        auto key   = pl.body_texture_path() + "|" + pl.head_texture_path() + "|" + pl.face_texture_path() + "|" + pl.pistol_section() + "|" +
+        auto key   = pl.body_texture_path() + "|" + pl.head_texture_path() + "|" + pl.face_texture_path() + "|" + pl.hat_texture_path() + "|" + pl.pistol_section() + "|" +
                    std::to_string(color.toInteger());
 
         auto& icon = _icons[pl.name()];
@@ -225,6 +226,9 @@ private:
         sf::Sprite      body(texture_mgr().load(pl.body_texture_path()));
         sf::Sprite      head(texture_mgr().load(pl.head_texture_path()));
         sf::Sprite      face(texture_mgr().load(pl.face_texture_path()));
+        std::optional<sf::Sprite> hat;
+        if (!pl.hat_texture_path().empty())
+            hat.emplace(texture_mgr().load(pl.hat_texture_path()));
         sf::CircleShape hand_or_leg;
         body.setColor(color);
         head.setColor(color);
@@ -232,7 +236,7 @@ private:
         weapon* wpn = pl.pistol_section().empty() ? nullptr : &weapon_mgr().load(pl.pistol_section());
 
         player::draw_to_texture_target(
-            *icon.sprite, player::default_sprite_size() * sprite_scale, sprite_scale, body, head, face, hand_or_leg, wpn);
+            *icon.sprite, player::default_sprite_size() * sprite_scale, sprite_scale, body, head, face, hat ? &*hat : nullptr, hand_or_leg, wpn);
 
         /* Centered (a long gun is scaled down to fit) */
         auto w = u32(column_width), h = u32(icon_height());

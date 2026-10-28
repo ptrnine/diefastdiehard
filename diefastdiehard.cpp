@@ -518,7 +518,7 @@ private:
         pc.write_on_delete = false;
 
         net_cli = std::make_shared<net::net_client>(
-            *ip, port, name, pc.pistol, pc.face_id, pc.body_id, pc.head_id, pc.body_color, pc.tracer_color);
+            *ip, port, name, pc.pistol, pc.face_id, pc.body_id, pc.head_id, pc.hat_id, pc.body_color, pc.tracer_color);
 
         auto interp_ms = [&](const char* key, double default_s) {
             auto value = args.by_key_opt<std::string>(key);

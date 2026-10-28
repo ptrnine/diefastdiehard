@@ -49,7 +49,8 @@ public:
      * Body, head and face layout in the sprite frame (default_sprite_size), as
      * factors of the frame size. The body sits at the bottom of the frame, the
      * head (and the face over it) is centered on the top edge of the body,
-     * shifted to the facing direction
+     * shifted to the facing direction. The hat image is hat_head_scale times
+     * bigger than the head, the head is at the bottom center of it
      */
     static vec2f body_size_factors() {
         return {1.f, 0.72f};
@@ -64,13 +65,33 @@ public:
         return {on_left ? 0.455f : 0.545f, body_top};
     }
 
-    /* Place the body, head and face sprites in the frame at frame_pos (top left) of frame_size */
+    static float hat_head_scale() {
+        return 2.f;
+    }
+
+    static vec2f hat_size_factors() {
+        return head_size_factors() * hat_head_scale();
+    }
+
+    static vec2f hat_center_factors(bool on_left) {
+        auto head_bottom = head_center_factors(on_left).y + head_size_factors().y * 0.5f;
+        return {head_center_factors(on_left).x, head_bottom - hat_size_factors().y * 0.5f};
+    }
+
+    /* Space the hat takes beyond the left and top edges of the frame (facing right), as factors of the frame size */
+    static vec2f hat_overflow_factors() {
+        auto top_left = hat_center_factors(false) - hat_size_factors() * 0.5f;
+        return {std::max(0.f, -top_left.x), std::max(0.f, -top_left.y)};
+    }
+
+    /* Place the body, head, face and hat (if any) sprites in the frame at frame_pos (top left) of frame_size */
     static void layout_body_sprites(const vec2f& frame_pos,
                                     const vec2f& frame_size,
                                     bool         on_left,
                                     sf::Sprite&  body,
                                     sf::Sprite&  head,
-                                    sf::Sprite&  face) {
+                                    sf::Sprite&  face,
+                                    sf::Sprite*  hat) {
         auto place = [&](sf::Sprite& sprite, const vec2f& center_f, const vec2f& size_f) {
             auto txtr_size = sprite.getTexture().getSize();
             auto txtr_w    = float(txtr_size.x);
@@ -85,6 +106,8 @@ public:
         place(body, {0.5f, 1.f - body_f.y * 0.5f}, body_f);
         place(head, head_center_factors(on_left), head_size_factors());
         place(face, head_center_factors(on_left), head_size_factors());
+        if (hat)
+            place(*hat, hat_center_factors(on_left), hat_size_factors());
     }
 
     static void default_hand_setup(sf::CircleShape& hand, const vec2f& size) {
@@ -864,23 +887,31 @@ public:
                                        sf::Sprite&         body,
                                        sf::Sprite&         head,
                                        sf::Sprite&         face,
+                                       sf::Sprite*         hat,
                                        sf::CircleShape&    hand_or_leg,
                                        weapon*             wpn) {
-        float icon_x_size =
-            wpn ? size.x * wpn->arm_position_factors(false).x + wpn->barrel_pos().x * scale
-                : size.y;
+        /* The space for a hat is always reserved (icons of players with and without hats are aligned) */
+        auto hat_f  = hat_overflow_factors();
+        auto origin = vec2f(size.x * hat_f.x, size.y * hat_f.y);
 
-        if (!target.resize({u32(icon_x_size), u32(size.y)}))
+        float icon_x_size =
+            origin.x + (wpn ? size.x * wpn->arm_position_factors(false).x + wpn->barrel_pos().x * scale
+                            : size.y);
+        float icon_y_size = origin.y + size.y;
+
+        if (!target.resize({u32(icon_x_size), u32(icon_y_size)}))
             glog().error("cannot create a player icon render texture");
         /* New FBO texture contents are undefined until cleared (driver may keep stale pixels) */
         target.clear({0, 0, 0, 0});
 
-        layout_body_sprites({0.f, 0.f}, size, false, body, head, face);
+        layout_body_sprites(origin, size, false, body, head, face, hat);
 
-        target.setView(sf::View(sf::FloatRect({0.f, size.y}, {icon_x_size, -size.y})));
+        target.setView(sf::View(sf::FloatRect({0.f, icon_y_size}, {icon_x_size, -icon_y_size})));
         target.draw(body);
         target.draw(head);
         target.draw(face);
+        if (hat)
+            target.draw(*hat);
 
         auto sz = size;
         sz.x /= sprite_size_adjust_factors().x;
@@ -892,6 +923,7 @@ public:
             pos.x *= f.x;
             pos.y *= f.y;
             pos.y += size.y;
+            pos += origin;
             wpn->draw(pos, false, 0.f, target, scale);
 
             default_hand_setup(hand_or_leg, sz);
@@ -904,10 +936,10 @@ public:
 
 
         default_leg_setup(hand_or_leg, sz);
-        hand_or_leg.setPosition({size.x * 0.3f, size.y});
+        hand_or_leg.setPosition(origin + vec2f(size.x * 0.3f, size.y));
         target.draw(hand_or_leg);
 
-        hand_or_leg.setPosition({size.x * 0.7f, size.y});
+        hand_or_leg.setPosition(origin + vec2f(size.x * 0.7f, size.y));
         target.draw(hand_or_leg);
 
         target.display();
@@ -925,9 +957,12 @@ public:
         /* The sprite frame is horizontally centered on the collision box and ends at pos.y */
         auto frame_size = sprite_size(_size);
         auto frame_pos  = pos - vec2f((frame_size.x - _size.x) * 0.5f, frame_size.y);
-        layout_body_sprites(frame_pos, frame_size, _on_left, _body, _head, _face);
+        auto* hat       = _hat_txtr_path.empty() ? nullptr : &_hat;
+        layout_body_sprites(frame_pos, frame_size, _on_left, _body, _head, _face, hat);
         for (auto* sprite : {&_body, &_head, &_face})
             wnd.draw(*sprite);
+        if (hat)
+            wnd.draw(*hat);
 
         /* Legs are positioned in absolute coordinates by the physics: shift them with the body */
         for (auto* leg : {&_left_leg, &_right_leg}) {
@@ -979,6 +1014,13 @@ public:
     void set_face(const std::string& path, const sf::Color& color = {255, 255, 255}) {
         _face_txtr_path = path;
         set_some(path, _face_txtr, _face, color);
+    }
+
+    /* An empty path: no hat */
+    void set_hat(const std::string& path) {
+        _hat_txtr_path = path;
+        if (!path.empty())
+            set_some(path, _hat_txtr, _hat, {255, 255, 255});
     }
 
     /**
@@ -1049,6 +1091,11 @@ public:
     [[nodiscard]]
     const std::string& head_texture_path() const {
         return _head_txtr_path;
+    }
+
+    [[nodiscard]]
+    const std::string& hat_texture_path() const {
+        return _hat_txtr_path;
     }
 
     [[nodiscard]]
@@ -1202,6 +1249,7 @@ public:
         player_configurator pc{_name};
         set_body(pc.body_texture_path(), pc.body_color);
         set_head(pc.head_texture_path());
+        set_hat(pc.hat_texture_path());
         set_face(pc.face_texture_path());
         setup_pistol(pc.pistol, magazines_count);
         tracer_color(pc.tracer_color);
@@ -1327,15 +1375,18 @@ private:
     std::string   _body_txtr_path;
     std::string   _head_txtr_path;
     std::string   _face_txtr_path;
+    std::string   _hat_txtr_path;
     sf::Color     _body_color;
 
     std::shared_ptr<physic_group> _collision_box;
     sprite_t    _body;
     sprite_t    _head;
     sprite_t    _face;
+    sprite_t    _hat;
     sf::Texture _body_txtr;
     sf::Texture _head_txtr;
     sf::Texture _face_txtr;
+    sf::Texture _hat_txtr;
     sf::CircleShape _left_hand;
     sf::CircleShape _right_hand;
     sf::CircleShape _left_leg;
