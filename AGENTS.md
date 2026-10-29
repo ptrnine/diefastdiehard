@@ -93,6 +93,10 @@ instead of sleeping. Use it for any new gameplay/network timer.
   level/mode/groups and starts (`game_state::lobby_start`); nothing is
   simulated while `game_state::lobby.active`. The UI only calls
   `lobby_ui::actions_t` callbacks (wired in `diefastdiehard.cpp`).
+  `src/ui/connect_ui.hpp`: "Connect to lobby" window (console `ui connect`):
+  address/port/nickname, a loader until the server's WELCOME (timeout
+  `connect_ui::timeout_s`), the rejection/timeout error; joined, it closes and
+  the client lobby shows. Leaving a lobby joined from it returns to it.
 - `src/net/` — multiplayer: authoritative UDP server. Protocol in
   `net_protocol.hpp` (bump `protocol_version` on wire changes); the server
   sends a per-client state every tick; clients send per-tick input

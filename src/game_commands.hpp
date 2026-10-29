@@ -104,6 +104,11 @@ public:
                    "  lobby       - stop the game and open the lobby (server)\n"
                    "  lobby start - start the game with the lobby's map and game mode";
         }
+        else if (cmd == "ui") {
+            help = "windows\n"
+                   "available commands:\n"
+                   "  ui connect  - connect to a multiplayer lobby (server address, port, nickname)";
+        }
         else if (cmd == "hud") {
             help = "on-screen information\n"
                    "available commands:\n"

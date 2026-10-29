@@ -185,19 +185,20 @@ public:
                                            int(_command_edit.size()),
                                            nk_filter_default);
 
-        if (ui().nk_ctx()->active && !ui().nk_ctx()->active->edit.active) {
-            ui().nk_ctx()->active->edit.active = 1;
-            ui().nk_ctx()->active->edit.cursor = _command_len;
+        /* Keep the field focused while the console has the focus only (not another window's field) */
+        if (ui().nk_ctx()->active == ui().nk_ctx()->current && !ui().nk_ctx()->current->edit.active) {
+            ui().nk_ctx()->current->edit.active = 1;
+            ui().nk_ctx()->current->edit.cursor = _command_len;
         }
 
         /* Prohibit tab */
-        auto cursor_pos = ui().nk_ctx()->active->edit.cursor;
+        auto cursor_pos = ui().nk_ctx()->current->edit.cursor;
         if (cursor_pos < _command_len) {
             if (_command_edit[size_t(cursor_pos - 1)] == '\t') {
                 std::memmove(_command_edit.data() + cursor_pos - 1,
                              _command_edit.data() + cursor_pos,
                              size_t(_command_len - cursor_pos));
-                --ui().nk_ctx()->active->edit.cursor;
+                --ui().nk_ctx()->current->edit.cursor;
                 --_command_len;
             }
         }
@@ -227,7 +228,7 @@ public:
                     std::memcpy(_command_edit.data(), found->data(), size_t(_command_len));
                 }
             }
-            ui().nk_ctx()->active->edit.cursor = _command_len;
+            ui().nk_ctx()->current->edit.cursor = _command_len;
         }
 
         if (_command_len != 0) {
@@ -251,8 +252,8 @@ public:
                 _command_len -= int(postfix - found);
             }
 
-            if (ui().nk_ctx()->active->edit.cursor > _command_len)
-                ui().nk_ctx()->active->edit.cursor = _command_len;
+            if (ui().nk_ctx()->current->edit.cursor > _command_len)
+                ui().nk_ctx()->current->edit.cursor = _command_len;
         }
 
         if (_command_len > 0 && edit_state & NK_EDIT_COMMITED) {
@@ -294,7 +295,7 @@ public:
         auto  min_sz = std::min(cmd.size(), COMMAND_LEN);
         std::memcpy(_command_edit.data(), cmd.data(), min_sz);
         _command_len                       = int(min_sz);
-        ui().nk_ctx()->active->edit.cursor = _command_len + 1;
+        ui().nk_ctx()->current->edit.cursor = _command_len + 1;
     }
 
     void history_down() {
@@ -303,7 +304,7 @@ public:
         }
         else if (_history_pos == 0) {
             _command_len                       = int(_current_command.size());
-            ui().nk_ctx()->active->edit.cursor = _command_len;
+            ui().nk_ctx()->current->edit.cursor = _command_len;
             std::memcpy(_command_edit.data(), _current_command.data(), _current_command.size());
             _history_pos = HISTORY_LEN;
             return;
@@ -315,7 +316,7 @@ public:
             auto  min_sz = std::min(cmd.size(), COMMAND_LEN);
             std::memcpy(_command_edit.data(), cmd.data(), min_sz);
             _command_len                       = int(min_sz);
-            ui().nk_ctx()->active->edit.cursor = _command_len;
+            ui().nk_ctx()->current->edit.cursor = _command_len;
         }
     }
 

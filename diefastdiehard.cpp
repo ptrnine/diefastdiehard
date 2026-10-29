@@ -3,6 +3,7 @@
 #include "base/serialization.hpp"
 #include "ui/player_configurator_ui.hpp"
 #include "ui/lobby_ui.hpp"
+#include "ui/connect_ui.hpp"
 
 #include "engine.hpp"
 #include "command_buffer.hpp"
@@ -184,6 +185,22 @@ public:
         cmd_net({});
     }
 
+    void cmd_ui(const std::optional<std::string>&) {
+        gc.cmd_help("ui");
+    }
+
+    void cmd_ui_connect() {
+        if (net_srv) {
+            glog().error("ui connect: this game is a server");
+            return;
+        }
+        if (net_cli && !connect_wnd->connecting()) {
+            glog().error("ui connect: already connected to a server");
+            return;
+        }
+        connect_wnd->show(true);
+    }
+
     static std::optional<size_t> parse_count(const std::string& value) {
         try {
             return ston<size_t>(value);
@@ -200,6 +217,8 @@ public:
         command_buffer().add_handler("net buffer", &diefastdiehard::cmd_net_buffer, this);
         command_buffer().add_handler("net interp", &diefastdiehard::cmd_net_interp, this);
         command_buffer().add_handler("net input margin", &diefastdiehard::cmd_net_input_margin, this);
+        command_buffer().add_handler("ui", &diefastdiehard::cmd_ui, this);
+        command_buffer().add_handler("ui connect", &diefastdiehard::cmd_ui_connect, this);
         command_buffer().add_handler("fps", &diefastdiehard::cmd_fps, this);
         command_buffer().add_handler("log", &diefastdiehard::cmd_log, this);
         command_buffer().add_handler("log time", &diefastdiehard::cmd_log_time, this);
@@ -221,6 +240,7 @@ public:
     void on_init(args_view args) final {
         init_signals();
         init_commands();
+        init_connect_ui();
 
         /* Taken before init_client: it reads the server address with args.next() */
         auto lua_fifo_path = args.by_key_opt<std::string>("--lua-exec-fifo");
@@ -272,6 +292,8 @@ public:
             net_cli->update(gs);
         }
 
+        connect_update();
+
         if (net_srv)
             net_srv->update(gs);
 
@@ -301,7 +323,9 @@ public:
             net_hud_draw();
         gs.ui_update(ui, window_size_float());
         /* The player configurator is drawn instead of the lobby while it is open */
-        if (lobby_wnd && gs.lobby.active && !(gs.pconf_ui && gs.pconf_ui->shown()))
+        connect_wnd->update(ui, window_size_float());
+        /* A client's lobby is shown once the server accepted it */
+        if (lobby_wnd && gs.lobby.active && !(gs.pconf_ui && gs.pconf_ui->shown()) && (!net_cli || net_cli->joined()))
             lobby_wnd->update(ui, gs, window_size_float());
         //mainmenu().update(ui);
     }
@@ -442,6 +466,10 @@ private:
     std::shared_ptr<net_player_controller>  net_ctrl;
     player_name_t                            my_player_name;
     std::optional<lobby_ui>                  lobby_wnd;
+    std::optional<connect_ui>                connect_wnd;
+    bool                                     client_from_ui = false; /* joined from the connect window: leave returns to it */
+    std::optional<std::string>               client_error;          /* the server rejected the joining client */
+    bool                                     client_leave = false;  /* the lobby's leave was clicked */
     bool                                     net_hud = false; /* hud net: the network state on the screen */
 
     /* Open the player configurator of a local player, on_close: the config was written */
@@ -482,8 +510,13 @@ private:
             net_cli->lobby_request(i16(group), ready);
         };
         act.own_ready = [this] { return net_cli->last_lobby_request().ready != 0; };
-        /* Leave: quit the app (the net client destructor tells the server) */
-        act.leave     = [this] { gs.sig_shutdown.emit_deferred(); };
+        /* Leave: back to the connect window, or quit the app if joined with --client (the net client destructor tells the server) */
+        act.leave = [this] {
+            if (client_from_ui)
+                client_leave = true;
+            else
+                gs.sig_shutdown.emit_deferred();
+        };
         act.customize = [this](const player_name_t& name) {
             customize_player(name, [this, name] {
                 player_configurator pc{name};
@@ -518,31 +551,86 @@ private:
         init_server_lobby();
     }
 
-    void init_client(args_view& args) {
-        auto addr_str = args.next("missing <ip:port> after --client");
-        auto pos = addr_str.rfind(':');
-        if (pos == std::string::npos || pos == 0) {
-            glog().error("multiplayer: invalid server address '{}', expected <ip:port>", addr_str);
+    void init_connect_ui() {
+        connect_ui::actions_t act;
+        act.connect = [this](const std::string& host, u16 port, const std::string& name) -> std::optional<std::string> {
+            if (net_srv)
+                return "this game is a server";
+            /* The joined game replaces the local one */
+            players_remove_all();
+            client_from_ui = true;
+            return client_connect(host, port, name);
+        };
+        act.cancel = [this] { client_reset(); };
+        connect_wnd.emplace(std::move(act));
+    }
+
+    void players_remove_all() {
+        std::vector<player_name_t> names;
+        for (auto& [name, _] : gs.players)
+            names.push_back(name);
+        for (auto& name : names)
+            gs.player_remove(name);
+    }
+
+    /* Drop the network client and the players of its game */
+    void client_reset() {
+        net_cli.reset();
+        net_ctrl.reset();
+        lobby_wnd.reset();
+        if (gs.lobby.active)
+            gs.lobby_close();
+        gs.lobby.level.clear();
+        gs.lobby.mode.clear();
+        gs.lobby_networked  = false;
+        gs.crates_networked = false;
+        client_error.reset();
+        client_leave = false;
+        players_remove_all();
+    }
+
+    /* The connect window's attempt: accepted, rejected or timed out. The lobby's leave */
+    void connect_update() {
+        if (client_leave) {
+            client_reset();
+            connect_wnd->show(true);
             return;
         }
-
-        auto host = std::string(addr_str.substr(0, pos));
-        auto ip   = sf::IpAddress::fromString(host);
-        if (!ip) {
-            /* A host name (the socket is IPv4) */
-            if (auto resolved = sf::Dns::resolve(host)) {
-                auto v4 = std::ranges::find_if(*resolved, [](const sf::IpAddress& a) { return a.isV4(); });
-                if (v4 != resolved->end())
-                    ip = *v4;
-            }
-        }
-        auto port = ston<u16>(std::string(addr_str.substr(pos + 1)));
-        if (!ip) {
-            glog().error("multiplayer: invalid server ip '{}'", std::string(addr_str.substr(0, pos)));
+        if (!connect_wnd->connecting())
             return;
-        }
 
-        auto name = args.by_key_default<std::string>("--name", "client0");
+        if (client_error) {
+            auto error = "server: " + *client_error;
+            client_reset();
+            connect_wnd->failed(std::move(error));
+        }
+        else if (net_cli && net_cli->joined()) {
+            connect_wnd->connected();
+        }
+        else if (connect_wnd->timed_out()) {
+            client_reset();
+            connect_wnd->failed("no answer from the server");
+        }
+    }
+
+    /* An ip or a host name (the socket is IPv4) */
+    static std::optional<sf::IpAddress> resolve_host(const std::string& host) {
+        if (auto ip = sf::IpAddress::fromString(host))
+            return ip;
+        if (auto resolved = sf::Dns::resolve(host)) {
+            auto v4 = std::ranges::find_if(*resolved, [](const sf::IpAddress& a) { return a.isV4(); });
+            if (v4 != resolved->end())
+                return *v4;
+        }
+        return {};
+    }
+
+    /* Start joining the server (the client lobby is opened): an error message if the client can't start */
+    std::optional<std::string> client_connect(const std::string& host, u16 port, const std::string& name) {
+        auto ip = resolve_host(host);
+        if (!ip)
+            return std::format("invalid server address '{}'", host);
+
         my_player_name = name;
 
         /* Load skin, tracer and gun settings from the local player config */
@@ -552,22 +640,9 @@ private:
         net_cli = std::make_shared<net::net_client>(
             *ip, port, name, pc.pistol, pc.face_id, pc.body_id, pc.head_id, pc.hat_id, pc.body_color, pc.tracer_color);
 
-        auto interp_ms = [&](const char* key, double default_s) {
-            auto value = args.by_key_opt<std::string>(key);
-            if (!value)
-                return default_s;
-            if (auto ms = parse_count(*value))
-                return double(*ms) / 1000.0;
-            glog().error("multiplayer: {} expects milliseconds, got '{}'", key, *value);
-            return default_s;
-        };
-        net_cli->interp_settings(interp_ms("--interp-min", net::server_clock::min_interp_s),
-                                 interp_ms("--interp-margin", net::server_clock::interp_margin_s));
-        net_cli->input_margin(interp_ms("--input-margin", net::net_client::default_input_margin_s));
-
         if (!net_cli->is_ready()) {
-            glog().error("multiplayer: can't connect to {}", addr_str);
-            return;
+            net_cli.reset();
+            return std::format("can't connect to {}:{}", host, port);
         }
 
         net_cli->sig_joined.attach_function("mp_joined", [this](const player_name_t& pname) {
@@ -604,11 +679,46 @@ private:
             gs.crates_networked = true;
         });
 
-        init_client_lobby();
-
-        net_cli->sig_error.attach_function("mp_error", [](const std::string& msg) {
+        net_cli->sig_error.attach_function("mp_error", [this](const std::string& msg) {
             glog().error("multiplayer: join failed: {}", msg);
+            /* Handled in game_update: the client can't be destroyed from its own signal */
+            if (connect_wnd->connecting())
+                client_error = msg;
         });
+
+        init_client_lobby();
+        return {};
+    }
+
+    void init_client(args_view& args) {
+        auto addr_str = args.next("missing <ip:port> after --client");
+        auto pos = addr_str.rfind(':');
+        if (pos == std::string::npos || pos == 0) {
+            glog().error("multiplayer: invalid server address '{}', expected <ip:port>", addr_str);
+            return;
+        }
+
+        auto host = std::string(addr_str.substr(0, pos));
+        auto port = ston<u16>(std::string(addr_str.substr(pos + 1)));
+        auto name = args.by_key_default<std::string>("--name", "client0");
+
+        if (auto error = client_connect(host, port, name)) {
+            glog().error("multiplayer: {}", *error);
+            return;
+        }
+
+        auto interp_ms = [&](const char* key, double default_s) {
+            auto value = args.by_key_opt<std::string>(key);
+            if (!value)
+                return default_s;
+            if (auto ms = parse_count(*value))
+                return double(*ms) / 1000.0;
+            glog().error("multiplayer: {} expects milliseconds, got '{}'", key, *value);
+            return default_s;
+        };
+        net_cli->interp_settings(interp_ms("--interp-min", net::server_clock::min_interp_s),
+                                 interp_ms("--interp-margin", net::server_clock::interp_margin_s));
+        net_cli->input_margin(interp_ms("--input-margin", net::net_client::default_input_margin_s));
     }
 };
 }
