@@ -37,6 +37,7 @@ jobs:
           easybuild-windows/cfg_test.exe
           easybuild-windows/tasks_test.exe
           easybuild-windows/net_test.exe
+          easybuild-windows/lua_test.exe
 
   test:
     needs: build
@@ -64,7 +65,7 @@ jobs:
       shell: bash
       run:  |
             status=0
-            for t in cfg_test tasks_test net_test; do
+            for t in cfg_test tasks_test net_test lua_test; do
                 echo "::group::$t"
                 ./$t.exe || status=1
                 echo "::endgroup::"

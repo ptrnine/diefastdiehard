@@ -6,10 +6,10 @@
 #   ./build-windows.sh prod           release build + self-contained dist dir
 #   ./build-windows.sh --rebuild-subs force submodule rebuild
 #   ./build-windows.sh dfdh           build only the named target
-#             cfg_test|tasks_test|net_test
+#             cfg_test|tasks_test|net_test|lua_test
 #
 # Produces Windows executables under <builddir>/:
-#   dfdh.exe, cfg_test.exe, tasks_test.exe, net_test.exe
+#   dfdh.exe, cfg_test.exe, tasks_test.exe, net_test.exe, lua_test.exe
 # with <builddir>/dist ready to run on a Windows machine (dfdh.exe + data/
 # + fs.cfg) when invoked with 'prod'.
 #
@@ -696,6 +696,20 @@ $builddir/luajit/lib/libluajit-5.1.a \
     build_executable \
         net_test \
         tests/net_test.cpp \
+        "$builddir" \
+        "$CXX_COMPILER" \
+        "$debug" \
+        "$hardening_flags $static_flags $define_flags $platform_defines" \
+        "-L $builddir/3rd/lib -lCatch2Main -lCatch2 $static_libs $system_libs" \
+        "$(include_list \
+            "system:$(pwd)/$builddir/3rd/include/luajit-2.1" \
+            "system:$(pwd)/$builddir/3rd/include" \
+            "$(pwd)/src" \
+        )"
+
+    build_executable \
+        lua_test \
+        tests/lua.cpp \
         "$builddir" \
         "$CXX_COMPILER" \
         "$debug" \

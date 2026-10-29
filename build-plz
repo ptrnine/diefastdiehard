@@ -800,6 +800,20 @@ $([ "$asan" == true ] && asan_flags)
             "$(pwd)/src" \
         )"
 
+    build_executable \
+        lua_test \
+        tests/lua.cpp \
+        "$builddir" \
+        "$CXX_COMPILER" \
+        "$debug" \
+        "$hardening_flags $static_flags $define_flags" \
+        "$extra_link_path $static_libs -lCatch2Main -lCatch2" \
+        "$(include_list \
+            "system:$(pwd)/$builddir/submodules/luacpp/3rd/include/luajit-2.1" \
+            "system:$(pwd)/$builddir/3rd/include" \
+            "$(pwd)/src" \
+        )"
+
     [ "$prod" = true ] && build_dist "$builddir"
 
     [ "$compodb" = true ] && gen_compodb "$builddir" "$compodb_source"

@@ -39,7 +39,7 @@ jobs:
             export LD_LIBRARY_PATH=$b/3rd/lib:$b/3rd/lib64:$b/submodules/luacpp/3rd/lib:$b/submodules/luacpp/3rd/lib64
             export LSAN_OPTIONS=suppressions=$PWD/tests/lsan.supp
             status=0
-            for t in cfg_test tasks_test net_test; do
+            for t in cfg_test tasks_test net_test lua_test; do
                 echo "::group::$t"
                 xvfb-run -a ./$b/$t || status=1
                 echo "::endgroup::"

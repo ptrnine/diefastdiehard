@@ -40,7 +40,7 @@ loading needs a GL context, so run under xvfb:
 ```sh
 xvfb-run -a env LD_LIBRARY_PATH=easybuild-debug/3rd/lib:easybuild-debug/3rd/lib64:\
 easybuild-debug/submodules/luacpp/3rd/lib:easybuild-debug/submodules/luacpp/3rd/lib64 \
-./easybuild-debug/cfg_test    # also: tasks_test, net_test
+./easybuild-debug/cfg_test    # also: tasks_test, net_test, lua_test
 ```
 
 Under `--asan`, set `LSAN_OPTIONS=suppressions=$PWD/tests/lsan.supp` (Mesa
