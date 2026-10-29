@@ -33,6 +33,8 @@ public:
     }
 
     static constexpr float mid_impulse = 1200.f;
+    /* The default jump speed (px/s), a level config can override it with jump_speed */
+    static constexpr float default_jump_speed = 620.f;
     /* A hit at least this hard "pwns": the headshot sound, the hat is knocked off */
     static constexpr float pwned_impulse = 2200.f;
 
@@ -1461,7 +1463,7 @@ private:
     float _max_speed        = 280.f;
     float _x_accel          = 1550.f; // 2250.f;
     float _x_slowdown       = 700.f;
-    float _jump_speed       = 620.f;
+    float _jump_speed       = default_jump_speed;
 
     float _cur_x_accel_l = 0.f;
     float _cur_x_accel_r = 0.f;

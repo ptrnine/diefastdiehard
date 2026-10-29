@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 24;
+inline constexpr u16 protocol_version = 25;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -273,15 +273,16 @@ struct state_player {
     u16   accel_rf   = 65535;
     u16   teleports  = 0; // player::teleports: a change means "jump there, don't interpolate"
     i16   score      = 0; // player::score
+    float jump_speed = 0.f; // player::jump_speed (px/s), the level's one (the client applies it to its mirrors)
 
     std::vector<u32> hits = {}; // ids of the bullets that hit the player in the last second
 
     void serialize(auto& s) const {
-        s.write(id, pos_x, pos_y, vel_x, vel_y, flags, jumps_left, accel_lf, accel_rf, teleports, score, hits);
+        s.write(id, pos_x, pos_y, vel_x, vel_y, flags, jumps_left, accel_lf, accel_rf, teleports, score, jump_speed, hits);
     }
 
     void deserialize(auto& d) {
-        d.read(id, pos_x, pos_y, vel_x, vel_y, flags, jumps_left, accel_lf, accel_rf, teleports, score, hits);
+        d.read(id, pos_x, pos_y, vel_x, vel_y, flags, jumps_left, accel_lf, accel_rf, teleports, score, jump_speed, hits);
     }
 };
 

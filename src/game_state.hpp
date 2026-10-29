@@ -255,9 +255,17 @@ public:
         return true;
     }
 
+    /* The level's jump speed, the player default if the level doesn't set it */
+    static float level_jump_speed(const level& lvl) {
+        return lvl.jump_speed().value_or(player::default_jump_speed);
+    }
+
     /* Apply the current level to the simulation and restart the level-scoped state */
     void level_setup(const std::string& level_name) {
         cur_level->setup_to(sim);
+        /* The level's jump speed goes to all players (reloading the level resets it) */
+        for (auto& [_, pl] : players)
+            pl->jump_speed(level_jump_speed(*cur_level));
         crates.clear();
         crate_timer.restart();
         sig_level_changed.emit_deferred(level_name);
@@ -466,6 +474,7 @@ public:
             /* A player spawns with its secondary gun only (server-driven: synced from the server) */
             if (!player->server_driven())
                 player->equip_secondary();
+            player->jump_speed(level_jump_speed(*cur_level));
             player->teleport(cur_level->pick_player_spawn());
             player->enable_double_jump();
         } else {

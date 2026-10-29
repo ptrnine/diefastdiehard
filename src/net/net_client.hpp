@@ -1599,6 +1599,8 @@ private:
             pl->set_server_driven(true);
             if (newest) {
                 pl->score(sp.score);
+                /* The level's jump speed (the client's level config says the same, the server is authoritative) */
+                pl->jump_speed(sp.jump_speed);
                 if (gs.lobby.active)
                     gs.lobby.ready[name] = (sp.flags & state_player::flag_ready) != 0;
             }

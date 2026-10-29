@@ -140,7 +140,7 @@ TEST_CASE("protocol: message round-trips") {
                                           .flags = state_player::flag_lock_y | state_player::flag_on_left |
                                                    state_player::flag_shooting,
                                           .jumps_left = 1, .accel_lf = pack_unit(0.5f), .teleports = 9,
-                                          .score = -3, .hits = {4, 5}});
+                                          .score = -3, .jump_speed = 500.f, .hits = {4, 5}});
         st.players.push_back(state_player{.id = 2});
 
         auto data = encode_msg(msg_type::state, st);
@@ -179,6 +179,7 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(unpack_unit(r.players[0].accel_rf) == 1.f);
         CHECK(r.players[0].teleports == 9);
         CHECK(r.players[0].score == -3);
+        CHECK(r.players[0].jump_speed == 500.f);
         CHECK(r.players[0].hits == std::vector<u32>{4, 5});
         CHECK(r.players[1].id == 2);
         CHECK_FALSE(r.players[1].flags);
@@ -259,12 +260,12 @@ TEST_CASE("protocol: message round-trips") {
 
         auto size = encode_msg(msg_type::state, st).size();
         UNSCOPED_INFO("state datagram: " << size << " bytes");
-        CHECK(size <= 375); /* (+1: the absent lobby_info) */
+        CHECK(size <= 395); /* (+1: the absent lobby_info) */
 
         /* Configs ride along only when a client may not know them */
         for (u16 id = 1; id <= 4; ++id)
             st.configs.push_back(player_config{.id = id, .name = "client" + std::to_string(u32(id)), .pistol = "wpn_1887"});
-        CHECK(encode_msg(msg_type::state, st).size() <= 360 + 4 * 42); /* head_id and hat_id: +4 per config */
+        CHECK(encode_msg(msg_type::state, st).size() <= 384 + 4 * 42); /* head_id and hat_id: +4 per config */
     }
 
     SECTION("leave") {
@@ -3730,6 +3731,28 @@ TEST_CASE("net: lives and the elimination are synced") {
     CHECK(f.local().get_position().x != game_state::eliminated_park_pos.x);
 }
 
+TEST_CASE("net: the level's jump speed reaches the client") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{100, 100};
+    f.run_for(500ms);
+    CHECK(f.local().get_jump_speed() == player::default_jump_speed);
+
+    /* A level with a custom jump speed (both sides load it from their level configs, the server's STATE confirms it) */
+    auto& sect = cfg::mutable_global().get_or_create(cfg_section_name{"lvl_js_net"}, {}, cfg::insert_mode::at_the_end);
+    sect.raw_set("name", "js_net");
+    sect.raw_set("gravity", "0 1200");
+    sect.raw_set("platform_height", "25");
+    sect.raw_set("view_size", "2000 900");
+    sect.raw_set("level_size", "2600 1300");
+    sect.raw_set("jump_speed", "500");
+    REQUIRE(f.gs_srv.level_current("lvl_js_net"));
+    CHECK(f.server_side().get_jump_speed() == 500.f);
+    f.run_for(1000ms);
+    REQUIRE(f.gs_cli.cur_level);
+    CHECK(f.gs_cli.cur_level->section_name() == "lvl_js_net");
+    CHECK(f.local().get_jump_speed() == 500.f);
+}
+
 TEST_CASE("protocol: lobby request and the ready flag") {
     using namespace net;
     auto data = encode_msg(msg_type::lobby, lobby_request{42, 7, 3, 1});
@@ -3895,4 +3918,35 @@ TEST_CASE("net: merged input ticks keep the trigger presses and releases") {
     CHECK(f.cli->ammo_corrections() == 0);
     CHECK(cli_gun.ammo_elapsed() == srv_gun.ammo_elapsed());
     CHECK(cli_gun.ammo_reserve() == srv_gun.ammo_reserve());
+}
+
+TEST_CASE("level: jump speed from the level config") {
+    game_state gs;
+    REQUIRE(gs.level_current("lvl_aes"));
+
+    auto pl = gs.player_create("js_test");
+    REQUIRE(pl != nullptr);
+    /* lvl_aes has no jump_speed: the player default */
+    CHECK(pl->get_jump_speed() == player::default_jump_speed);
+
+    /* A level with jump_speed sets it for the existing players */
+    auto& sect = cfg::mutable_global().get_or_create(cfg_section_name{"lvl_js_test"}, {}, cfg::insert_mode::at_the_end);
+    sect.raw_set("name", "js_test");
+    sect.raw_set("gravity", "0 1200");
+    sect.raw_set("platform_height", "25");
+    sect.raw_set("view_size", "2000 900");
+    sect.raw_set("level_size", "2600 1300");
+    sect.raw_set("jump_speed", "500");
+    REQUIRE(gs.level_current("lvl_js_test"));
+    CHECK(pl->get_jump_speed() == 500.f);
+
+    /* A player created after the level load gets the level's jump speed */
+    auto pl2 = gs.player_create("js_test2");
+    REQUIRE(pl2 != nullptr);
+    CHECK(pl2->get_jump_speed() == 500.f);
+
+    /* Switching back to a level without jump_speed restores the player default */
+    REQUIRE(gs.level_current("lvl_aes"));
+    CHECK(pl->get_jump_speed() == player::default_jump_speed);
+    CHECK(pl2->get_jump_speed() == player::default_jump_speed);
 }

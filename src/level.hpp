@@ -5,6 +5,7 @@
 #include <SFML/Graphics/Texture.hpp>
 
 #include <filesystem>
+#include <optional>
 #include <vector>
 
 #include "base/vec_math.hpp"
@@ -40,6 +41,11 @@ public:
         auto& sect = cfg::global().get_section(_section);
         _name        = sect.value<std::string>("name");
         _gravity     = sect.value<vec2f>("gravity");
+        /* Optional: the player jump speed (px/s) for this level */
+        if (auto js = sect.try_get<float>("jump_speed"))
+            _jump_speed = js->value();
+        else
+            _jump_speed.reset();
         _platform_sz = sect.value<float>("platform_height");
         _view_size   = sect.value<vec2f>("view_size");
         _level_size  = sect.value<vec2f>("level_size");
@@ -160,6 +166,7 @@ private:
     std::string _background_txtr_path;
 
     float _platform_sz = 10.f;
+    std::optional<float> _jump_speed;
     vec2f _view_size;
     vec2f _level_size;
     vec2f _gravity;
@@ -191,6 +198,12 @@ public:
     [[nodiscard]]
     const vec2f& level_size() const {
         return _level_size;
+    }
+
+    /* The level's jump speed (px/s), or none to keep the player default */
+    [[nodiscard]]
+    std::optional<float> jump_speed() const {
+        return _jump_speed;
     }
 
     [[nodiscard]]
