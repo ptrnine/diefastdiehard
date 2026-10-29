@@ -162,9 +162,9 @@ win) win "${1:?NAME}" ;;
 down)
     pids=()
     for p in "$out"/*.pid; do
-        [[ -s $p ]] || continue
+        [[ -f $p ]] || continue
         pids+=("$(cat "$p")")
-        : >"$p"; : >"${p%.pid}.win"
+        rm -f "$p" "${p%.pid}.win"
     done
     pids+=($(pgrep -f "^Xvfb $DISPLAY " || true))
     ((${#pids[@]})) && kill "${pids[@]}" 2>/dev/null || true
