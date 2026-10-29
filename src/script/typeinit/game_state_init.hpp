@@ -34,6 +34,18 @@ inline void lua_game_state_init(luacpp::luactx& ctx) {
         return res;
     });
 
+    ctx.annotate({.comment = "Positions (bottom left) of the crates on the level as a flat list: x1, y1, x2, y2, ...",
+                  .explicit_type = "table<integer, number>"});
+    ctx.provide_member<game_state_p>(LUA_TNAME("list_crates"), [](const game_state_p& g) {
+        std::vector<float> res;
+        for (auto& c : g->crates) {
+            auto pos = c->get_position();
+            res.push_back(pos.x);
+            res.push_back(pos.y);
+        }
+        return res;
+    });
+
     ctx.annotate({.comment = "Get player by name, nil if not found",
                   .argument_names = {"name"},
                   .explicit_type = "player"});
