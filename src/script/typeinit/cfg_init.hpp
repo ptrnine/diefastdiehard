@@ -128,23 +128,21 @@ inline void lua_cfg_init(luacpp::luactx& ctx) {
             }
         });
 
-    // NOTE: lambdas must be passed inline (as rvalues) here. A named lambda variable is
-    // an lvalue, which fails luacpp's LuaFunctionLike constraint (it doesn't decay T), so
-    // luaprovide falls back to the generic value overload and luapush picks the
-    // luapush(bool) overload — lambdas convert to bool — registering `true` instead of
-    // the C function.
+    static constexpr auto list_sections_f = [](cfg_ptr_t conf) {
+        return conf->list_sections();
+    };
     ctx.annotate({.comment = "Get sections list", .argument_names = {"config"}});
-    ctx.provide_member<cfg_ptr_t>(LUA_TNAME("list_sections"), [](const cfg_ptr_t& conf) { return conf->list_sections(); });
+    ctx.provide_member<cfg_ptr_t>(LUA_TNAME("list_sections"), list_sections_f);
     ctx.annotate({.comment = "Get sections list", .argument_names = {"config"}});
-    ctx.provide_member<cfg>(LUA_TNAME("list_sections"), [](cfg& conf) { return conf.list_sections(); });
+    ctx.provide_member<cfg>(LUA_TNAME("list_sections"), list_sections_f);
 
+    static constexpr auto has_section_f = [](cfg_ptr_t conf, const std::string& section_name) {
+        return conf->has_section(section_name);
+    };
     ctx.annotate({.comment = "Check is section exists", .argument_names = {"config", "section_name"}});
-    ctx.provide_member<cfg_ptr_t>(
-        LUA_TNAME("has_section"),
-        [](const cfg_ptr_t& conf, const std::string& section_name) { return conf->has_section(section_name); });
+    ctx.provide_member<cfg_ptr_t>(LUA_TNAME("has_section"), has_section_f);
     ctx.annotate({.comment = "Check is section exists", .argument_names = {"config", "section_name"}});
-    ctx.provide_member<cfg>(
-        LUA_TNAME("has_section"), [](cfg& conf, const std::string& section_name) { return conf.has_section(section_name); });
+    ctx.provide_member<cfg>(LUA_TNAME("has_section"), has_section_f);
 
     using section_ptr_t = cfg_section<false>*;
     ctx.annotate({.comment = "Get value by key", .argument_names = {"section", "key"}});
