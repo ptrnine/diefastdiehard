@@ -57,6 +57,10 @@ public:
         hud_cfg.range = glyph_ranges;
         fonts.hud = nk_font_atlas_add_from_file(&_sfml.atlas, "data/font/RobotoMono-Regular.ttf", hud_font_size, &hud_cfg);
 
+        auto menu_cfg  = nk_font_config(menu_font_size);
+        menu_cfg.range = glyph_ranges;
+        fonts.menu = nk_font_atlas_add_from_file(&_sfml.atlas, "data/font/RobotoMono-Regular.ttf", menu_font_size, &menu_cfg);
+
         nk_sfml_font_stash_end(&_sfml);
         //nk_style_load_all_cursors(&_sfml.ctx, _sfml.atlas.cursors);
         nk_style_set_font(&_sfml.ctx, &fonts.pt17->handle);
@@ -109,10 +113,18 @@ public:
 
     static constexpr float hud_font_size = 40.f;
 
+    /* Main menu font: drawn scaled down from this size (a copy with a smaller height) */
+    [[nodiscard]]
+    const nk_user_font* menu_font() const {
+        return &fonts.menu->handle;
+    }
+
+    static constexpr float menu_font_size = 56.f;
+
 private:
     nk_sfml _sfml;
     struct fonts_t {
-        struct nk_font* pt16, *pt17, *pt18, *pt20, *pt22, *hud;
+        struct nk_font* pt16, *pt17, *pt18, *pt20, *pt22, *hud, *menu;
     } fonts = {};
 };
 

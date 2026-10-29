@@ -52,10 +52,24 @@ public:
         auto wnd_h = std::min(window_size.y - 40.f, 520.f);
         auto rect  = nk_rect((window_size.x - wnd_w) * 0.5f, (window_size.y - wnd_h) * 0.5f, wnd_w, wnd_h);
 
-        if (ui.begin_titled("lobby", owner() ? "lobby (server)" : "lobby", rect, NK_WINDOW_TITLE | NK_WINDOW_BORDER)) {
+        if (_reopen) {
+            /* Nuklear keeps a closed window hidden */
+            ui.window_show(wnd_name, NK_SHOWN);
+            _reopen = false;
+        }
+
+        if (ui.begin_titled(wnd_name, owner() ? "lobby (server)" : "lobby", rect, NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_CLOSABLE)) {
             settings_draw(ui, gs);
             players_draw(ui, gs);
             bottom_draw(ui, gs);
+        }
+        else {
+            /* Closed: the same as the cancel lobby / leave button */
+            _reopen = true;
+            if (owner() && _act.cancel_lobby)
+                _act.cancel_lobby();
+            else if (!owner() && _act.leave)
+                _act.leave();
         }
         ui.end();
 
@@ -64,6 +78,8 @@ public:
     }
 
 private:
+    static constexpr const char* wnd_name = "lobby";
+
     static constexpr float column_width = 200.f; /* the icons are this wide too */
     static constexpr float row_height       = 25.f;
     static constexpr float sprite_scale = 1.5f;
@@ -274,6 +290,7 @@ private:
     std::vector<std::string>         _levels;
     std::vector<std::string>         _modes;
     std::map<player_name_t, icon_t>  _icons;
+    bool                             _reopen = false;
 };
 
 }

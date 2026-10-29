@@ -88,9 +88,17 @@ instead of sleeping. Use it for any new gameplay/network timer.
   period, magazines count: primary gun ammo limit, emptied guns are dropped) from the `gm_` sections of `data/game_mode.cfg`, not from the
   level. `gm_default` is applied on start; console `game mode [name|list]`
   (`game_state::game_mode_apply`). The server sends it to clients in STATE.
+- `src/ui/main_menu.hpp` — main menu ("Host Lobby", "Connect Lobby", "Exit"):
+  shown out of a game with no window open (no server/client, no lobby,
+  connect window or player configurator), fades in/out; hovered options grow
+  via a scaled copy of `ui_ctx::menu_font()` (nuklear scales baked fonts by
+  `nk_user_font::height`; the copy must outlive `ui.render()`). Host starts a
+  server (`host_port` in `[game_settings]`, default 10443) and opens its
+  lobby; cancelling (or closing) that lobby stops the server.
 - `src/lobby.hpp` + `src/ui/lobby_ui.hpp` — multiplayer lobby (opened on
   `--server`/`--client` launch, console `lobby [start]`): the owner picks the
-  level/mode/groups and starts (`game_state::lobby_start`); nothing is
+  level/mode/groups and starts (`game_state::lobby_start`); closing the window
+  is cancel lobby (owner) / leave (client); nothing is
   simulated while `game_state::lobby.active`. The UI only calls
   `lobby_ui::actions_t` callbacks (wired in `diefastdiehard.cpp`).
   `src/ui/connect_ui.hpp`: "Connect to lobby" window (console `ui connect`):

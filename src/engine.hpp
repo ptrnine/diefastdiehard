@@ -9,7 +9,6 @@
 
 #include "ui/nuklear.hpp"
 #include "ui/devconsole.hpp"
-#include "ui/main_menu.hpp"
 
 #include "command_buffer.hpp"
 
@@ -48,7 +47,6 @@ public:
 
         auto wnd_size = window_size_float();
         _devcons.place_into_window(wnd_size);
-        _main_menu.set_size(wnd_size);
 
         _wnd.setVerticalSyncEnabled(_game_settings.value_or_default_and_set("vsync", true));
         _wnd.setFramerateLimit(_game_settings.value_or_default_and_set("framerate_limit", 60U));
@@ -75,7 +73,6 @@ public:
                     }
                     else if (auto resized = evt.getIf<sf::Event::Resized>()) {
                         on_window_resize(resized->size.x, resized->size.y);
-                        _main_menu.set_size({float(resized->size.x), float(resized->size.y)});
                     }
                     else {
                         if (!_devcons.is_active())
@@ -134,10 +131,6 @@ end:
 
     devconsole& devcons() {
         return _devcons;
-    }
-
-    main_menu& mainmenu() {
-        return _main_menu;
     }
 
     virtual void ui_update() {
@@ -254,7 +247,6 @@ private:
     sf::ContextSettings _settings{24, 8, 4, 3, 3};
     sf::RenderWindow    _wnd;
     devconsole          _devcons;
-    main_menu           _main_menu;
     profiler            loop_prof;
     bool                profiler_print = false;
 

@@ -4,6 +4,7 @@
 #include "ui/player_configurator_ui.hpp"
 #include "ui/lobby_ui.hpp"
 #include "ui/connect_ui.hpp"
+#include "ui/main_menu.hpp"
 
 #include "engine.hpp"
 #include "command_buffer.hpp"
@@ -241,6 +242,7 @@ public:
         init_signals();
         init_commands();
         init_connect_ui();
+        init_main_menu();
 
         /* Taken before init_client: it reads the server address with args.next() */
         auto lua_fifo_path = args.by_key_opt<std::string>("--lua-exec-fifo");
@@ -294,6 +296,15 @@ public:
 
         connect_update();
 
+        if (server_stop) {
+            /* The menu's lobby was cancelled: back to the main menu */
+            server_stop = false;
+            server_from_ui = false;
+            lobby_wnd.reset();
+            net_srv.reset();
+            glog().info("multiplayer: server stopped");
+        }
+
         if (net_srv)
             net_srv->update(gs);
 
@@ -322,12 +333,15 @@ public:
         if (net_hud)
             net_hud_draw();
         gs.ui_update(ui, window_size_float());
+        /* Shown out of a game with no window open; drawn first: the windows go over it while it fades */
+        main_menu_wnd->show(!net_srv && !net_cli && !gs.lobby.active && !connect_wnd->shown() &&
+                            !(gs.pconf_ui && gs.pconf_ui->shown()));
+        main_menu_wnd->update(ui, window_size_float());
         /* The player configurator is drawn instead of the lobby while it is open */
         connect_wnd->update(ui, window_size_float());
         /* A client's lobby is shown once the server accepted it */
         if (lobby_wnd && gs.lobby.active && !(gs.pconf_ui && gs.pconf_ui->shown()) && (!net_cli || net_cli->joined()))
             lobby_wnd->update(ui, gs, window_size_float());
-        //mainmenu().update(ui);
     }
 
     void render_update(sf::RenderWindow& wnd) final {
@@ -467,6 +481,9 @@ private:
     player_name_t                            my_player_name;
     std::optional<lobby_ui>                  lobby_wnd;
     std::optional<connect_ui>                connect_wnd;
+    std::optional<main_menu>                 main_menu_wnd;
+    bool                                     server_from_ui = false; /* hosted from the main menu: cancel lobby stops it */
+    bool                                     server_stop    = false; /* the menu's lobby was cancelled */
     bool                                     client_from_ui = false; /* joined from the connect window: leave returns to it */
     std::optional<std::string>               client_error;          /* the server rejected the joining client */
     bool                                     client_leave = false;  /* the lobby's leave was clicked */
@@ -488,7 +505,12 @@ private:
             customize_player(name, [this, name] { gs.player_conf_reload(name); });
         };
         act.start         = [this] { gs.lobby_start(); };
-        act.cancel_lobby  = [this] { gs.lobby_close(); };
+        act.cancel_lobby  = [this] {
+            gs.lobby_close();
+            /* Handled in game_update: the lobby window can't be destroyed while it is drawn */
+            if (server_from_ui)
+                server_stop = true;
+        };
         act.local_players = [this] {
             std::vector<player_name_t> res;
             for (auto& [name, _] : gs.controlled_players)
@@ -530,12 +552,25 @@ private:
         gs.lobby_open();
     }
 
+    static constexpr u16 default_port = 10443;
+
+    /* Returns false if the server can't listen on the port */
+    bool server_start(u16 port) {
+        net_srv = std::make_shared<net::net_server>(port);
+        if (!net_srv->is_ready()) {
+            glog().error("multiplayer: can't start the server on port {}", port);
+            return false;
+        }
+        glog().info("multiplayer: server started on port {}", port);
+        return true;
+    }
+
     void init_server(args_view& args) {
-        u16 port = 10443;
+        u16 port = default_port;
         if (auto port_arg = args.by_key_opt<std::string>("--port"))
             port = ston<u16>(*port_arg);
 
-        net_srv = std::make_shared<net::net_server>(port);
+        server_start(port);
         if (auto buffer = args.by_key_opt<std::string>("--input-buffer"); buffer && *buffer != "auto") {
             if (auto ticks = parse_count(*buffer))
                 net_srv->input_buffer(*ticks);
@@ -543,12 +578,22 @@ private:
                 glog().error("multiplayer: --input-buffer expects 'auto' or a number of ticks, got '{}'", *buffer);
         }
 
-        if (!net_srv->is_ready())
-            glog().error("multiplayer: can't start the server on port {}", port);
-        else
-            glog().info("multiplayer: server started on port {}", port);
-
         init_server_lobby();
+    }
+
+    void init_main_menu() {
+        main_menu::actions_t act;
+        act.host = [this] {
+            if (!server_start(u16(game_settings().value_or_default_and_set<u32>("host_port", default_port)))) {
+                net_srv.reset();
+                return;
+            }
+            server_from_ui = true;
+            init_server_lobby();
+        };
+        act.connect = [this] { connect_wnd->show(true); };
+        act.exit    = [this] { gs.sig_shutdown.emit_deferred(); };
+        main_menu_wnd.emplace(std::move(act));
     }
 
     void init_connect_ui() {
