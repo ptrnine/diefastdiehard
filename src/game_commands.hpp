@@ -165,20 +165,8 @@ public:
     }
 
     void cmd_player_delete(const std::string& player_name) {
-        auto found = gs.players.find(player_name);
-        if (found != gs.players.end()) {
-            auto found_ai = gs.ai_operators.find(player_name);
-            if (found_ai != gs.ai_operators.end()) {
-                gs.ai_operators.erase(found_ai);
-                glog().info("ai operator {} deleted", player_name);
-            }
-
-            gs.players.erase(found);
-            glog().info("player {} deleted", player_name);
-        }
-        else {
+        if (!gs.player_remove(player_name_t(player_name)))
             glog().error("player {} not found", player_name);
-        }
     }
 
     void cmd_player_wpn(const std::string& player_name, const std::optional<std::string>& wpn_section) {

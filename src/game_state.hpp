@@ -132,6 +132,23 @@ public:
         return it->second.get();
     }
 
+    bool player_remove(const player_name_t& player_name) {
+        auto found = players.find(player_name);
+        if (found == players.end())
+            return false;
+
+        if (auto found_ai = ai_operators.find(player_name); found_ai != ai_operators.end()) {
+            ai_operators.erase(found_ai);
+            glog().info("ai operator {} deleted", player_name);
+        }
+
+        /* The player is no longer controlled locally */
+        std::erase_if(controlled_players, [player_name](const auto& entry) { return entry.first == player_name; });
+        players.erase(found);
+        glog().info("player {} deleted", player_name);
+        return true;
+    }
+
     /**
      * Player driven from this PC: by an attached controller, or the network
      * client's predicted local player (driven by per-tick input sampling)

@@ -3,6 +3,7 @@
 #include "lua.hpp"
 
 #include "typeinit/vec2f_init.hpp"
+#include "typeinit/player_init.hpp"
 #include "typeinit/game_state_init.hpp"
 #include "typeinit/timer_init.hpp"
 #include "typeinit/log_init.hpp"
@@ -23,6 +24,7 @@ inline void lua_global_instance_init(luacpp::luactx& ctx) {
     lua_vec2f_init(ctx);
     lua_log_init(ctx);
     lua_timer_init(ctx);
+    lua_player_init(ctx);
     lua_game_state_init(ctx);
     lua_sfml_event_init(ctx);
     lua_cfg_init(ctx);

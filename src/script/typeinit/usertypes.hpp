@@ -39,6 +39,7 @@ struct luacpp::typespec_list_s<0> {
                             typespec<dfdh::ai_platform_t, LUA_TNAME("ai_platform_t")>,
                             typespec<dfdh::ai_data_t, LUA_TNAME("ai_data_t")>,
                             typespec<dfdh::ai_operator_base*, LUA_TNAME("ai_operator_t")>,
+                            typespec<dfdh::player*, LUA_TNAME("player")>,
                             typespec<dfdh::game_state*, LUA_TNAME("game_state")>,
                             typespec<sf::Event, LUA_TNAME("sfml_event")>,
                             typespec<dfdh::cfg*, LUA_TNAME("cfg_ref")>,
