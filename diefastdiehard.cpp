@@ -18,6 +18,7 @@
 #include "net_player_controller.hpp"
 
 #include <format>
+#include <sstream>
 
 #include <SFML/Network/Dns.hpp>
 #include <SFML/Network/IpAddress.hpp>
@@ -229,6 +230,20 @@ public:
             init_client(args);
 
         init_lua();
+
+        if (args.get("--lua-exec-stdin"))
+            execute_lua_stdin();
+    }
+
+    /* Execute the whole stdin the way the in-game `lua` command executes its line */
+    void execute_lua_stdin() {
+        std::ostringstream oss;
+        oss << std::cin.rdbuf();
+        auto code = oss.str();
+        if (code.empty())
+            glog().error("--lua-exec-stdin: stdin is empty, nothing to execute");
+        else
+            lua->execute_line(code);
     }
 
     void on_destroy() final {
