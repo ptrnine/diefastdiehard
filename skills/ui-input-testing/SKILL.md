@@ -148,7 +148,7 @@ the window state (console open, configurator on top), not the recipe.
 
 ## Gotchas
 
-- Window size/position come from `data/settings/engine.cfg` (written by the
+- Window size/position come from `data/settings/game_settings.cfg` (written by the
   game, gitignored; a dist has its own). With a screen smaller than
   `window_pos + window_size` part of the window is simply not rendered into
   screenshots — that is why `up` uses a large screen and `launch` moves the

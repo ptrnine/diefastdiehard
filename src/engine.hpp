@@ -21,7 +21,7 @@ namespace defaults {
 
 class engine {
 public:
-    static constexpr auto config_path = "data/settings/engine.cfg";
+    static constexpr auto config_path = "data/settings/game_settings.cfg";
 
     static sf::VideoMode video_mode(vec2u wnd_size) {
         return sf::VideoMode(wnd_size);
@@ -29,8 +29,8 @@ public:
 
     engine():
         _conf(config_path, cfg_mode::create_if_not_exists | cfg_mode::commit_at_destroy | cfg_mode::autocreate_dir),
-        _engine_conf(_conf.get_or_create("engine"_sect)),
-        _wnd(video_mode(_engine_conf.value_or_default_and_set("window_size", defaults::window_size)), "diefastdiehard"),
+        _game_settings(_conf.get_or_create("game_settings"_sect)),
+        _wnd(video_mode(_game_settings.value_or_default_and_set("window_size", defaults::window_size)), "diefastdiehard"),
         _devcons(ui) {
 
         if (!_wnd.setActive(true))
@@ -50,10 +50,10 @@ public:
         _devcons.place_into_window(wnd_size);
         _main_menu.set_size(wnd_size);
 
-        _wnd.setVerticalSyncEnabled(_engine_conf.value_or_default_and_set("vsync", true));
-        _wnd.setFramerateLimit(_engine_conf.value_or_default_and_set("framerate_limit", 60U));
+        _wnd.setVerticalSyncEnabled(_game_settings.value_or_default_and_set("vsync", true));
+        _wnd.setFramerateLimit(_game_settings.value_or_default_and_set("framerate_limit", 60U));
 
-        profiler_print = _engine_conf.value_or_default_and_set("profiler", false);
+        profiler_print = _game_settings.value_or_default_and_set("profiler", false);
 
         while (_wnd.isOpen()) {
             {
@@ -154,8 +154,18 @@ end:
     virtual void post_update() = 0;
 
     virtual void on_window_resize(u32 width, u32 height) {
-        _engine_conf.set("window_size", vec2u{width, height});
-        _engine_conf.set("window_pos", window_position());
+        _game_settings.set("window_size", vec2u{width, height});
+        _game_settings.set("window_pos", window_position());
+    }
+
+    /* The [game_settings] section of data/settings/game_settings.cfg (window, connect window fields) */
+    cfg_section<false>& game_settings() {
+        return _game_settings;
+    }
+
+    /* Write the settings now (they are written on exit anyway) */
+    void game_settings_commit() {
+        _conf.commit();
     }
 
     void enable_profiler_print(bool value) {
@@ -206,7 +216,7 @@ private:
             resize_window(wnd_size);
 
         auto wnd_pos =
-            _engine_conf.value_or_default_and_set("window_pos", static_cast<vec2i>((screen_sz / 2) - (wnd_size / 2)));
+            _game_settings.value_or_default_and_set("window_pos", static_cast<vec2i>((screen_sz / 2) - (wnd_size / 2)));
         _wnd.setPosition(wnd_pos);
     }
 
@@ -240,7 +250,7 @@ protected:
 
 private:
     cfg                 _conf;
-    cfg_section<false>  _engine_conf;
+    cfg_section<false>  _game_settings;
     sf::ContextSettings _settings{24, 8, 4, 3, 3};
     sf::RenderWindow    _wnd;
     devconsole          _devcons;

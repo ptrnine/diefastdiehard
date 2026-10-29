@@ -23,17 +23,26 @@ public:
     /* The server did not answer: the attempt fails after this long */
     static constexpr float timeout_s = 5.f;
 
+    /* The fields' text */
+    struct params_t {
+        std::string host = "127.0.0.1";
+        std::string port = "10443";
+        std::string name = "client0";
+    };
+
     struct actions_t {
         /* Start a connection: an error message if it can't start */
         std::function<std::optional<std::string>(const std::string& host, u16 port, const std::string& name)> connect;
         /* Abort the connection in progress */
         std::function<void()> cancel;
+        /* The fields when the window opens (the last saved ones) */
+        std::function<params_t()> load;
+        /* The window closed (for any reason): keep the fields */
+        std::function<void(const params_t&)> save;
     };
 
     explicit connect_ui(actions_t actions): _act(std::move(actions)) {
-        set_text(_host, "127.0.0.1");
-        set_text(_port, "10443");
-        set_text(_name, "client0");
+        params(params_t{});
     }
 
     void update(ui_ctx& ui, const vec2f& window_size) {
@@ -60,15 +69,32 @@ public:
             if (_connecting && _act.cancel)
                 _act.cancel();
             _connecting = false;
-            _show       = false;
+            show(false);
         }
         ui.end();
     }
 
     void show(bool value) {
-        if (value && !_show)
+        if (value && !_show) {
             _reopen = true;
+            if (_act.load)
+                params(_act.load());
+        }
+        else if (!value && _show && _act.save) {
+            _act.save(params());
+        }
         _show = value;
+    }
+
+    [[nodiscard]]
+    params_t params() const {
+        return {_host.data(), _port.data(), _name.data()};
+    }
+
+    void params(const params_t& value) {
+        set_text(_host, value.host.data());
+        set_text(_port, value.port.data());
+        set_text(_name, value.name.data());
     }
 
     [[nodiscard]]

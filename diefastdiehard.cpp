@@ -562,6 +562,23 @@ private:
             return client_connect(host, port, name);
         };
         act.cancel = [this] { client_reset(); };
+        act.load   = [this] {
+            auto&                p = game_settings();
+            connect_ui::params_t res;
+            res.host = p.value_or_default("connect_host", res.host);
+            res.port = std::to_string(p.value_or_default<u32>("connect_port", ston<u32>(res.port)));
+            res.name = p.value_or_default("connect_name", res.name);
+            return res;
+        };
+        act.save = [this](const connect_ui::params_t& params) {
+            auto& p = game_settings();
+            p.set("connect_host", params.host);
+            /* An invalid port is not kept */
+            if (auto port = parse_count(params.port); port && *port > 0 && *port <= 65535)
+                p.set("connect_port", u32(*port));
+            p.set("connect_name", params.name);
+            game_settings_commit();
+        };
         connect_wnd.emplace(std::move(act));
     }
 

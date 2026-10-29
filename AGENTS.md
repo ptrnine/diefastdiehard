@@ -97,6 +97,8 @@ instead of sleeping. Use it for any new gameplay/network timer.
   address/port/nickname, a loader until the server's WELCOME (timeout
   `connect_ui::timeout_s`), the rejection/timeout error; joined, it closes and
   the client lobby shows. Leaving a lobby joined from it returns to it.
+  Its fields are loaded on open and saved on any close (`connect_host`,
+  `connect_port`, `connect_name` in `[game_settings]`).
 - `src/net/` — multiplayer: authoritative UDP server. Protocol in
   `net_protocol.hpp` (bump `protocol_version` on wire changes); the server
   sends a per-client state every tick; clients send per-tick input
@@ -129,7 +131,7 @@ instead of sleeping. Use it for any new gameplay/network timer.
 - `src/base/` — utilities: cfg, serialization, signals, tasks, args_view,
   fixed_string, log, types.
 - `data/` — runtime assets; `data/settings/` is written by the game at
-  runtime. `fs.cfg` sits at the **repo root** (global config).
+  runtime (`game_settings.cfg`: window, connect window fields — `engine::game_settings()`). `fs.cfg` sits at the **repo root** (global config).
 
 ## API pitfalls (costly to rediscover)
 
