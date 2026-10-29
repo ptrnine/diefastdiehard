@@ -278,6 +278,12 @@ public:
         }
     }
 
+    /* The cursor of the console's edit field (also from handle_event, outside the window's begin/end) */
+    void edit_cursor(int value) {
+        if (auto* wnd = ui().window_find(name().data()))
+            wnd->edit.cursor = value;
+    }
+
     void history_up() {
         if (_history_pos == HISTORY_LEN) {
             _current_command = std::string(_command_edit.data(), size_t(_command_len));
@@ -295,7 +301,7 @@ public:
         auto  min_sz = std::min(cmd.size(), COMMAND_LEN);
         std::memcpy(_command_edit.data(), cmd.data(), min_sz);
         _command_len                       = int(min_sz);
-        ui().nk_ctx()->current->edit.cursor = _command_len + 1;
+        edit_cursor(_command_len + 1);
     }
 
     void history_down() {
@@ -304,7 +310,7 @@ public:
         }
         else if (_history_pos == 0) {
             _command_len                       = int(_current_command.size());
-            ui().nk_ctx()->current->edit.cursor = _command_len;
+            edit_cursor(_command_len);
             std::memcpy(_command_edit.data(), _current_command.data(), _current_command.size());
             _history_pos = HISTORY_LEN;
             return;
@@ -316,7 +322,7 @@ public:
             auto  min_sz = std::min(cmd.size(), COMMAND_LEN);
             std::memcpy(_command_edit.data(), cmd.data(), min_sz);
             _command_len                       = int(min_sz);
-            ui().nk_ctx()->current->edit.cursor = _command_len;
+            edit_cursor(_command_len);
         }
     }
 
