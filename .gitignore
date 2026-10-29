@@ -7,3 +7,5 @@ src/event_type_generated.hpp
 data/settings/*
 .luarc.json
 test_data/
+data/scripts/assist.lua
+data/scripts/assist_ai.lua
