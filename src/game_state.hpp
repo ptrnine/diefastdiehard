@@ -244,7 +244,7 @@ public:
         glog().info("level cache was cleared");
     }
 
-    bool level_current(const std::string& level_name = {}) {
+    bool set_level(const std::string& level_name = {}) {
         if (level_name.empty()) {
             if (!cur_level) {
                 glog().info("current level already reseted");
@@ -346,7 +346,7 @@ public:
     /* Load the chosen level, apply the chosen game mode and spawn everyone with the start score */
     bool lobby_start() {
         bool same_level = cur_level && cur_level->section_name() == lobby.level;
-        if (lobby.level.empty() || !level_current(lobby.level)) {
+        if (lobby.level.empty() || !set_level(lobby.level)) {
             glog().error("lobby: can't start: no level");
             return false;
         }

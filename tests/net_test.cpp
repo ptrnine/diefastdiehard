@@ -412,7 +412,7 @@ TEST_CASE("dropped guns: unique ids and the thrower") {
 
 TEST_CASE("weapon slots: secondary guns, respawn with the secondary gun") {
     game_state gs;
-    REQUIRE(gs.level_current("lvl_aes"));
+    REQUIRE(gs.set_level("lvl_aes"));
     auto pl = gs.player_create("slots");
     REQUIRE(pl != nullptr);
 
@@ -435,7 +435,7 @@ TEST_CASE("weapon slots: secondary guns, respawn with the secondary gun") {
 
 TEST_CASE("weapon: a held trigger fires at the configured fire rate") {
     game_state gs;
-    REQUIRE(gs.level_current("lvl_aes"));
+    REQUIRE(gs.set_level("lvl_aes"));
     auto pl = gs.player_create("shooter");
     REQUIRE(pl != nullptr);
     gs.game_run(true);
@@ -467,7 +467,7 @@ TEST_CASE("weapon: a held trigger fires at the configured fire rate") {
 
 TEST_CASE("game mode: limited magazines, an emptied gun is dropped") {
     game_state gs;
-    REQUIRE(gs.level_current("lvl_aes"));
+    REQUIRE(gs.set_level("lvl_aes"));
     auto pl = gs.player_create("shooter");
     REQUIRE(pl != nullptr);
     gs.game_run(true);
@@ -1576,8 +1576,8 @@ struct net_game_fixture {
     std::chrono::milliseconds     frame_period{5}; /* frame rate of both games (render frames, not ticks) */
 
     net_game_fixture(double latency_min_ms, double latency_max_ms) {
-        REQUIRE(gs_srv.level_current("lvl_aes"));
-        REQUIRE(gs_cli.level_current("lvl_aes"));
+        REQUIRE(gs_srv.set_level("lvl_aes"));
+        REQUIRE(gs_cli.set_level("lvl_aes"));
         srv.channel().set_simulated_latency(latency_min_ms, latency_max_ms);
 
         cli.emplace(sf::IpAddress::LocalHost, port, "me", "wpn_glk17", 0, 0, 0, -1,
@@ -2054,7 +2054,7 @@ TEST_CASE("game_state: retroactive hits rewrite the victim's history") {
         game_clock::time_point t;
 
         world(game_clock::time_point t0): t(t0) {
-            REQUIRE(gs.level_current("lvl_aes"));
+            REQUIRE(gs.set_level("lvl_aes"));
             gs.game_run(true);
             victim = gs.player_create("victim");
             REQUIRE(victim);
@@ -2343,7 +2343,7 @@ TEST_CASE("player: teleport") {
     CHECK_FALSE(pl->position_trace_lookup(gs.sim.current_update_time(), 0.05f));
 
     /* Spawning teleports */
-    REQUIRE(gs.level_current("lvl_aes"));
+    REQUIRE(gs.set_level("lvl_aes"));
     gs.player_spawn(pl);
     CHECK(pl->teleports() == u16(before + 2));
 }
@@ -3203,7 +3203,7 @@ TEST_CASE("weapon: input ticks merged away fire and reload like the ticks one by
 
     auto run = [&](bool merge) {
         game_state gs;
-        REQUIRE(gs.level_current("lvl_aes"));
+        REQUIRE(gs.set_level("lvl_aes"));
         auto pl = gs.player_create("shooter");
         REQUIRE(pl != nullptr);
         gs.game_run(true);
@@ -3347,7 +3347,7 @@ TEST_CASE("net: the hands of standing players keep still on the client") {
 TEST_CASE("game_state: crates drop by the game mode") {
     game_clock_manual_guard clock_guard;
     game_state              gs;
-    REQUIRE(gs.level_current("lvl_aes"));
+    REQUIRE(gs.set_level("lvl_aes"));
     gs.game_run(true);
 
     auto run_for = [&](std::chrono::milliseconds duration) {
@@ -3560,7 +3560,7 @@ TEST_CASE("net: gun throws are shown on the client") {
 TEST_CASE("game_state: score of kills and suicides") {
     game_clock_manual_guard clock_guard;
     game_state              gs;
-    REQUIRE(gs.level_current("lvl_aes"));
+    REQUIRE(gs.set_level("lvl_aes"));
     gs.game_run(true);
     auto a = gs.player_create("a");
     auto b = gs.player_create("b");
@@ -3633,7 +3633,7 @@ TEST_CASE("game_state: score of kills and suicides") {
 
 TEST_CASE("game_state: lives score system") {
     game_state gs;
-    REQUIRE(gs.level_current("lvl_aes"));
+    REQUIRE(gs.set_level("lvl_aes"));
     gs.game_run(true);
     auto a = gs.player_create("a");
     REQUIRE(a);
@@ -3745,7 +3745,7 @@ TEST_CASE("net: the level's jump speed reaches the client") {
     sect.raw_set("view_size", "2000 900");
     sect.raw_set("level_size", "2600 1300");
     sect.raw_set("jump_speed", "500");
-    REQUIRE(f.gs_srv.level_current("lvl_js_net"));
+    REQUIRE(f.gs_srv.set_level("lvl_js_net"));
     CHECK(f.server_side().get_jump_speed() == 500.f);
     f.run_for(1000ms);
     REQUIRE(f.gs_cli.cur_level);
@@ -3773,7 +3773,7 @@ TEST_CASE("protocol: lobby request and the ready flag") {
 
 TEST_CASE("game_state: lobby") {
     game_state gs;
-    REQUIRE(gs.level_current("lvl_aes"));
+    REQUIRE(gs.set_level("lvl_aes"));
     auto a = gs.player_create("a");
     REQUIRE(a);
     gs.game_run(true);
@@ -3922,7 +3922,7 @@ TEST_CASE("net: merged input ticks keep the trigger presses and releases") {
 
 TEST_CASE("level: jump speed from the level config") {
     game_state gs;
-    REQUIRE(gs.level_current("lvl_aes"));
+    REQUIRE(gs.set_level("lvl_aes"));
 
     auto pl = gs.player_create("js_test");
     REQUIRE(pl != nullptr);
@@ -3937,7 +3937,7 @@ TEST_CASE("level: jump speed from the level config") {
     sect.raw_set("view_size", "2000 900");
     sect.raw_set("level_size", "2600 1300");
     sect.raw_set("jump_speed", "500");
-    REQUIRE(gs.level_current("lvl_js_test"));
+    REQUIRE(gs.set_level("lvl_js_test"));
     CHECK(pl->get_jump_speed() == 500.f);
 
     /* A player created after the level load gets the level's jump speed */
@@ -3946,7 +3946,7 @@ TEST_CASE("level: jump speed from the level config") {
     CHECK(pl2->get_jump_speed() == 500.f);
 
     /* Switching back to a level without jump_speed restores the player default */
-    REQUIRE(gs.level_current("lvl_aes"));
+    REQUIRE(gs.set_level("lvl_aes"));
     CHECK(pl->get_jump_speed() == player::default_jump_speed);
     CHECK(pl2->get_jump_speed() == player::default_jump_speed);
 }

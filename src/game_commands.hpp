@@ -455,7 +455,7 @@ public:
         }
         else if (cmd == "current") {
             if (value)
-                gs.level_current(*value != "none" ? *value : std::string{});
+                gs.set_level(*value != "none" ? *value : std::string{});
             else {
                 glog().info("level current: {}", gs.cur_level ? gs.cur_level->section_name() : "none");
             }

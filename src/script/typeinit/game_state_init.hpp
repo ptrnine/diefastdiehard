@@ -55,5 +55,18 @@ inline void lua_game_state_init(luacpp::luactx& ctx) {
     ctx.provide_member<game_state_p>(LUA_TNAME("remove_player"), [](game_state_p& g, const std::string& name) {
         return g->player_remove(player_name_t(name));
     });
+
+    ctx.annotate({.comment = "Load and switch to the level, true on success",
+                  .argument_names = {"level_name"},
+                  .explicit_type = "boolean"});
+    ctx.provide_member<game_state_p>(LUA_TNAME("set_level"),
+        [](game_state_p& g) { return g->set_level(); },
+        [](game_state_p& g, const std::string& name) { return g->set_level(name); });
+
+    ctx.annotate({.comment = "List of all level names (the lvl_ sections of the level config)",
+                  .explicit_type = "table<integer, string>"});
+    ctx.provide_member<game_state_p>(LUA_TNAME("list_levels"), [](const game_state_p&) {
+        return level::list_available_levels();
+    });
 }
 } // namespace dfdh

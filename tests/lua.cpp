@@ -118,6 +118,18 @@ check("remove_player again is false", GS:remove_player("luabot") == false, GS:re
 __t_count = #GS:list_players()
 check("list_players empty after remove", __t_count == 0, __t_count)
 
+-- levels
+local lvls = GS:list_levels()
+check("list_levels", #lvls > 0, #lvls)
+local has_aes = false
+for i = 1, #lvls do
+    if lvls[i] == "lvl_aes" then has_aes = true end
+end
+check("list_levels contains lvl_aes", has_aes, table.concat(lvls, ","))
+check("set_level", GS:set_level("lvl_aes") == true, nil)
+check("set_level unknown is false", GS:set_level("no_such_level") == false, nil)
+check("set_level no-arg resets", GS:set_level() == true, nil)
+
 if #fails > 0 then
     __t_result = table.concat(fails, "; ")
 else
@@ -131,7 +143,7 @@ TEST_CASE("lua: player class bindings") {
     REQUIRE(std::filesystem::exists(fs::current_path() / "data" / "scripts"));
 
     game_state gs;
-    REQUIRE(gs.level_current("lvl_aes"));
+    REQUIRE(gs.set_level("lvl_aes"));
 
     luactx_mgr lua = luactx_mgr::global(true);
     lua.ctx().provide(LUA_TNAME("GS"), &gs);

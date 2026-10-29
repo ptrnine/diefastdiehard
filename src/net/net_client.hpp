@@ -1513,7 +1513,7 @@ private:
             gs.lobby.active = false;
             gs.lobby.ready.clear();
             if (!lobby.level.empty() && (!gs.cur_level || gs.cur_level->section_name() != lobby.level))
-                gs.level_current(lobby.level);
+                gs.set_level(lobby.level);
             /* The game starts when the client leaves its lobby (a client without one runs the game itself) */
             if (was_active)
                 gs.game_run(true);
