@@ -399,7 +399,7 @@ TEST_CASE("dropped guns: unique ids and the thrower") {
     CHECK(a->id() != b->id());
 
     gs.game_run(true);
-    pl->setup_pistol("wpn_ak9");
+    pl->setup_gun("wpn_ak9");
     REQUIRE(pl->drop_gun());
     for (u32 i = 0; i < sim_tick_rate && pl->pistol_section() == "wpn_ak9"; ++i)
         sim_tick(gs);
@@ -423,8 +423,8 @@ TEST_CASE("weapon slots: secondary guns, respawn with the secondary gun") {
     CHECK_FALSE(weapon::is_secondary_section("wpn_missing"));
 
     /* A secondary pickup becomes the secondary gun, a primary one does not */
-    pl->setup_pistol("wpn_de");
-    pl->setup_pistol("wpn_ak9");
+    pl->setup_gun("wpn_de");
+    pl->setup_gun("wpn_ak9");
     CHECK(pl->secondary_section() == "wpn_de");
     CHECK_FALSE(pl->holds_secondary());
 
@@ -444,7 +444,7 @@ TEST_CASE("weapon: a held trigger fires at the configured fire rate") {
     /* 800, 400, 300 rpm: shot periods of 9, 18 and 24 ticks at 120 Hz, 4.5, 9 and 12 at 60 Hz */
     auto wpn = GENERATE(as<std::string>{}, "wpn_ak9", "wpn_glk17", "wpn_brn10");
     CAPTURE(wpn);
-    pl->setup_pistol(wpn);
+    pl->setup_gun(wpn);
     auto& gun    = pl->get_gun();
     auto  period = 60.f / gun.get_weapon()->fire_rate();
     auto  shots  = std::min(gun.get_weapon()->mag_size() - 1, 10u);
@@ -475,18 +475,18 @@ TEST_CASE("game mode: limited magazines, an emptied gun is dropped") {
 
     SECTION("secondary guns are unlimited") {
         auto wpn = GENERATE(as<std::string>{}, "wpn_glk17", "wpn_sw500");
-        pl->setup_pistol(wpn, 2);
+        pl->setup_gun(wpn, 2);
         CHECK(pl->get_gun().ammo_reserve() == weapon_instance::unlimited_ammo);
     }
 
     SECTION("no magazines count: unlimited") {
-        pl->setup_pistol("wpn_ak9", 0);
+        pl->setup_gun("wpn_ak9", 0);
         CHECK(pl->get_gun().ammo_reserve() == weapon_instance::unlimited_ammo);
     }
 
     SECTION("mag_size * magazines_count rounds, then the gun is dropped and the secondary one is taken") {
         auto wpn = GENERATE(as<std::string>{}, "wpn_ak9", "wpn_1887"); /* magazine and shell by shell reloads */
-        pl->setup_pistol(wpn, 2);
+        pl->setup_gun(wpn, 2);
         auto mag_size = pl->get_gun().get_weapon()->mag_size();
         CHECK(pl->get_gun().ammo_elapsed() == mag_size);
         CHECK(pl->get_gun().ammo_reserve() == mag_size);
@@ -690,7 +690,7 @@ TEST_CASE("player: apply_input") {
     }
 
     SECTION("drop gun") {
-        pl->setup_pistol("wpn_ak9");
+        pl->setup_gun("wpn_ak9");
         auto before = gs.dropped_guns.size();
 
         gs.game_run(true);
@@ -717,7 +717,7 @@ TEST_CASE("player: apply_input") {
     }
 
     SECTION("throw pose") {
-        pl->setup_pistol("wpn_ak9");
+        pl->setup_gun("wpn_ak9");
         REQUIRE(pl->drop_gun());
         auto d      = pl->throw_duration();
         auto windup = pl->throw_pose(d * 0.75f);
@@ -1339,7 +1339,7 @@ TEST_CASE("net_client: join and state application") {
          */
         auto host = gs_srv.player_create("hostp");
         REQUIRE(host != nullptr);
-        host->setup_pistol("wpn_glk17");
+        host->setup_gun("wpn_glk17");
         auto ctrl = std::make_shared<player_controller>(5);
         ctrl->player_name = "hostp";
         REQUIRE(gs_srv.controller_attach(5, ctrl));
@@ -1736,7 +1736,7 @@ TEST_CASE("net: weapon recoil is predicted") {
     using namespace std::chrono_literals;
     net_game_fixture f{80, 170};
 
-    f.server_side().setup_pistol("wpn_ss50"); /* strongest recoil */
+    f.server_side().setup_gun("wpn_ss50"); /* strongest recoil */
     f.server_side().teleport({1300.f, 1040.f}); /* middle of the floor platform */
     f.run_for(3000ms);
     REQUIRE(f.local().pistol_section() == "wpn_ss50");
@@ -1778,7 +1778,7 @@ TEST_CASE("net: ammo and reloads are predicted and synced") {
      */
     net_game_fixture f{100, 100};
 
-    f.server_side().setup_pistol(wpn);
+    f.server_side().setup_gun(wpn);
     f.server_side().teleport({1300.f, 1040.f});
     f.run_for(2000ms);
     REQUIRE(f.local().pistol_section() == wpn);
@@ -1829,7 +1829,7 @@ TEST_CASE("net: limited ammo is synced and an emptied gun is dropped") {
     auto gm            = f.gs_srv.cur_game_mode;
     gm.magazines_count = 2;
     f.gs_srv.game_mode_set(gm);
-    f.server_side().setup_pistol(wpn, gm.magazines_count);
+    f.server_side().setup_gun(wpn, gm.magazines_count);
     f.server_side().teleport({1300.f, 1040.f});
     f.run_for(2000ms);
     REQUIRE(f.gs_cli.cur_game_mode.magazines_count == 2);
@@ -2166,7 +2166,7 @@ TEST_CASE("net: clients see server bullets in the local player's frame") {
     /* A server-side player (like the host's) fires */
     auto host = f.gs_srv.player_create("hostp");
     REQUIRE(host != nullptr);
-    host->setup_pistol("wpn_glk17");
+    host->setup_gun("wpn_glk17");
     auto ctrl = std::make_shared<player_controller>(5);
     ctrl->player_name = "hostp";
     REQUIRE(f.gs_srv.controller_attach(5, ctrl));
@@ -2252,7 +2252,7 @@ struct hit_fixture : net_game_fixture {
         using namespace std::chrono_literals;
         bot = gs_srv.player_create("bot");
         REQUIRE(bot);
-        bot->setup_pistol("wpn_glk17");
+        bot->setup_gun("wpn_glk17");
         bot->group(1);
         auto ctrl         = std::make_shared<player_controller>(5);
         ctrl->player_name = "bot";
@@ -2509,7 +2509,7 @@ TEST_CASE("net: hits on the falling local player are predicted where the server 
         f.bot->lag_compensation({.lag = 0.05f, .rewind = 0.08f});
 
     /* The client player stands behind the bot (it faces left) while the bot fires a stream */
-    f.bot->setup_pistol(weapon);
+    f.bot->setup_gun(weapon);
     f.server_side().teleport({1400.f, 1040.f});
     f.run_for(1000ms);
     f.bot->shot();
@@ -2846,7 +2846,7 @@ TEST_CASE("net: own bullet hits on a falling remote player are predicted as the 
     CAPTURE(weapon, drop_y, send_delay);
     f.cli->channel().set_simulated_send_delay(send_delay);
 
-    f.server_side().setup_pistol(weapon);
+    f.server_side().setup_gun(weapon);
     f.run_for(1000ms);
     REQUIRE(f.local().pistol_section() == weapon);
 
@@ -2892,7 +2892,7 @@ TEST_CASE("net: predicted knockback follows the level geometry") {
     hit_fixture f;
 
     /* "me" shoots the strongest weapon at the bot standing at the right edge of the floor (pl0: x 150..2450, y 1050) */
-    f.server_side().setup_pistol("wpn_ss50");
+    f.server_side().setup_gun("wpn_ss50");
     f.server_side().teleport({2100.f, 1040.f});
     f.bot->teleport({2380.f, 1040.f});
     f.run_for(2000ms);
@@ -3001,7 +3001,7 @@ TEST_CASE("net: remote knockback under sustained fire stays on the server's path
     auto frame_ms = GENERATE(4, 8, 10, 16); /* frames shorter than, as long as and longer than a tick (16: two) */
     CAPTURE(weapon, moving, frame_ms);
 
-    f.server_side().setup_pistol(weapon);
+    f.server_side().setup_gun(weapon);
     f.server_side().teleport({1100.f, 1040.f});
     f.bot->teleport({1500.f, 1040.f});
     f.run_for(1500ms);
@@ -3057,7 +3057,7 @@ TEST_CASE("net: traffic in a fight") {
     using namespace std::chrono_literals;
     hit_fixture f{20, 30};
     f.frame_period = 4ms; /* more frames than ticks */
-    f.server_side().setup_pistol("wpn_1887");
+    f.server_side().setup_gun("wpn_1887");
     f.run_for(1000ms);
 
     auto& srv_ch    = f.srv.channel();
@@ -3097,7 +3097,7 @@ TEST_CASE("net: a hard hit on a remote player flies smoothly") {
     auto latency = GENERATE(std::pair{1.0, 2.0}, std::pair{20.0, 30.0}, std::pair{80.0, 170.0});
     CAPTURE(latency.first, latency.second);
     hit_fixture f{latency.first, latency.second};
-    f.server_side().setup_pistol("wpn_ss50"); /* the hardest knockback */
+    f.server_side().setup_gun("wpn_ss50"); /* the hardest knockback */
     f.run_for(1500ms);
     REQUIRE(f.local().pistol_section() == "wpn_ss50");
 
@@ -3153,8 +3153,8 @@ TEST_CASE("weapon: seeded shots are deterministic") {
     auto b = gs.player_create("b");
     REQUIRE(a);
     REQUIRE(b);
-    a->setup_pistol("wpn_1887"); /* buckshot: several pellets per shot */
-    b->setup_pistol("wpn_1887");
+    a->setup_gun("wpn_1887"); /* buckshot: several pellets per shot */
+    b->setup_gun("wpn_1887");
     gs.game_run(true);
 
     auto fire = [&](player& pl) {
@@ -3208,7 +3208,7 @@ TEST_CASE("weapon: input ticks merged away fire and reload like the ticks one by
         REQUIRE(pl != nullptr);
         gs.game_run(true);
         pl->teleport({1300.f, 1040.f});
-        pl->setup_pistol("wpn_ak9");
+        pl->setup_gun("wpn_ak9");
 
         std::map<u32, weapon_instance::sync_state> states;
         std::map<u32, bool>                        merged_triggers;
@@ -3417,8 +3417,8 @@ TEST_CASE("net: gun throws are shown on the client") {
     auto bot = f.gs_srv.player_create("bot");
     REQUIRE(bot != nullptr);
     /* Primary guns: the secondary ones are never dropped */
-    bot->setup_pistol("wpn_ak9");
-    f.server_side().setup_pistol("wpn_ak9");
+    bot->setup_gun("wpn_ak9");
+    f.server_side().setup_gun("wpn_ak9");
     f.run_for(1000ms);
     REQUIRE(f.gs_cli.players.contains("bot"));
     REQUIRE(f.local().pistol_section() == "wpn_ak9");
@@ -3901,7 +3901,7 @@ TEST_CASE("net: merged input ticks keep the trigger presses and releases") {
     auto gm            = f.gs_srv.cur_game_mode;
     gm.magazines_count = 100;
     f.gs_srv.game_mode_set(gm);
-    f.server_side().setup_pistol(wpn, gm.magazines_count);
+    f.server_side().setup_gun(wpn, gm.magazines_count);
     f.server_side().teleport({1300.f, 1040.f});
     f.run_for(2000ms);
     REQUIRE(f.local().pistol_section() == wpn);

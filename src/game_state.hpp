@@ -1336,7 +1336,7 @@ public:
                 }
 
                 if (auto wpn = crate_loot_table::random_pick()) {
-                    pl->setup_pistol(*wpn, cur_game_mode.magazines_count);
+                    pl->setup_gun(*wpn, cur_game_mode.magazines_count);
                     glog().info("player {} picked up a crate and got weapon {}", pl->name(), *wpn);
                 } else
                     glog().warn("player {} picked up a crate but the loot table is empty", pl->name());

@@ -870,9 +870,9 @@ private:
         pl.set_face("player/face" + std::to_string(h.face_id) + ".png");
         /* Only a secondary gun can be configured */
         if (weapon::is_secondary_section(h.pistol))
-            pl.setup_pistol(h.pistol, magazines_count);
+            pl.setup_gun(h.pistol, magazines_count);
         else if (!h.pistol.empty())
-            pl.setup_pistol(std::string(weapon::default_secondary), magazines_count);
+            pl.setup_gun(std::string(weapon::default_secondary), magazines_count);
         pl.tracer_color(unpack_color(h.tracer_color));
     }
 

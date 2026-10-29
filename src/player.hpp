@@ -622,9 +622,9 @@ public:
             _throw->replace_mags     = magazines_count;
         }
         else if (section.empty())
-            clear_pistol();
+            remove_gun();
         else
-            setup_pistol(section, magazines_count);
+            setup_gun(section, magazines_count);
     }
 
     /**
@@ -672,9 +672,9 @@ public:
             auto* gun = predicted() && _pistol && _drop_gun_cb ? spawn_dropped_gun(true) : nullptr;
             if (_throw && _throw->clear_on_release) {
                 if (_throw->replace_section.empty())
-                    clear_pistol();
+                    remove_gun();
                 else
-                    setup_pistol(_throw->replace_section, _throw->replace_mags);
+                    setup_gun(_throw->replace_section, _throw->replace_mags);
             }
             else if (predicted()) {
                 _predicted_switch_seq = _last_input_seq;
@@ -1056,7 +1056,7 @@ public:
      * magazines_count: ammo limit of a primary gun (see game_mode::magazines_count).
      * A secondary gun becomes the player's secondary one
      */
-    void setup_pistol(const std::string& section, u32 magazines_count = 0) {
+    void setup_gun(const std::string& section, u32 magazines_count = 0) {
         _pistol = weapon_instance(section, magazines_count);
         _pistol_section = section;
         if (_pistol.get_weapon()->slot() == weapon::secondary)
@@ -1067,9 +1067,9 @@ public:
     /* Take the secondary gun (no gun if there is none) */
     void equip_secondary() {
         if (_secondary_section.empty())
-            clear_pistol();
+            remove_gun();
         else
-            setup_pistol(_secondary_section);
+            setup_gun(_secondary_section);
     }
 
     [[nodiscard]]
@@ -1100,8 +1100,8 @@ public:
         return _pistol_section;
     }
 
-    /** Remove the pistol from the hands (e.g. synced pistol loss) */
-    void clear_pistol() {
+    /** Remove the gun from the hands (e.g. synced gun loss) */
+    void remove_gun() {
         _pistol = {};
         _pistol_section.clear();
         _throw.reset();
@@ -1273,14 +1273,14 @@ public:
         return pos->second;
     }
 
-    /* magazines_count: ammo limit of the configured gun (see setup_pistol) */
+    /* magazines_count: ammo limit of the configured gun (see setup_gun) */
     void set_from_config(u32 magazines_count = 0) {
         player_configurator pc{_name};
         set_body(pc.body_texture_path(), pc.body_color);
         set_head(pc.head_texture_path());
         set_hat(pc.hat_texture_path());
         set_face(pc.face_texture_path());
-        setup_pistol(pc.pistol, magazines_count);
+        setup_gun(pc.pistol, magazines_count);
         tracer_color(pc.tracer_color);
     }
 
