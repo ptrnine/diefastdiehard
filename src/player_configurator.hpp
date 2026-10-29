@@ -24,9 +24,27 @@ public:
             write();
     }
 
+    /* data/settings/players_settings.cfg, written when the returned cfg is destroyed */
+    static cfg settings_cfg() {
+        return cfg("data/settings/players_settings.cfg"s,
+                   cfg_mode::create_if_not_exists | cfg_mode::commit_at_destroy | cfg_mode::autocreate_dir);
+    }
+
+    static constexpr auto default_player = "Player";
+
+    /* The player of this PC (hosts and joins lobbies, Settings -> Player): created on the first run */
+    static player_name_t current_player() {
+        auto conf = settings_cfg();
+        return conf.get_or_create("players"_sect).value_or_default_and_set("current_player", std::string(default_player));
+    }
+
+    static void current_player(const player_name_t& player_name) {
+        auto conf = settings_cfg();
+        conf.get_or_create("players"_sect).set("current_player", std::string(player_name));
+    }
+
     void read() {
-        auto cfgpath = "data/settings/players_settings.cfg"s;
-        auto conf = cfg(cfgpath, cfg_mode::create_if_not_exists | cfg_mode::commit_at_destroy | cfg_mode::autocreate_dir);
+        auto conf = settings_cfg();
 
         auto  sect_name = cfg_section_name{"player_settings_" + std::string(name)};
         auto& sect      = conf.get_or_create(sect_name);
@@ -51,9 +69,8 @@ public:
     }
 
     void write() {
-        auto  cfgpath   = "data/settings/players_settings.cfg"s;
         auto  sect_name = "player_settings_" + std::string(name);
-        auto  conf      = cfg(cfgpath, cfg_mode::create_if_not_exists | cfg_mode::commit_at_destroy | cfg_mode::autocreate_dir);
+        auto  conf      = settings_cfg();
         auto& sect      = conf.get_or_create(sect_name);
 
         sect.set("pistol", pistol);

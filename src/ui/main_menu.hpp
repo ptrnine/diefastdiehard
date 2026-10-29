@@ -5,38 +5,45 @@
 #include "base/vec_math.hpp"
 #include "nuklear.hpp"
 
-#include <array>
 #include <functional>
+#include <optional>
+#include <string>
+#include <vector>
 
 namespace dfdh {
 
 /**
- * Main menu: a column of borderless text options in the center of the screen.
- * A hovered option grows and changes its color, the menu fades in / out when
- * shown / hidden. The UI does not know about the game: the actions are callbacks
+ * A column of borderless text options: a hovered option grows and changes its
+ * color, the column fades to the alpha it is given
  */
-class main_menu {
+class menu_column {
 public:
-    struct actions_t {
-        std::function<void()> host;    /* start a server and open its lobby */
-        std::function<void()> connect; /* open the connect window */
-        std::function<void()> exit;
-    };
+    static constexpr float row_height = 64.f; /* fits the hovered size: rows don't move */
+    static constexpr float row_gap    = 8.f;
 
-    explicit main_menu(actions_t actions): _act(std::move(actions)) {}
+    menu_column(const char* wnd_name, std::vector<std::string> options):
+        _wnd_name(wnd_name), _options(std::move(options)), _fonts(_options.size()), _hover(_options.size(), 0.f) {}
 
-    void update(ui_ctx& ui, const vec2f& window_size) {
-        auto dt = _frame_timer.elapsed();
-        _frame_timer.restart();
+    [[nodiscard]]
+    float height() const {
+        return float(_options.size()) * row_height + float(_options.size() - 1) * row_gap;
+    }
 
-        _alpha = approach(_alpha, _show ? 1.f : 0.f, dt / fade_s);
+    [[nodiscard]]
+    float alpha() const {
+        return _alpha;
+    }
+
+    /* Clickable at the full alpha only. Returns the clicked option */
+    std::optional<size_t> update(ui_ctx& ui, struct nk_rect bounds, float alpha_target, float dt) {
+        _alpha = approach(_alpha, alpha_target, dt / fade_s);
         if (_alpha <= 0.f) {
-            _hover.fill(0.f);
-            return;
+            std::ranges::fill(_hover, 0.f);
+            return {};
         }
 
-        /* Fading menu is not clickable */
-        bool interactive = _show && _alpha >= 1.f;
+        /* Fading column is not clickable */
+        bool interactive = alpha_target >= 1.f && _alpha >= 1.f;
 
         auto ctx   = ui.nk_ctx();
         auto style = &ctx->style;
@@ -44,20 +51,19 @@ public:
         ui.style_push_vec2(&style->window.padding, {0.f, 0.f});
         ui.style_push_vec2(&style->window.spacing, {0.f, row_gap});
 
-        auto height = float(options.size()) * row_height + float(options.size() - 1) * row_gap;
-        auto bounds = nk_rect((window_size.x - width) * 0.5f, (window_size.y - height) * 0.5f, width, height);
-        /* Nuklear takes the bounds of a new window only: keep it centered on resize */
-        ui.window_set_bounds(wnd_name, bounds);
+        std::optional<size_t> clicked;
+        /* Nuklear takes the bounds of a new window only: keep it in place on resize */
+        ui.window_set_bounds(_wnd_name, bounds);
         nk_flags flags = NK_WINDOW_BACKGROUND | NK_WINDOW_NO_SCROLLBAR | (interactive ? 0 : NK_WINDOW_NO_INPUT);
-        if (ui.begin(wnd_name, bounds, flags)) {
+        if (ui.begin(_wnd_name, bounds, flags)) {
             /* Covered by another window (e.g. the dev console): no hover */
             bool rom = ctx->current->flags & NK_WINDOW_ROM;
             ui.layout_row_dynamic(row_height, 1);
-            for (size_t i = 0; i < options.size(); ++i) {
+            for (size_t i = 0; i < _options.size(); ++i) {
                 bool hovered = interactive && !rom && nk_input_is_mouse_hovering_rect(&ctx->input, ui.widget_bounds());
                 _hover[i]    = approach(_hover[i], hovered ? 1.f : 0.f, dt / hover_s);
                 if (option_draw(ui, i) && interactive)
-                    option_action(i);
+                    clicked = i;
             }
         }
         ui.end();
@@ -65,29 +71,14 @@ public:
         ui.style_pop_vec2();
         ui.style_pop_vec2();
         ui.style_pop_style_item();
-    }
-
-    void show(bool value) {
-        _show = value;
-    }
-
-    [[nodiscard]]
-    bool shown() const {
-        return _show;
+        return clicked;
     }
 
 private:
-    static constexpr const char* wnd_name = "main_menu";
-
-    static constexpr std::array options = {"Host Lobby", "Connect Lobby", "Exit"};
-
-    static constexpr float fade_s      = 0.3f;  /* fade in / out time */
-    static constexpr float hover_s     = 0.15f; /* hover grow / shrink time */
-    static constexpr float font_size   = 40.f;
-    static constexpr float font_hover  = 52.f;  /* <= ui_ctx::menu_font_size: the baked font is only downscaled */
-    static constexpr float row_height  = 64.f;  /* fits the hovered size: rows don't move */
-    static constexpr float row_gap     = 8.f;
-    static constexpr float width       = 480.f;
+    static constexpr float fade_s     = 0.3f;  /* fade in / out time */
+    static constexpr float hover_s    = 0.15f; /* hover grow / shrink time */
+    static constexpr float font_size  = 40.f;
+    static constexpr float font_hover = 52.f; /* <= ui_ctx::menu_font_size: the baked font is only downscaled */
 
     static constexpr sf::Color text_color  = {200, 200, 200};
     static constexpr sf::Color hover_color = {255, 190, 60};
@@ -132,7 +123,7 @@ private:
         ui.style_push_float(&btn->border, 0.f);
         ui.style_push_font(&_fonts[i]);
 
-        bool clicked = ui.button_label(options[i]);
+        bool clicked = ui.button_label(_options[i].data());
 
         ui.style_pop_font();
         ui.style_pop_float();
@@ -143,18 +134,91 @@ private:
         return clicked;
     }
 
-    void option_action(size_t i) {
-        auto& action = i == 0 ? _act.host : i == 1 ? _act.connect : _act.exit;
+    const char*               _wnd_name;
+    std::vector<std::string>  _options;
+    std::vector<nk_user_font> _fonts; /* sized once: the draw commands point into it */
+    std::vector<float>        _hover;
+    float                     _alpha = 0.f;
+};
+
+/**
+ * Main menu: a column of options in the center of the screen, the settings
+ * submenu to the left of it (the main column dims meanwhile). The menu fades
+ * in / out when shown / hidden. The UI does not know about the game: the
+ * actions are callbacks
+ */
+class main_menu {
+public:
+    struct actions_t {
+        std::function<void()> host;    /* start a server and open its lobby */
+        std::function<void()> connect; /* open the connect window */
+        std::function<void()> player;  /* settings: open the player configurator */
+        std::function<void()> exit;
+    };
+
+    explicit main_menu(actions_t actions): _act(std::move(actions)) {}
+
+    void update(ui_ctx& ui, const vec2f& window_size) {
+        auto dt = _frame_timer.elapsed();
+        _frame_timer.restart();
+
+        bool settings = _page == page_t::settings;
+
+        auto main_bounds = nk_rect((window_size.x - main_width) * 0.5f,
+                                   (window_size.y - _main.height()) * 0.5f,
+                                   main_width,
+                                   _main.height());
+        auto main_target = _show ? (settings ? dim_alpha : 1.f) : 0.f;
+        if (auto clicked = _main.update(ui, main_bounds, main_target, dt)) {
+            switch (*clicked) {
+            case 0: call(_act.host); break;
+            case 1: call(_act.connect); break;
+            case 2: _page = page_t::settings; break;
+            default: call(_act.exit); break;
+            }
+        }
+
+        /* Just left of the main column */
+        auto sub_bounds = nk_rect(main_bounds.x - settings_width,
+                                  (window_size.y - _settings.height()) * 0.5f,
+                                  settings_width,
+                                  _settings.height());
+        if (auto clicked = _settings.update(ui, sub_bounds, _show && settings ? 1.f : 0.f, dt)) {
+            if (*clicked == 0)
+                call(_act.player);
+            else
+                _page = page_t::main;
+        }
+    }
+
+    /* Hiding keeps the page: the settings submenu is back after the player configurator */
+    void show(bool value) {
+        _show = value;
+    }
+
+    [[nodiscard]]
+    bool shown() const {
+        return _show;
+    }
+
+private:
+    enum class page_t { main, settings };
+
+    static constexpr float main_width     = 480.f;
+    static constexpr float settings_width = 280.f;
+    static constexpr float dim_alpha      = 0.35f; /* the main column while the submenu is open */
+
+    static void call(const std::function<void()>& action) {
         if (action)
             action();
     }
 
-    actions_t                                _act;
-    std::array<nk_user_font, options.size()> _fonts{};
-    std::array<float, options.size()>        _hover{};
-    timer                                    _frame_timer;
-    float                                    _alpha = 0.f;
-    bool                                     _show  = false;
+    actions_t   _act;
+    menu_column _main{"main_menu", {"Host Lobby", "Connect Lobby", "Settings", "Exit"}};
+    menu_column _settings{"main_menu_settings", {"Player", "Back"}};
+    timer       _frame_timer;
+    page_t      _page = page_t::main;
+    bool        _show = false;
 };
 
 }

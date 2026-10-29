@@ -9,7 +9,7 @@ The server compensates for each client's lag.
 
 ```sh
 ./dfdh --server [--port=10443] [--input-buffer=auto|N]                       # host: plays too (local keyboard player, bots)
-./dfdh --client 127.0.0.1:10443 [--name=client0] [--interp-margin=MS] [--interp-min=MS] [--input-margin=MS]  # client
+./dfdh --client 127.0.0.1:10443 [--name=<current player>] [--interp-margin=MS] [--interp-min=MS] [--input-margin=MS]  # client
 ```
 
 The latency flags are optional (see Latency settings).

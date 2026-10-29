@@ -7,6 +7,8 @@
 #include <SFML/Graphics/Sprite.hpp>
 #include <SFML/Graphics/RenderTexture.hpp>
 
+#include <array>
+#include <cstring>
 #include <functional>
 #include <string>
 #include <vector>
@@ -15,12 +17,9 @@ namespace dfdh {
 
 class player_configurator_ui {
 public:
-    player_configurator_ui(const player_name_t& name):
-        pconf(name),
-        wnd_title("configure player " + std::string(name)),
-        player_size(player::default_sprite_size() * 1.5f) {
-
-        reload();
+    /* name_edit: the nickname is editable, another name loads that player's settings */
+    player_configurator_ui(const player_name_t& name, bool name_edit = false):
+        pconf(name), name_edit(name_edit), player_size(player::default_sprite_size() * 1.5f) {
 
         for (auto& face_path : pconf.available_face_textures())
             faces.push_back({face_path, load_nk_image(face_path), i32(player_configurator::texture_path_to_index(face_path))});
@@ -33,7 +32,6 @@ public:
             pistols.emplace_back();
             auto& back   = pistols.back();
             back.wpn     = &weapon_mgr().load(pistol_sect);
-            back.choosed = pistol_sect == pconf.pistol;
 
             auto& target = back.icon_trgt;
             float size_factor = 1.f;
@@ -62,7 +60,20 @@ public:
             back.icon = make_nk_image(*target);
         }
 
-        pconf.write_on_delete = false;
+        load(name);
+    }
+
+    /* Show the settings of the player */
+    void load(const player_name_t& name) {
+        /* Read only: written on changes */
+        auto conf            = player_configurator(name);
+        conf.write_on_delete = false;
+        pconf                = conf;
+        wnd_title             = name_edit ? std::string("player settings") : "configure player " + std::string(name);
+        set_name_buf(name);
+        for (auto& pistol : pistols)
+            pistol.choosed = pistol.wpn->section() == pconf.pistol;
+        reload();
     }
 
     void reload() {
@@ -90,12 +101,21 @@ public:
         if (!wnd_show)
             return;
 
+        if (reopen) {
+            /* Nuklear keeps a closed window hidden */
+            ui.window_show(wnd_name, NK_SHOWN);
+            reopen = false;
+        }
+
         bool update_was = false;
 
         nk_flags wnd_flags = NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_MOVABLE |
                              NK_WINDOW_SCALABLE | NK_WINDOW_CLOSABLE;
 
-        if (ui.begin(wnd_title.data(), wnd_rect, wnd_flags)) {
+        if (ui.begin_titled(wnd_name, wnd_title.data(), wnd_rect, wnd_flags)) {
+            if (name_edit)
+                name_draw(ui);
+
             ui_layout_row(ui,
                           float(player_icon.getSize().y),
                           {20.f, float(player_icon.getSize().x), 20.f, {200.f, ui_row::variable}});
@@ -183,15 +203,19 @@ public:
             }
         }
         else {
-            pconf.write();
+            if (name_edit)
+                name_apply();
             wnd_show = false;
             if (on_close)
                 on_close();
         }
         ui.end();
 
-        if (update_was)
+        /* Saved on any change */
+        if (update_was) {
+            pconf.write();
             reload();
+        }
     }
 
     struct image_choice {
@@ -234,6 +258,8 @@ public:
     }
 
     void show(bool value) {
+        if (value && !wnd_show)
+            reopen = true;
         wnd_show = value;
     }
 
@@ -246,12 +272,51 @@ public:
         return wnd_show;
     }
 
-    /* Called when the window is closed (the config is written) */
+    /* Called when the window is closed */
     std::function<void()> on_close;
+    /* name_edit: another player's settings are shown */
+    std::function<void(const player_name_t&)> on_name_change;
 
 private:
+    static constexpr const char* wnd_name = "player_configurator";
+
+    /* player_name_t: 22 chars + nul */
+    using name_buf_t = std::array<char, 23>;
+
+    void set_name_buf(const player_name_t& name) {
+        std::string str = name;
+        std::strncpy(name_buf.data(), str.data(), name_buf.size() - 1);
+        name_buf.back() = '\0';
+    }
+
+    void name_draw(ui_ctx& ui) {
+        ui_layout_row(ui, 25.f, {110.f, ui_row::dynamic});
+        ui.label("nickname", NK_TEXT_LEFT);
+        auto res = ui.edit_string_zero_terminated(nk_flags(NK_EDIT_FIELD) | nk_flags(NK_EDIT_SIG_ENTER), name_buf.data(),
+                                                  int(name_buf.size()), nk_filter_ascii);
+        /* Enter or the focus is lost: not per typed char (no settings for half-typed names) */
+        if (res & (NK_EDIT_COMMITED | NK_EDIT_DEACTIVATED))
+            name_apply();
+    }
+
+    void name_apply() {
+        auto name = player_name_t(std::string(name_buf.data()));
+        if (std::string_view(name).empty()) {
+            set_name_buf(pconf.name);
+            return;
+        }
+        if (name == pconf.name)
+            return;
+        load(name);
+        if (on_name_change)
+            on_name_change(name);
+    }
+
     player_configurator pconf;
+    bool                name_edit;
+    name_buf_t          name_buf{};
     std::string         wnd_title;
+    bool                reopen = false;
 
     struct nk_rect wnd_rect{200, 100, 500, 500};
     bool           wnd_show = false;

@@ -107,7 +107,7 @@ public:
         else if (cmd == "ui") {
             help = "windows\n"
                    "available commands:\n"
-                   "  ui connect  - connect to a multiplayer lobby (server address, port, nickname)";
+                   "  ui connect  - connect to a multiplayer lobby (server address, port)";
         }
         else if (cmd == "hud") {
             help = "on-screen information\n"

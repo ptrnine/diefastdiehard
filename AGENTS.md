@@ -88,13 +88,23 @@ instead of sleeping. Use it for any new gameplay/network timer.
   period, magazines count: primary gun ammo limit, emptied guns are dropped) from the `gm_` sections of `data/game_mode.cfg`, not from the
   level. `gm_default` is applied on start; console `game mode [name|list]`
   (`game_state::game_mode_apply`). The server sends it to clients in STATE.
-- `src/ui/main_menu.hpp` — main menu ("Host Lobby", "Connect Lobby", "Exit"):
+- `src/ui/main_menu.hpp` — main menu ("Host Lobby", "Connect Lobby",
+  "Settings", "Exit"; columns are `menu_column`s; Settings opens a "Player",
+  "Back" submenu left of the dimmed main column):
   shown out of a game with no window open (no server/client, no lobby,
   connect window or player configurator), fades in/out; hovered options grow
   via a scaled copy of `ui_ctx::menu_font()` (nuklear scales baked fonts by
   `nk_user_font::height`; the copy must outlive `ui.render()`). Host starts a
   server (`host_port` in `[game_settings]`, default 10443) and opens its
-  lobby; cancelling (or closing) that lobby stops the server.
+  lobby with the current player; cancelling (or closing) that lobby stops the
+  server and removes the player. Settings -> Player: the player configurator
+  with a nickname field.
+- Current player: `player_configurator::current_player()` (`[players]
+  current_player` in `data/settings/players_settings.cfg`, `Player` on the
+  first run): hosts and joins lobbies (the connect window has no nickname),
+  `--client`'s default `--name`. `player_configurator_ui` saves on every change
+  (no save on close); with `name_edit`, a committed nickname (Enter / focus
+  lost) loads that player's settings and becomes the current player.
 - `src/lobby.hpp` + `src/ui/lobby_ui.hpp` — multiplayer lobby (opened on
   `--server`/`--client` launch, console `lobby [start]`): the owner picks the
   level/mode/groups and starts (`game_state::lobby_start`); closing the window
@@ -102,11 +112,11 @@ instead of sleeping. Use it for any new gameplay/network timer.
   simulated while `game_state::lobby.active`. The UI only calls
   `lobby_ui::actions_t` callbacks (wired in `diefastdiehard.cpp`).
   `src/ui/connect_ui.hpp`: "Connect to lobby" window (console `ui connect`):
-  address/port/nickname, a loader until the server's WELCOME (timeout
+  address/port, a loader until the server's WELCOME (timeout
   `connect_ui::timeout_s`), the rejection/timeout error; joined, it closes and
   the client lobby shows. Leaving a lobby joined from it returns to it.
   Its fields are loaded on open and saved on any close (`connect_host`,
-  `connect_port`, `connect_name` in `[game_settings]`).
+  `connect_port` in `[game_settings]`).
 - `src/net/` — multiplayer: authoritative UDP server. Protocol in
   `net_protocol.hpp` (bump `protocol_version` on wire changes); the server
   sends a per-client state every tick; clients send per-tick input

@@ -13,8 +13,8 @@
 namespace dfdh {
 
 /**
- * "Connect to lobby" window: the server address, port and the player name,
- * a loader while the client waits for the server and the error of the last
+ * "Connect to lobby" window: the server address and port (the player is the
+ * current one, see player_configurator::current_player), a loader while the client waits for the server and the error of the last
  * attempt. The UI does not know about the network: the actions are callbacks,
  * the owner reports the outcome with connected() / failed()
  */
@@ -27,12 +27,11 @@ public:
     struct params_t {
         std::string host = "127.0.0.1";
         std::string port = "10443";
-        std::string name = "client0";
     };
 
     struct actions_t {
         /* Start a connection: an error message if it can't start */
-        std::function<std::optional<std::string>(const std::string& host, u16 port, const std::string& name)> connect;
+        std::function<std::optional<std::string>(const std::string& host, u16 port)> connect;
         /* Abort the connection in progress */
         std::function<void()> cancel;
         /* The fields when the window opens (the last saved ones) */
@@ -88,13 +87,12 @@ public:
 
     [[nodiscard]]
     params_t params() const {
-        return {_host.data(), _port.data(), _name.data()};
+        return {_host.data(), _port.data()};
     }
 
     void params(const params_t& value) {
         set_text(_host, value.host.data());
         set_text(_port, value.port.data());
-        set_text(_name, value.name.data());
     }
 
     [[nodiscard]]
@@ -130,11 +128,9 @@ public:
 private:
     static constexpr const char* wnd_name   = "connect";
     static constexpr float       wnd_w      = 420.f;
-    static constexpr float       wnd_h      = 250.f;
+    static constexpr float       wnd_h      = 220.f;
     static constexpr float       row_height = 25.f;
 
-    /* player_name_t: 22 chars + nul */
-    using name_buf_t = std::array<char, 23>;
     using host_buf_t = std::array<char, 256>;
     using port_buf_t = std::array<char, 6>;
 
@@ -159,8 +155,6 @@ private:
         submit = edit(ui, _host, _connecting, nk_filter_ascii) || submit;
         ui.label("port", NK_TEXT_LEFT);
         submit = edit(ui, _port, _connecting, nk_filter_decimal) || submit;
-        ui.label("nickname", NK_TEXT_LEFT);
-        submit = edit(ui, _name, _connecting, nk_filter_ascii) || submit;
         return submit;
     }
 
@@ -205,14 +199,9 @@ private:
     void connect() {
         std::string host = _host.data();
         std::string port = _port.data();
-        std::string name = _name.data();
 
         if (host.empty()) {
             _error = "enter the server address";
-            return;
-        }
-        if (name.empty()) {
-            _error = "enter a nickname";
             return;
         }
         u16 port_num = 0;
@@ -229,7 +218,7 @@ private:
 
         _target = host + ":" + port;
         _error.clear();
-        if (auto error = _act.connect ? _act.connect(host, port_num, name) : std::optional<std::string>("can't connect")) {
+        if (auto error = _act.connect ? _act.connect(host, port_num) : std::optional<std::string>("can't connect")) {
             _error = std::move(*error);
             return;
         }
@@ -240,7 +229,6 @@ private:
     actions_t   _act;
     host_buf_t  _host{};
     port_buf_t  _port{};
-    name_buf_t  _name{};
     std::string _target;
     std::string _error;
     game_timer  _timer;

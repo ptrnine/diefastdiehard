@@ -241,6 +241,10 @@ public:
     void on_init(args_view args) final {
         init_signals();
         init_commands();
+        /* The first run creates the current player and its settings section (written by the destructor) */
+        {
+            player_configurator current{player_configurator::current_player()};
+        }
         init_connect_ui();
         init_main_menu();
 
@@ -302,6 +306,12 @@ public:
             server_from_ui = false;
             lobby_wnd.reset();
             net_srv.reset();
+            if (host_player) {
+                if (gs.has_controller(0))
+                    gs.controller_delete(0);
+                gs.player_remove(*host_player);
+                host_player.reset();
+            }
             glog().info("multiplayer: server stopped");
         }
 
@@ -484,6 +494,7 @@ private:
     std::optional<main_menu>                 main_menu_wnd;
     bool                                     server_from_ui = false; /* hosted from the main menu: cancel lobby stops it */
     bool                                     server_stop    = false; /* the menu's lobby was cancelled */
+    std::optional<player_name_t>             host_player;           /* the current player, created to host from the menu */
     bool                                     client_from_ui = false; /* joined from the connect window: leave returns to it */
     std::optional<std::string>               client_error;          /* the server rejected the joining client */
     bool                                     client_leave = false;  /* the lobby's leave was clicked */
@@ -589,22 +600,34 @@ private:
                 return;
             }
             server_from_ui = true;
+            /* The current player hosts: created before the lobby lists the local players */
+            auto name = player_configurator::current_player();
+            if (gs.player_create(name)) {
+                host_player = name;
+                gs.controller_bind(0, name);
+                gs.rebuild_controlled_players();
+            }
             init_server_lobby();
         };
         act.connect = [this] { connect_wnd->show(true); };
+        act.player  = [this] {
+            gs.pconf_ui = std::make_unique<player_configurator_ui>(player_configurator::current_player(), true);
+            gs.pconf_ui->on_name_change = [](const player_name_t& name) { player_configurator::current_player(name); };
+            gs.pconf_ui->show(true);
+        };
         act.exit    = [this] { gs.sig_shutdown.emit_deferred(); };
         main_menu_wnd.emplace(std::move(act));
     }
 
     void init_connect_ui() {
         connect_ui::actions_t act;
-        act.connect = [this](const std::string& host, u16 port, const std::string& name) -> std::optional<std::string> {
+        act.connect = [this](const std::string& host, u16 port) -> std::optional<std::string> {
             if (net_srv)
                 return "this game is a server";
             /* The joined game replaces the local one */
             players_remove_all();
             client_from_ui = true;
-            return client_connect(host, port, name);
+            return client_connect(host, port, player_configurator::current_player());
         };
         act.cancel = [this] { client_reset(); };
         act.load   = [this] {
@@ -612,7 +635,6 @@ private:
             connect_ui::params_t res;
             res.host = p.value_or_default("connect_host", res.host);
             res.port = std::to_string(p.value_or_default<u32>("connect_port", ston<u32>(res.port)));
-            res.name = p.value_or_default("connect_name", res.name);
             return res;
         };
         act.save = [this](const connect_ui::params_t& params) {
@@ -621,7 +643,6 @@ private:
             /* An invalid port is not kept */
             if (auto port = parse_count(params.port); port && *port > 0 && *port <= 65535)
                 p.set("connect_port", u32(*port));
-            p.set("connect_name", params.name);
             game_settings_commit();
         };
         connect_wnd.emplace(std::move(act));
@@ -762,7 +783,7 @@ private:
 
         auto host = std::string(addr_str.substr(0, pos));
         auto port = ston<u16>(std::string(addr_str.substr(pos + 1)));
-        auto name = args.by_key_default<std::string>("--name", "client0");
+        auto name = args.by_key_default<std::string>("--name", std::string(player_configurator::current_player()));
 
         if (auto error = client_connect(host, port, name)) {
             glog().error("multiplayer: {}", *error);
@@ -867,7 +888,7 @@ void print_usage(const std::string& program) {
         "\n"
         "Multiplayer client:\n"
         "  --client <ip:port>      connect to a server\n"
-        "  --name=<name>           player name (default client0)\n"
+        "  --name=<name>           player name (default: the current player, Settings -> Player)\n"
         "  --interp-min=MS         minimum interpolation delay, ms\n"
         "  --interp-margin=MS      interpolation delay margin, ms\n"
         "  --input-margin=MS       input margin, ms\n";
