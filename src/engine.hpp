@@ -90,20 +90,24 @@ public:
                 ui_update();
             }
 
+            /* The window may be closed mid-frame (quit from a UI callback); do not render to it */
+            if (_wnd.isOpen())
             {
-                auto prof = loop_prof.scope("render");
-                _wnd.clear();
-                render_update(_wnd);
-            }
+                {
+                    auto prof = loop_prof.scope("render");
+                    _wnd.clear();
+                    render_update(_wnd);
+                }
 
-            {
-                auto prof = loop_prof.scope("ui");
-                ui.render();
-            }
+                {
+                    auto prof = loop_prof.scope("ui");
+                    ui.render();
+                }
 
-            {
-                auto prof = loop_prof.scope("swapbuffers");
-                _wnd.display();
+                {
+                    auto prof = loop_prof.scope("swapbuffers");
+                    _wnd.display();
+                }
             }
 
             fps_count_frame();
