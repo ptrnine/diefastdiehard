@@ -333,6 +333,13 @@ public:
         glog().info("lobby opened");
     }
 
+    /* Close the lobby without starting a game: the game returns to its current state */
+    void lobby_close() {
+        lobby.active = false;
+        lobby.ready.clear();
+        glog().info("lobby closed");
+    }
+
     /* No choice yet: the current level and game mode (e.g. the level is loaded by the script after the lobby opened) */
     void lobby_default_choice() {
         if (lobby_networked)

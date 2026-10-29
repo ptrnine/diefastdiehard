@@ -448,6 +448,7 @@ private:
             customize_player(name, [this, name] { gs.player_conf_reload(name); });
         };
         act.start         = [this] { gs.lobby_start(); };
+        act.cancel_lobby  = [this] { gs.lobby_close(); };
         act.local_players = [this] {
             std::vector<player_name_t> res;
             for (auto& [name, _] : gs.controlled_players)
@@ -469,6 +470,8 @@ private:
             net_cli->lobby_request(i16(group), ready);
         };
         act.own_ready = [this] { return net_cli->last_lobby_request().ready != 0; };
+        /* Leave: quit the app (the net client destructor tells the server) */
+        act.leave     = [this] { gs.sig_shutdown.emit_deferred(); };
         act.customize = [this](const player_name_t& name) {
             customize_player(name, [this, name] {
                 player_configurator pc{name};

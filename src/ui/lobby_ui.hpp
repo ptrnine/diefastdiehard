@@ -32,7 +32,9 @@ public:
         std::function<void(bool)>                        set_ready;  /* client: the own player */
         std::function<bool()>                            own_ready;  /* client: the own player's requested flag */
         std::function<void(const player_name_t&)>        customize;  /* opens the player configurator */
-        std::function<void()>                            start;      /* owner */
+        std::function<void()>                            start;          /* owner */
+        std::function<void()>                            cancel_lobby;   /* owner: close the lobby without starting */
+        std::function<void()>                            leave;          /* client: leave the game */
         std::function<std::vector<player_name_t>()>      local_players; /* players with the customize button */
     };
 
@@ -44,7 +46,9 @@ public:
     }
 
     void update(ui_ctx& ui, game_state& gs, const vec2f& window_size) {
-        auto wnd_w = std::min(window_size.x - 40.f, 1100.f);
+        /* One column per player: as wide as the columns need (up to the screen, at least the settings row) */
+        auto cols  = std::max<size_t>(gs.players.size(), 1);
+        auto wnd_w = std::min(window_size.x - 40.f, std::max(640.f, float(cols) * column_width + 40.f));
         auto wnd_h = std::min(window_size.y - 40.f, 520.f);
         auto rect  = nk_rect((window_size.x - wnd_w) * 0.5f, (window_size.y - wnd_h) * 0.5f, wnd_w, wnd_h);
 
@@ -120,10 +124,14 @@ private:
         if (!ui.group_begin("lobby_players", NK_WINDOW_BORDER))
             return;
 
-        /* Names */
+        /* Names (the local ones are marked, they are the only ones with controls) */
         ui.layout_row_static(row_height, int(col_w), cols);
-        for (auto& [pl, _] : columns)
-            ui.label(std::string(pl->name()).data(), NK_TEXT_CENTERED);
+        for (auto& [pl, _] : columns) {
+            if (is_local(pl->name()))
+                ui.label_colored((std::string(pl->name()) + "  (you)").data(), NK_TEXT_CENTERED, sf::Color(255, 220, 120));
+            else
+                ui.label(std::string(pl->name()).data(), NK_TEXT_CENTERED);
+        }
 
         /* Sprites (column wide icons) */
         ui.layout_row_static(sprite_h, int(col_w), cols);
@@ -179,7 +187,7 @@ private:
     }
 
     void bottom_draw(ui_ctx& ui, game_state& gs) {
-        ui_layout_row(ui, 30.f, {ui_row::dynamic, 200.f});
+        ui_layout_row(ui, 30.f, {ui_row::dynamic, 200.f, 150.f});
         if (owner()) {
             size_t ready = 0, clients = 0;
             for (auto& [name, pl] : gs.players)
@@ -194,10 +202,16 @@ private:
                 ui.label("choose a map", NK_TEXT_CENTERED);
             else if (ui.button_label("Start") && _act.start)
                 _act.start();
+
+            if (ui.button_label("cancel lobby") && _act.cancel_lobby)
+                _act.cancel_lobby();
         }
         else {
             ui.label("waiting for the host to start the game", NK_TEXT_LEFT);
             ui.spacing(1);
+
+            if (ui.button_label("leave") && _act.leave)
+                _act.leave();
         }
     }
 
