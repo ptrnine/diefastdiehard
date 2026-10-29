@@ -169,7 +169,8 @@ the window state (console open, configurator on top), not the recipe.
 - The game resolves assets from cwd; `ui.sh` runs it from the repo root (or
   the dist dir). A dist built before new assets were added logs `Cannot load
   texture` — rebuild it with `./build-plz prod`.
-- build-plz does not track header dependencies: `rm easybuild-debug/dfdh`
-  before `./build-plz --debug` after touching any header.
+- build-plz tracks headers (`tools/hpp_depinfo`: the `"..."` include tree's
+  mtimes), so a header edit rebuilds the binary. It does not track linked
+  libraries: `rm easybuild-debug/dfdh` to relink after swapping a `.a`.
 - `data/scripts/dfdh.lua` must be empty for `lua_test` to pass (user WIP —
   never commit it).
