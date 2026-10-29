@@ -661,7 +661,36 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
 
 #endif
 
-int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
+void print_usage(const std::string& program) {
+    std::cout <<
+        program << " [options]\n"
+        "\n"
+        "Options:\n"
+        "  -h, --help              show this help and exit\n"
+        "  --physic-debug          physics debug mode\n"
+        "  --lua-exec-stdin        execute the whole stdin as lua code after init\n"
+        "                          (the same as the in-game `lua` console command)\n"
+        "\n"
+        "Multiplayer server:\n"
+        "  --server                run a multiplayer server\n"
+        "  --port=N                server port (default 10443)\n"
+        "  --input-buffer=auto|N   client input jitter buffer in ticks\n"
+        "\n"
+        "Multiplayer client:\n"
+        "  --client <ip:port>      connect to a server\n"
+        "  --name=<name>           player name (default client0)\n"
+        "  --interp-min=MS         minimum interpolation delay, ms\n"
+        "  --interp-margin=MS      interpolation delay margin, ms\n"
+        "  --input-margin=MS       input margin, ms\n";
+}
+
+int main(int argc, char* argv[]) {
+    auto args = dfdh::args_view(argc, argv);
+    if (args.get("--help") || args.get("-h")) {
+        print_usage(std::string(args.program_name()));
+        return EXIT_SUCCESS;
+    }
+
 #ifdef _WIN32
     SetUnhandledExceptionFilter(crash_filter);
 #endif
