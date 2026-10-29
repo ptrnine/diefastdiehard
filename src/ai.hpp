@@ -947,6 +947,11 @@ inline float cross2z(const vec2f& lhs, const vec2f& rhs) {
     return lhs.x * rhs.y - lhs.y * rhs.x;
 }
 
+/* x == 0 (an exactly collinear point) without -Wfloat-equal */
+inline bool exact_zero(float x) {
+    return std::fpclassify(x) == FP_ZERO;
+}
+
 inline std::optional<vec2f> fall_on_platform(const vec2f& start_pos, const vec2f& next_pos, const ai_platform_t& platform) {
     auto c1 = next_pos - start_pos;
     auto c2 = platform.pos2 - platform.pos1;
@@ -954,13 +959,13 @@ inline std::optional<vec2f> fall_on_platform(const vec2f& start_pos, const vec2f
     auto pz1 = cross2z(c1, platform.pos1 - start_pos);
     auto pz2 = cross2z(c1, platform.pos2 - start_pos);
 
-    if ((pz1 < 0.f) == (pz2 < 0.f) || pz1 == 0.f || pz2 == 0.f)
+    if ((pz1 < 0.f) == (pz2 < 0.f) || exact_zero(pz1) || exact_zero(pz2))
         return {};
 
     pz1 = cross2z(c2, start_pos - platform.pos1);
     pz2 = cross2z(c2, next_pos - platform.pos1);
 
-    if ((pz1 < 0.f) == (pz2 < 0.f) || pz1 == 0.f || pz2 == 0.f)
+    if ((pz1 < 0.f) == (pz2 < 0.f) || exact_zero(pz1) || exact_zero(pz2))
         return {};
 
     return vec2f{start_pos.x + c1.x * std::fabs(pz1) / std::fabs(pz2 - pz1),

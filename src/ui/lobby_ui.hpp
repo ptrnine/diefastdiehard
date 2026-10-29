@@ -193,7 +193,8 @@ private:
             for (auto& [name, pl] : gs.players)
                 if (pl->net_controlled()) {
                     ++clients;
-                    ready += gs.lobby.is_ready(name) ? 1 : 0;
+                    if (gs.lobby.is_ready(name))
+                        ++ready;
                 }
             auto text = "ready: " + std::to_string(ready) + "/" + std::to_string(clients);
             ui.label(text.data(), NK_TEXT_LEFT);
