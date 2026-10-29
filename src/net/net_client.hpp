@@ -79,6 +79,7 @@ inline game_mode to_game_mode(const game_mode_info& gmi) {
             .crate_drop_period = gmi.crate_drop_period,
             .crate_limit       = gmi.crate_limit,
             .magazines_count   = gmi.magazines_count,
+            .save_primary_weapon = gmi.save_primary_weapon != 0,
             .score_system      = gmi.score_system == u8(game_mode::score_system_t::lives) ? game_mode::score_system_t::lives
                                                                                          : game_mode::score_system_t::kills,
             .start_lives       = gmi.start_lives};

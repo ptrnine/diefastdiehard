@@ -471,8 +471,9 @@ public:
         if (player) {
             if (player->eliminated())
                 return;
-            /* A player spawns with its secondary gun only (server-driven: synced from the server) */
-            if (!player->server_driven())
+            /* A player spawns with its secondary gun only (server-driven: synced from the
+             * server); a save_primary_weapon game mode keeps a primary gun through a respawn */
+            if (!player->server_driven() && !cur_game_mode.save_primary_weapon)
                 player->equip_secondary();
             player->jump_speed(level_jump_speed(*cur_level));
             player->teleport(cur_level->pick_player_spawn());

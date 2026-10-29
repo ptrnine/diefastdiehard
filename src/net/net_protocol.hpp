@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 25;
+inline constexpr u16 protocol_version = 26;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -468,13 +468,14 @@ struct game_mode_info {
     u32         magazines_count   = 0;   // 0: unlimited
     u8          score_system      = 0;   // game_mode::score_system_t
     i32         start_lives       = 3;
+    u8          save_primary_weapon = 0; // on: respawning does not drop a primary weapon
 
     void serialize(auto& s) const {
-        s.write(section, bullet_gravity, crate_drop_period, crate_limit, magazines_count, score_system, start_lives);
+        s.write(section, bullet_gravity, crate_drop_period, crate_limit, magazines_count, score_system, start_lives, save_primary_weapon);
     }
 
     void deserialize(auto& d) {
-        d.read(section, bullet_gravity, crate_drop_period, crate_limit, magazines_count, score_system, start_lives);
+        d.read(section, bullet_gravity, crate_drop_period, crate_limit, magazines_count, score_system, start_lives, save_primary_weapon);
     }
 };
 

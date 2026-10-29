@@ -28,6 +28,7 @@ struct game_mode {
     float       crate_drop_period = 0.f; /* crate drop cooldown period (seconds), 0 = crates never drop */
     u32         crate_limit       = 0;   /* max crates alive at once, 0 = unlimited */
     u32         magazines_count   = 0;   /* magazines of a gun (pistols are unlimited), 0 = unlimited */
+    bool        save_primary_weapon = false; /* on: respawning does not drop a primary weapon */
     score_system_t score_system   = score_system_t::kills;
     i32         start_lives       = 3;   /* lives score system: the starting score */
 
@@ -35,6 +36,7 @@ struct game_mode {
         return section == gm.section && exactly_equal(bullet_gravity, gm.bullet_gravity) &&
                exactly_equal(crate_drop_period, gm.crate_drop_period) && crate_limit == gm.crate_limit &&
                magazines_count == gm.magazines_count &&
+               save_primary_weapon == gm.save_primary_weapon &&
                score_system == gm.score_system && start_lives == gm.start_lives;
     }
 
@@ -54,6 +56,7 @@ struct game_mode {
         gm.crate_drop_period = std::max(sect.value_or_default("crate_drop_period", 0.f), 0.f);
         gm.crate_limit       = u32(std::max(sect.value_or_default("crate_limit", 0), 0));
         gm.magazines_count   = u32(std::max(sect.value_or_default("magazines_count", 0), 0));
+        gm.save_primary_weapon = sect.value_or_default("save_primary_weapon", false);
         gm.score_system      = score_system_from_string(sect.value_or_default("score_system", std::string("default")));
         gm.start_lives       = std::max(sect.value_or_default("start_lives", 3), 1);
         return gm;
