@@ -135,7 +135,7 @@ public:
                    "  ai list                                    - lists all operated player names\n"
                    "  ai bind [player_name]                      - binds player to the ai operator\n"
                    "  ai difficulty [player_name] [difficulty]?  - shows or setups ai difficulty\n"
-                   "    difficulty: easy medium hard\n"
+                   "    difficulty: easy medium hard sniper\n"
                    "  ai profiler [on/off]                       - enable/disable ai profiler";
         }
         else if (cmd == "spawn") {

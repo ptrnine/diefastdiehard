@@ -401,13 +401,14 @@ struct platform_res_t {
     const ai_platform_t *stand_on = nullptr, *can_stand_on = nullptr, *nearest = nullptr;
 };
 
-enum class ai_native_difficulty { easy = 0, medium, hard, invalid };
+enum class ai_native_difficulty { easy = 0, medium, hard, sniper, invalid };
 
 std::string ai_native_difficulty_to_string(ai_native_difficulty value) {
     switch (value) {
     case ai_native_difficulty::easy: return "easy";
     case ai_native_difficulty::medium: return "medium";
     case ai_native_difficulty::hard: return "hard";
+    case ai_native_difficulty::sniper: return "sniper";
     default: return "invalid";
     }
 }
@@ -419,6 +420,8 @@ ai_native_difficulty ai_native_difficulty_from_string(const std::string& value) 
         return ai_native_difficulty::medium;
     if (value == "hard")
         return ai_native_difficulty::hard;
+    if (value == "sniper")
+        return ai_native_difficulty::sniper;
     return ai_native_difficulty::invalid;
 }
 
@@ -490,6 +493,12 @@ public:
         return _difficulty;
     }
 
+    /* Hard logic: sniper behaves exactly like hard, except it shoots with the
+       lua insane shooter (insane_shooter) instead of hard_shooter */
+    [[nodiscard]] bool is_hardlike() const {
+        return _difficulty == ai_native_difficulty::hard || _difficulty == ai_native_difficulty::sniper;
+    }
+
     void set_native_difficulty(ai_native_difficulty value) {
         _difficulty = value;
     }
@@ -536,6 +545,10 @@ public:
 
     player_name_t        _target_id;
     player_name_t        _last_target_id;
+    /* insane_shooter state (sniper difficulty) */
+    player_name_t        _insane_target_name{};
+    timer                _insane_relax_timer;
+    bool                 _insane_relax_active = false;
     float                _jump_x_max         = 0.f;
     const ai_platform_t* _last_stand_on_plat = nullptr;
     platform_res_t       _operated_platforms;
@@ -638,7 +651,7 @@ easy_ai_find_nearest(const ai_player_t&                          it,
     std::set<std::pair<player_name_t, vec2f>, decltype(cmp)> nearests;
     for (auto& [_, pl] : players) {
         auto iseeyou =
-            oper.native_difficulty() == ai_native_difficulty::hard ? hard_i_see_you(it, pl, level, it.gun_dispersion) : i_see_you(it, pl);
+            oper.is_hardlike() ? hard_i_see_you(it, pl, level, it.gun_dispersion) : i_see_you(it, pl);
         if (pl.name != it.name && iseeyou)
             nearests.emplace(pl.name, pl.pos - it.pos);
     }
@@ -830,7 +843,7 @@ inline void dodge_ai(const std::vector<ai_bullet_t>& bullets,
         }
     }
 
-    if (oper.native_difficulty() == ai_native_difficulty::hard) {
+    if (oper.is_hardlike()) {
         constexpr auto calc_hit_mass = [](const std::vector<const ai_bullet_t*>& bullets) {
             float hit_mass = 0;
             for (auto b : bullets) hit_mass += (b->vel.x > 0.f ? b->hit_mass : -b->hit_mass);
@@ -925,6 +938,282 @@ inline void hard_shooter(const std::map<player_name_t, ai_player_t>& players,
     }
 }
 
+/*
+ * The C++ ports of the lua "insane" AI shooter (data/scripts/dfdh_ai.lua) and
+ * the mod/ai.lua helpers it relies on. Used by the "sniper" native difficulty
+ * instead of hard_shooter.
+ */
+inline float cross2z(const vec2f& lhs, const vec2f& rhs) {
+    return lhs.x * rhs.y - lhs.y * rhs.x;
+}
+
+inline std::optional<vec2f> fall_on_platform(const vec2f& start_pos, const vec2f& next_pos, const ai_platform_t& platform) {
+    auto c1 = next_pos - start_pos;
+    auto c2 = platform.pos2 - platform.pos1;
+
+    auto pz1 = cross2z(c1, platform.pos1 - start_pos);
+    auto pz2 = cross2z(c1, platform.pos2 - start_pos);
+
+    if ((pz1 < 0.f) == (pz2 < 0.f) || pz1 == 0.f || pz2 == 0.f)
+        return {};
+
+    pz1 = cross2z(c2, start_pos - platform.pos1);
+    pz2 = cross2z(c2, next_pos - platform.pos1);
+
+    if ((pz1 < 0.f) == (pz2 < 0.f) || pz1 == 0.f || pz2 == 0.f)
+        return {};
+
+    return vec2f{start_pos.x + c1.x * std::fabs(pz1) / std::fabs(pz2 - pz1),
+                 start_pos.y + c1.y * std::fabs(pz1) / std::fabs(pz2 - pz1)};
+}
+
+inline std::optional<vec2f> fall_on_platforms(const vec2f& start_pos, const vec2f& next_pos, const ai_data_t& world) {
+    std::optional<vec2f> result;
+    float                min_y = std::numeric_limits<float>::max();
+
+    for (auto& platform : world.platforms) {
+        if (auto res = fall_on_platform(start_pos, next_pos, platform); res && res->y < min_y) {
+            result = res;
+            min_y  = res->y;
+        }
+    }
+
+    return result;
+}
+
+inline float
+get_actual_damage(const ai_player_t& plr, const ai_player_t& target, const ai_data_t& world, float player_size_coef) {
+    float dmg = 0.f;
+    auto  dir_sign = plr.barrel_pos.x > target.pos.x;
+    auto  tpos     = target.pos + vec2f{target.size.x * 0.5f, -target.size.y * 0.5f};
+
+    for (auto& bullet : world.bullets) {
+        if (bullet.group == plr.group && dir_sign == (bullet.vel.x < 0.f)) {
+            auto  bpos    = bullet.pos;
+            auto  bvel    = bullet.vel;
+            auto  delta_s = tpos.x - bpos.x;
+            auto  delta_v = bvel.x - target.vel.x;
+            auto  t       = delta_s / delta_v;
+
+            auto  g_s         = world.physic_sim.gravity * t * t * 0.5f;
+            auto  tpos_next   = tpos + target.vel * t + (target.is_y_locked ? vec2f{} : g_s);
+            auto  bpos_next_y = bpos.y + bvel.y * t + (world.physic_sim.enable_gravity_for_bullets ? g_s.y : 0.f);
+
+            /* Check for platforms */
+            if (tpos_next.y > tpos.y) {
+                if (auto fall_position = fall_on_platforms(tpos, tpos_next, world)) {
+                    tpos_next.x = fall_position->x + target.size.x * 0.5f;
+                    tpos_next.y = fall_position->y - target.size.y * 0.5f;
+                }
+            }
+
+            /* Distance from meet point to target center relative to y */
+            auto y_dist = std::fabs(bpos_next_y - tpos_next.y);
+
+            /* The target becomes archievable if distance to the target center
+               less than half height of the target */
+            if (y_dist < (target.size.y * 0.5f) * player_size_coef)
+                dmg += bullet.hit_mass * std::fabs(bullet.vel.x) * 0.001f;
+        }
+    }
+
+    return dmg;
+}
+
+inline bool is_flying_outside(const ai_player_t& plr, float start_x, float end_x) {
+    auto  center = (end_x - start_x) * 0.5f;
+    auto  t      = std::fabs(plr.vel.x) / plr.x_accel;
+    float pos;
+
+    if (plr.pos.x + plr.size.x * 0.5f < center)
+        pos = plr.pos.x + plr.size.x + plr.vel.x * t + plr.x_accel * t * t * 0.5f;
+    else
+        pos = plr.pos.x + plr.vel.x * t - plr.x_accel * t * t * 0.5f;
+
+    return pos < start_x || pos > end_x;
+}
+
+inline bool is_flying_to_death(const ai_player_t& plr, const ai_data_t& world) {
+    return is_flying_outside(plr, world.level.platforms_bound_start_x, world.level.platforms_bound_end_x);
+}
+
+struct find_victim_res {
+    const ai_player_t*  target = nullptr;
+    std::optional<float> change_dir;
+    std::optional<bool>  long_shot_setting;
+    bool                 too_close = false;
+};
+
+inline find_victim_res
+find_victim(const ai_player_t& plr, const ai_data_t& world, float player_size_coef = 1.f, bool change_dir_allowed = true) {
+    find_victim_res  res;
+    float            res_dist = std::numeric_limits<float>::max();
+    const bool       bullet_gravity_enabled = world.physic_sim.enable_gravity_for_bullets;
+
+    for (auto& [_, target] : world.players) {
+        if (target.group == plr.group)
+            continue;
+        if (is_flying_to_death(target, world))
+            continue;
+        if (get_actual_damage(plr, target, world, player_size_coef) >= 1.f)
+            continue;
+
+        std::optional<float> change_dir;
+        auto tpos   = target.pos + vec2f{target.size.x * 0.5f, -target.size.y * 0.5f};
+        auto twidth = target.size.x * 0.5f;
+        auto ppos   = plr.pos + vec2f{plr.size.x * 0.5f, -plr.size.y * 0.5f};
+        auto bpos   = plr.barrel_pos;
+
+        /* Determine direction to target */
+        float target_dir_x = ppos.x < tpos.x ? 1.f : -1.f;
+
+        /* Is direction change needed */
+        if (target_dir_x < 0.f && !plr.on_left)
+            change_dir = -1.f;
+        else if (target_dir_x > 0.f && plr.on_left)
+            change_dir = 1.f;
+
+        /* Skip if change direction is required and not allowed */
+        if (change_dir && !change_dir_allowed)
+            continue;
+
+        /* Recalculate barrel position if direction change is needed */
+        if (change_dir) {
+            auto barrel_displacement = bpos - ppos;
+            bpos = vec2f{ppos.x - barrel_displacement.x, ppos.y + barrel_displacement.y};
+        }
+
+        /* Is target too close to shot */
+        bool too_close =
+            (target_dir_x < 0.f && bpos.x < tpos.x - twidth) || (target_dir_x > 0.f && bpos.x > tpos.x + twidth);
+
+        if (!too_close) {
+            /* TODO: handle target acceleration (maybe it's useless) */
+            std::array<vec2f, 2> dirs;
+            size_t               dirs_count = 1;
+            dirs[0] = {target_dir_x, 0.f};
+
+            bool   long_shot_iter = false;
+            vec2f  long_shot_dir  = plr.long_shot_dir;
+            if (bullet_gravity_enabled) {
+                long_shot_iter = true;
+                /* Fix long_shot_dir if direction changed */
+                if (change_dir)
+                    long_shot_dir.x = -long_shot_dir.x;
+                dirs[1]     = long_shot_dir;
+                dirs_count  = 2;
+            }
+
+            for (size_t i = 0; i < dirs_count; ++i) {
+                auto bdir = dirs[i];
+
+                /* Find meet time relative to x
+                   From Sbullet + Vbullet * t = Starget + Vtarget * t ->
+                        t = (Starget - Sbullet) / (Vbullet - Vtarget) */
+                auto  delta_s = tpos.x - bpos.x;
+                auto  delta_v = bdir.x * plr.gun_bullet_vel - target.vel.x;
+                auto  t       = delta_s / delta_v;
+                auto  g_s     = world.physic_sim.gravity * t * t * 0.5f;
+
+                /* Find meet y positions, pos = S + Vt + gt^2/2 */
+                auto  tpos_next   = tpos + target.vel * t + (target.is_y_locked ? vec2f{} : g_s);
+                auto  bpos_next_y = bpos.y + bdir.y * plr.gun_bullet_vel * t +
+                                    (bullet_gravity_enabled ? g_s.y : 0.f);
+
+                /* Check for platforms */
+                if (tpos_next.y > tpos.y) {
+                    if (auto fall_position = fall_on_platforms(tpos, tpos_next, world)) {
+                        tpos_next.x = fall_position->x + target.size.x * 0.5f;
+                        tpos_next.y = fall_position->y - target.size.y * 0.5f;
+                    }
+                }
+
+                /* Distance from meet point to target center relative to y */
+                auto y_dist = std::fabs(bpos_next_y - tpos_next.y);
+
+                /* The target becomes archievable if distance to the target center
+                   less than half height of the target */
+                if (y_dist < (target.size.y * 0.5f) * player_size_coef) {
+                    auto dist = magnitude(tpos - bpos);
+
+                    /* Set the current target if it is closer */
+                    if (dist < res_dist) {
+                        res.target     = &target;
+                        res_dist       = dist;
+                        res.change_dir = change_dir;
+                        res.too_close  = too_close;
+
+                        if (bullet_gravity_enabled) {
+                            if (plr.long_shot_enabled && !long_shot_iter)
+                                res.long_shot_setting = false;
+                            else if (!plr.long_shot_enabled && long_shot_iter)
+                                res.long_shot_setting = true;
+                        }
+
+                        break;
+                    }
+                }
+
+                long_shot_iter = false;
+            }
+        }
+    }
+
+    return res;
+}
+
+inline void insane_shooter(ai_operator_native& op,
+                           const ai_player_t&   plr,
+                           const ai_data_t&     world,
+                           bool                 change_dir_allowed) {
+    static constexpr float insane_shooter_relax_timeout    = 0.5f;
+    static constexpr float insane_shooter_player_size_coef = 1.0f;
+
+    auto vr = find_victim(plr, world, insane_shooter_player_size_coef, change_dir_allowed);
+
+    bool switch_target_required = false;
+    /* Switch target if it required */
+    if (!vr.target && op._insane_target_name != ai_operator_native::no_target) {
+        switch_target_required = true;
+        op._insane_target_name = ai_operator_native::no_target;
+    }
+    else if (vr.target && vr.target->name != op._insane_target_name) {
+        switch_target_required = true;
+        op._insane_target_name = vr.target->name;
+    }
+
+    /* Enable/disable long shot mode if it required */
+    if (vr.long_shot_setting)
+        op.produce_action(*vr.long_shot_setting ? ai_action::enable_long_shot : ai_action::disable_long_shot);
+
+    /* Change direction if it required */
+    if (vr.change_dir) {
+        if (*vr.change_dir < 0.f)
+            op.move_left();
+        else
+            op.move_right();
+        op.stop();
+    }
+
+    if (switch_target_required) {
+        if (op._insane_target_name != ai_operator_native::no_target)
+            op.shot();
+        else {
+            /* Schedule relax */
+            op._insane_relax_active = true;
+            op._insane_relax_timer.restart();
+        }
+    }
+
+    /* Produce relax on timeout */
+    if (op._insane_relax_active &&
+        op._insane_relax_timer.elapsed(world.physic_sim.time_speed) >=
+            insane_shooter_relax_timeout * (plr.gun_fire_rate / 1000.f)) {
+        op._insane_relax_active = false;
+        op.relax();
+    }
+}
+
 inline auto pathfinder(const std::vector<ai_platform_t>& platforms,
                        const ai_plat_map_t&              plat_map,
                        const platform_res_t&             start_plat,
@@ -1016,7 +1305,7 @@ inline void move_to_target(const std::vector<ai_platform_t>& platforms,
     float plat_center;
     float plat_min_dist;
 
-    if (path.size() == 1 && oper.native_difficulty() == ai_native_difficulty::hard && next_plat->pos1.x < target.pos.x &&
+    if (path.size() == 1 && oper.is_hardlike() && next_plat->pos1.x < target.pos.x &&
         target.pos.x < next_plat->pos2.x) {
         auto  trg_plat_f    = inverse_lerp(next_plat->pos1.x, next_plat->pos2.x, target.pos.x);
         auto  global_plat_f = inverse_lerp(plats_bound_start, plats_bound_end, target.pos.x);
@@ -1126,7 +1415,7 @@ inline void ai_operator_native::work(const ai_data_t& ai_data) {
             _target_id = id->first;
     }
     else {
-        if (_difficulty == ai_native_difficulty::hard) {
+        if (is_hardlike()) {
             if (!hard_i_see_you(player, ai_data.players.at(_target_id), ai_data.level, player.gun_dispersion)) {
                 if (auto next_target = find_closest_target(ai_data.players, player))
                     _last_target_id = *next_target;
@@ -1164,7 +1453,7 @@ inline void ai_operator_native::work(const ai_data_t& ai_data) {
         auto  mod_dist_x = fabs(dist.x);
 
         std::array<float, 3> dists; // NOLINT
-        if (_difficulty != ai_native_difficulty::hard) {
+        if (!is_hardlike()) {
             dists[0] = std::fabs(player.barrel_pos.x - player.pos.x) * 1.3f;
             dists[1] = dists[0] * 0.8f;
             dists[2] = 500.f;
@@ -1201,7 +1490,7 @@ inline void ai_operator_native::work(const ai_data_t& ai_data) {
                 move_spec.update_move(ai_move_left, 0);
         }
 
-        if (_difficulty == ai_native_difficulty::hard && trg.vel.y < -trg.jump_speed * 0.99f &&
+        if (is_hardlike() && trg.vel.y < -trg.jump_speed * 0.99f &&
             player.vel.y > -0.001f /* && roll_the_dice(0.5f)*/) {
             /* For 50% chance */
             if (static_cast<int>(std::fabs(player.pos.x)) % 2 == 0)
@@ -1213,7 +1502,7 @@ inline void ai_operator_native::work(const ai_data_t& ai_data) {
             auto& trg         = ai_data.players.at(_last_target_id);
             auto  target_plat = find_platform(ai_data.platforms, trg);
 
-            if (_difficulty == ai_native_difficulty::hard && player.pos.y > trg.pos.y &&
+            if (is_hardlike() && player.pos.y > trg.pos.y &&
                 (player.pos.y - trg.pos.y) < player.max_jump_dist * float(player.available_jumps) &&
                 player.pos.y > -0.001f) {
                 jump();
@@ -1238,8 +1527,12 @@ inline void ai_operator_native::work(const ai_data_t& ai_data) {
                 relax();
         }
 
-        if (_difficulty == ai_native_difficulty::hard)
-            hard_shooter(ai_data.players, player, *this, ai_data.physic_sim, ai_data.level, move_spec);
+        if (is_hardlike()) {
+            if (_difficulty == ai_native_difficulty::sniper)
+                insane_shooter(*this, player, ai_data, plat.stand_on != nullptr || plat.can_stand_on != nullptr);
+            else
+                hard_shooter(ai_data.players, player, *this, ai_data.physic_sim, ai_data.level, move_spec);
+        }
     }
 
     if (std::fabs(player.vel.x) > player.max_vel_x * 3.f && plat.stand_on && player.vel.y > -0.001f)
