@@ -87,18 +87,48 @@ $U console NAME "fps"            # grave, type, Return, grave
 - Commands: `help`, `list`, `fps`, `lobby [start]`, `game mode list`,
   `level <name>`, `shutdown` (quits; there is no `quit`). `unknown command`
   in the log = typo or leftover text in the field.
-- Arguments split on whitespace **and** quotes. A Lua line is one argument:
-  wrap it in single quotes, use `"` inside:
-  `$U console srv "lua 'log_impl(\"info\", \"x=\" .. 2*3)'"`.
-- Lua `print` goes to the C stdout, block-buffered into the log file — you
-  won't see it. Use `log_impl("info", ...)` to get a log line; failures log
-  `lua error: ...`. For non-interactive Lua at startup there is
-  `--lua-exec-stdin` (`ui.sh launch` gives stdin `/dev/null`; run the binary
-  directly with a heredoc for that).
+- Arguments split on whitespace **and** quotes. A Lua line typed into the
+  console is one argument: wrap it in single quotes, use `"` inside:
+  `$U console srv "lua 'print(\"x=\" .. 2*3)'"`. To *run* Lua, prefer
+  `$U lua` (below); type into the console only to test the console itself.
+
+## Lua: setup and assertions
+
+`launch` starts every instance with `--lua-exec-fifo=$UI_OUT/NAME.fifo`;
+`$U lua NAME 'code'` (or a heredoc on stdin) runs a chunk there and prints
+the log lines it produced. Lua `print()` writes to the game log (tab-separated,
+like stock print); a failure logs `lua error: ...` and `$U lua` exits 1.
+
+```sh
+$U lua srv 'GS:set_level("lvl_aes2") cmd("lobby") cmd("lobby start")'
+$U lua cli 'print(GS:get_player("tester").pos.x)'     # 1150
+$U hold cli 0.5 Right
+$U lua cli 'print(GS:get_player("tester").pos.x)'     # 1286.87
+```
+
+- Use it for **setup** (level, players, guns, positions: `create_player`,
+  `setup_gun`, `teleport`, `pause`) and **assertions** (`pos`, `vel`,
+  `score`, `deaths`, `eliminated`, `group`, `holds_primary`, ...) instead of
+  judging them from screenshots. Never use it to perform the action under
+  test — that skips the UI/input path you are verifying.
+- `cmd("a")` queues console commands (newline-separated); they run at the end
+  of the frame, so read their effects in a later `$U lua` call.
+- `GS:list_players()` returns **names**; get objects with `GS:get_player(n)`.
+- Multiplayer: the server is authoritative — set up state on the server; a
+  client's Lua only changes its local mirror. Reading on both sides is fine
+  (client prediction runs a few ticks ahead of the server).
+- The lobby level has no console command: `GS:set_level(...)` then reopen
+  the lobby (`cmd("lobby")`) picks it up, then `cmd("lobby start")`.
+- No top-level `return` in the chunk (`$U lua` appends a completion marker).
+  Writing the fifo by hand: `echo 'code' > fifo` — one chunk per writer
+  close; a writer blocks if the game is not running (use `timeout`).
+- See `data/scripts/assist.lua` (generated at runtime) for the full binding
+  list with argument names.
 
 ## Verifying an action
 
-Check, in order: the log, the screenshot, process liveness
+Check, in order: game state via `$U lua` (when the outcome is state), the
+log, the screenshot, process liveness
 (`kill -0 $(cat $UI_OUT/NAME.pid)`). Useful log lines (`$U wait NAME REGEX`):
 
 | Event | Log line |

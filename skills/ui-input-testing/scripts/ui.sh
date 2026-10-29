@@ -15,6 +15,8 @@
 #   ui.sh hold NAME SEC KEYSYM...    hold keys down for SEC (gameplay controls)
 #   ui.sh type NAME "TEXT"           type text (focused NK edit field)
 #   ui.sh console NAME "CMD"         dev console: open, type CMD, Return, close
+#   ui.sh lua NAME ['CODE']          run lua (CODE or stdin) via the fifo, print
+#                                    the log lines it produced (print() logs)
 #   ui.sh win NAME                   print NAME's window id
 #   ui.sh down                       kill the launched instances + Xvfb
 #
@@ -31,7 +33,7 @@ xi=$out/xinput
 mkdir -p "$out"
 
 die() { echo "ui.sh: $*" >&2; exit 1; }
-win() { [[ -f $out/$1.win ]] || die "no instance '$1' (launch it first)"; cat "$out/$1.win"; }
+win() { [[ -s $out/$1.win ]] || die "no instance '$1' (launch it first)"; cat "$out/$1.win"; }
 
 cmd=${1:-}; shift || true
 case $cmd in
@@ -56,7 +58,7 @@ launch)
     cwd=$root; [[ -f $bdir/fs.cfg ]] && cwd=$bdir
     before=$("$xi" wins | cut -d' ' -f1)
     (cd "$cwd" && LD_LIBRARY_PATH=$bdir/3rd/lib:$bdir/3rd/lib64:$bdir/submodules/luacpp/3rd/lib:$bdir/submodules/luacpp/3rd/lib64 \
-        exec "$bin" "$@" </dev/null >"$out/$name.log" 2>&1) &
+        exec "$bin" --lua-exec-fifo="$out/$name.fifo" "$@" </dev/null >"$out/$name.log" 2>&1) &
     echo $! >"$out/$name.pid"
     id=
     for _ in $(seq 200); do
@@ -140,13 +142,29 @@ console)
     sleep 0.1
     "$xi" key "$w" grave
     ;;
+lua)
+    name=${1:?NAME}; fifo=$out/$name.fifo; log=$out/$name.log
+    [[ -p $fifo ]] || die "no lua fifo for '$name' (launch it first)"
+    code=${2:-$(cat)}
+    off=$(wc -c <"$log")
+    mark="ui.sh lua done $$.$RANDOM"
+    # the marker runs after CODE in the same chunk: no top-level `return` in CODE
+    printf '%s\nprint("%s")\n' "$code" "$mark" | timeout 5 tee "$fifo" >/dev/null ||
+        die "cannot write $fifo ($name not running?)"
+    for _ in $(seq 100); do
+        tail -c +$((off + 1)) "$log" | grep -qaF -e "$mark" -e "lua error" && break
+        sleep 0.05
+    done
+    tail -c +$((off + 1)) "$log" | grep -avF "$mark" | grep -a "^\[" || true
+    tail -c +$((off + 1)) "$log" | grep -qaF "$mark" || die "lua chunk failed or timed out"
+    ;;
 win) win "${1:?NAME}" ;;
 down)
     pids=()
     for p in "$out"/*.pid; do
-        [[ -f $p ]] || continue
+        [[ -s $p ]] || continue
         pids+=("$(cat "$p")")
-        rm -f "$p" "${p%.pid}.win"
+        : >"$p"; : >"${p%.pid}.win"
     done
     pids+=($(pgrep -f "^Xvfb $DISPLAY " || true))
     ((${#pids[@]})) && kill "${pids[@]}" 2>/dev/null || true
@@ -156,5 +174,5 @@ down)
     done
     echo "down"
     ;;
-*) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; [[ -z $cmd ]] ;;
+*) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; [[ -z $cmd ]] ;;
 esac
