@@ -35,5 +35,17 @@ inline void lua_log_init(luacpp::luactx& ctx) {
                     else
                         glog().detail_update(update_id, "{}", str);
                 });
+
+    /* print() to the game log (and the dev console) instead of the C stdout: tab-separated tostring() of
+     * the arguments, like the stock print */
+    ctx.load_and_call(luacpp::lua_code{R"(
+        function print(...)
+            local parts = {}
+            for i = 1, select("#", ...) do
+                parts[i] = tostring((select(i, ...)))
+            end
+            log_impl("detail", table.concat(parts, "\t"))
+        end
+    )"});
 }
 } // namespace dfdh

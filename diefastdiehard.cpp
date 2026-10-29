@@ -12,6 +12,7 @@
 #include "efx/efx_editor.hpp"
 
 #include "script/lua_init.hpp"
+#include "script/lua_fifo.hpp"
 
 #include "net/net_server.hpp"
 #include "net/net_client.hpp"
@@ -221,6 +222,9 @@ public:
         init_signals();
         init_commands();
 
+        /* Taken before init_client: it reads the server address with args.next() */
+        auto lua_fifo_path = args.by_key_opt<std::string>("--lua-exec-fifo");
+
         if (args.get("--physic-debug"))
             gs.debug_physics = true;
 
@@ -233,6 +237,9 @@ public:
 
         if (args.get("--lua-exec-stdin"))
             execute_lua_stdin();
+
+        if (lua_fifo_path)
+            lua_exec_fifo.emplace(std::move(*lua_fifo_path));
     }
 
     /* Execute the whole stdin the way the in-game `lua` command executes its line */
@@ -269,6 +276,10 @@ public:
             net_srv->update(gs);
 
         lua_game_update(&gs);
+
+        if (lua_exec_fifo)
+            if (auto code = lua_exec_fifo->poll())
+                lua->execute_line(*code);
     }
 
     void handle_event(const sf::Event& evt) final {
@@ -424,6 +435,7 @@ private:
     std::optional<luactx_mgr>          lua;
     lua_caller<void(const sf::Event&)> lua_handle_event;
     lua_caller<void(game_state*)>      lua_game_update;
+    std::optional<lua_fifo>            lua_exec_fifo;
 
     std::shared_ptr<net::net_server>        net_srv;
     std::shared_ptr<net::net_client>        net_cli;
@@ -673,6 +685,8 @@ void print_usage(const std::string& program) {
         "  --physic-debug          physics debug mode\n"
         "  --lua-exec-stdin        execute the whole stdin as lua code after init\n"
         "                          (the same as the in-game `lua` console command)\n"
+        "  --lua-exec-fifo=<path>  (re)create a named pipe and execute lua code\n"
+        "                          written to it, one chunk per writer close\n"
         "\n"
         "Multiplayer server:\n"
         "  --server                run a multiplayer server\n"

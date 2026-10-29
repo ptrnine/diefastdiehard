@@ -116,6 +116,10 @@ instead of sleeping. Use it for any new gameplay/network timer.
   (keyframes: hold/linear/bezier), `sfml_types.hpp` (`drawable_t` variant +
   `downcast`).
 - `src/script/` — LuaJIT via luacpp; user types in `src/script/typeinit/`.
+  Lua `print()` writes to the game log; `cmd("...")` queues console commands.
+  External Lua: `--lua-exec-stdin` (once at startup) and
+  `--lua-exec-fifo=<path>` (`lua_fifo.hpp`: a named pipe recreated on
+  startup, one chunk per writer close, polled in `game_update`; POSIX only).
   Scripts in `data/scripts/*.lua`; `assist.lua`/`assist_ai.lua` are
   **generated at runtime** — never edit or commit them.
 - `src/base/` — utilities: cfg, serialization, signals, tasks, args_view,
