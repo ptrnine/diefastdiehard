@@ -318,7 +318,7 @@ private:
     std::string         wnd_title;
     bool                reopen = false;
 
-    struct nk_rect wnd_rect{200, 100, 500, 500};
+    struct nk_rect wnd_rect{200, 60, 640, 700}; /* the whole content without scrolling */
     bool           wnd_show = false;
 
     sprite_t          sprt_body, sprt_head, sprt_face, sprt_hat;

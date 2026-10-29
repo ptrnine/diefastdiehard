@@ -90,7 +90,7 @@ instead of sleeping. Use it for any new gameplay/network timer.
   (`game_state::game_mode_apply`). The server sends it to clients in STATE.
 - `src/ui/main_menu.hpp` — main menu ("Host Lobby", "Connect Lobby",
   "Settings", "Exit"; columns are `menu_column`s; Settings opens a "Player",
-  "Back" submenu left of the dimmed main column):
+  "Back" submenu right of the dimmed main column):
   shown out of a game with no window open (no server/client, no lobby,
   connect window or player configurator), fades in/out; hovered options grow
   via a scaled copy of `ui_ctx::menu_font()` (nuklear scales baked fonts by

@@ -143,7 +143,7 @@ private:
 
 /**
  * Main menu: a column of options in the center of the screen, the settings
- * submenu to the left of it (the main column dims meanwhile). The menu fades
+ * submenu to the right of it (the main column dims meanwhile). The menu fades
  * in / out when shown / hidden. The UI does not know about the game: the
  * actions are callbacks
  */
@@ -178,8 +178,8 @@ public:
             }
         }
 
-        /* Just left of the main column */
-        auto sub_bounds = nk_rect(main_bounds.x - settings_width,
+        /* Just right of the main column */
+        auto sub_bounds = nk_rect(main_bounds.x + main_bounds.w,
                                   (window_size.y - _settings.height()) * 0.5f,
                                   settings_width,
                                   _settings.height());
