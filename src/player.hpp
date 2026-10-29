@@ -1190,6 +1190,13 @@ public:
         return _last_input_seq;
     }
 
+    /* A new input stream (the client rejoined): its seqs start over */
+    void reset_input_seq() {
+        _last_input_seq = 0;
+        if (_pistol)
+            _pistol.reset_input_tick();
+    }
+
     /**
      * Triggers of the input ticks the server merged away before this one
      * (seq -> held): the weapon runs their ticks with them (a throw holds no

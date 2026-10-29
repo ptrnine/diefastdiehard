@@ -751,6 +751,14 @@ public:
         _input_tick = seq;
     }
 
+    /* A new input stream (the owner's client rejoined): its seqs start over */
+    void reset_input_tick() {
+        _input_tick.reset();
+        _counted_input_tick.reset();
+        _merged_triggers.clear();
+        _step_ticks = 0;
+    }
+
     /* Triggers of the input ticks the server merged away before the current one (seq -> held) */
     void merged_triggers(std::map<u32, bool> triggers) {
         _merged_triggers.merge(triggers);
@@ -935,7 +943,10 @@ private:
     bool tick(float timestep) {
         u32 ticks = 1;
         if (_input_tick) {
-            ticks               = _counted_input_tick ? *_input_tick - *_counted_input_tick : 1u;
+            /* The first one, or the seqs went back (a new input stream): one tick, not a u32 wrap */
+            ticks = _counted_input_tick && *_input_tick >= *_counted_input_tick
+                        ? *_input_tick - *_counted_input_tick
+                        : 1u;
             _counted_input_tick = _input_tick;
             if (ticks == 0) {
                 _anim_tick_dt = 0.f;

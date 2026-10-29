@@ -737,6 +737,7 @@ private:
         client.inputs.clear();
         client.merged_seqs.clear();
         client.next_seq      = 0;
+        client.ack_seq       = 0;
         client.held_bits     = 0;
         client.pending_edges = 0;
         client.buffering     = true;
@@ -769,6 +770,8 @@ private:
             }
         }
 
+        /* A (re)joined client's input seqs start over */
+        pl->reset_input_seq();
         apply_player_config(*pl, h, gs.cur_game_mode.magazines_count);
         pl->set_net_controlled(true);
         gs.player_spawn(pl);

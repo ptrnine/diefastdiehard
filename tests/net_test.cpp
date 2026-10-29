@@ -944,6 +944,48 @@ TEST_CASE("net_server: handshake, rename and leave") {
         CHECK_FALSE(pl.is_walking());
     }
 
+    SECTION("rejoin under the same name: the input seqs start over") {
+        REQUIRE(gs.set_level("lvl_aes"));
+        gs.game_run(true);
+
+        net::hello h;
+        h.name   = "test1";
+        h.pistol = "wpn_glk17";
+        REQUIRE(cli.send(net::encode_msg(net::msg_type::hello, h)));
+        srv.update(gs);
+        cli.recv(std::chrono::milliseconds(50));
+        REQUIRE(gs.players.contains("test1"));
+        auto& pl = *gs.players.at("test1");
+
+        constexpr auto n = u32(net::net_server::target_queued_inputs);
+        auto send_inputs = [&](u32 last_seq) {
+            net::input in;
+            in.last_seq = last_seq;
+            in.bits     = std::vector<u8>(n, 0);
+            REQUIRE(cli.send(net::encode_msg(net::msg_type::input, in)));
+            srv.update(gs);
+            for (u32 i = 0; i < n; ++i)
+                sim_tick(gs);
+        };
+
+        /* A long session */
+        send_inputs(2000);
+        REQUIRE(pl.last_input_seq() == 2000);
+
+        /* The client restarts: the same player, seqs from 1 again (from the old ones they wrapped a u32 in the weapon: seconds of ticks) */
+        REQUIRE(cli.send(net::encode_msg(net::msg_type::hello, h)));
+        srv.update(gs);
+        /* Ticks before the new client's inputs arrive: no input seq from the previous session */
+        for (u32 i = 0; i < n; ++i)
+            sim_tick(gs);
+        CHECK(pl.last_input_seq() == 0);
+
+        auto start = std::chrono::steady_clock::now();
+        send_inputs(n);
+        CHECK(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(500));
+        CHECK(pl.last_input_seq() == n);
+    }
+
     SECTION("protocol version mismatch is rejected") {
         net::hello h;
         h.version = net::protocol_version + 1;
