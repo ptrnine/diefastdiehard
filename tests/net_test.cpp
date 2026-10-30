@@ -1209,6 +1209,65 @@ TEST_CASE("net_server: handshake, rename and leave") {
     }
 }
 
+TEST_CASE("net_client: a taken name gets a number") {
+    auto port = free_udp_port();
+    game_state gs_srv;
+    game_state gs_cli;
+    net::net_server srv{port};
+    REQUIRE(srv.is_ready());
+
+    /* The host's own player */
+    REQUIRE(gs_srv.player_create("me") != nullptr);
+
+    player_name_t joined_as;
+    net::net_client cli{
+        sf::IpAddress::LocalHost, port, "me", "wpn_glk17", 0, 0, 0, -1,
+        sf::Color(255, 255, 255), sf::Color(255, 255, 0)};
+    REQUIRE(cli.is_ready());
+    cli.sig_joined.attach_function("mp_joined_test", [&](const player_name_t& name) { joined_as = name; });
+
+    srv.update(gs_srv); /* HELLO -> WELCOME as me2 */
+    cli.update(gs_cli);
+    signal_slot_event_updater::instance().operate_tasks();
+
+    CHECK(cli.joined());
+    CHECK(std::string(joined_as) == "me2");
+    CHECK(std::string(cli.name()) == "me2");
+    CHECK(gs_srv.players.contains("me"));
+    CHECK(gs_srv.players.contains("me2"));
+    CHECK(srv.client_count() == 1);
+
+    SECTION("a config resend keeps the name") {
+        cli.send_hello("wpn_glk17", 1, 0, 0, -1, sf::Color(255, 0, 0), sf::Color(255, 255, 0));
+        srv.update(gs_srv);
+
+        CHECK(gs_srv.players.size() == 2);
+        CHECK(gs_srv.players.contains("me2"));
+    }
+
+}
+
+TEST_CASE("net_client: the next free number") {
+    auto port = free_udp_port();
+    game_state gs_srv;
+    game_state gs_cli;
+    net::net_server srv{port};
+    REQUIRE(srv.is_ready());
+
+    REQUIRE(gs_srv.player_create("me") != nullptr);
+    REQUIRE(gs_srv.player_create("me2") != nullptr);
+
+    net::net_client cli{
+        sf::IpAddress::LocalHost, port, "me", "wpn_glk17", 0, 0, 0, -1,
+        sf::Color(255, 255, 255), sf::Color(255, 255, 0)};
+    REQUIRE(cli.is_ready());
+    srv.update(gs_srv);
+    cli.update(gs_cli);
+
+    CHECK(cli.joined());
+    CHECK(std::string(cli.name()) == "me3");
+}
+
 TEST_CASE("net_client: join and state application") {
     game_clock_manual_guard clock_guard; /* the waits advance the game time by hand */
     auto port = free_udp_port();

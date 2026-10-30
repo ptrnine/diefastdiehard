@@ -1525,6 +1525,8 @@ private:
         if (!try_read_msg(msg.payload, w))
             return;
 
+        /* The server may rename the player (the name is taken): the server's name from now on */
+        _name   = w.name;
         _joined = true;
         glog().info("net client: joined the game as {}", w.name);
         sig_joined.emit_deferred(w.name);

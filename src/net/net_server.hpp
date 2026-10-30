@@ -689,6 +689,30 @@ private:
         }
     }
 
+    /**
+     * The name, or the name with the first free number (name2, name3...) if
+     * another player has it. own: the client's current player (keeps its
+     * name, e.g. on a repeated HELLO)
+     */
+    static player_name_t unique_player_name(const game_state& gs, const player_name_t& name, const player_name_t& own) {
+        auto taken = [&](const player_name_t& n) {
+            return n != own && gs.players.contains(n);
+        };
+        if (!taken(name))
+            return name;
+
+        constexpr size_t max_player_name = player_name_t::max_size_w_nt - 1;
+
+        auto base = std::string(name);
+        for (u32 n = 2;; ++n) {
+            auto suffix = std::to_string(n);
+            /* The number replaces the tail of a long name */
+            auto candidate = player_name_t(base.substr(0, max_player_name - std::min(suffix.size(), max_player_name)) + suffix);
+            if (!taken(candidate))
+                return candidate;
+        }
+    }
+
     void handle_hello(game_state& gs, const sf::IpAddress& addr, u16 port, const net_msg& msg) {
         hello h;
         if (!try_read_msg(msg.payload, h)) {
@@ -714,17 +738,11 @@ private:
         /* One client record per address */
         auto& client = _clients[client_t::key(addr)];
 
-        /* Reject duplicate player names from other clients */
-        if (client.player_name != h.name) {
-            auto found = gs.players.find(h.name);
-            if (found != gs.players.end()) {
-                glog().error("net server: player {} already exists (hello from {}:{} as '{}')",
-                        h.name, addr.toString(), port, h.name);
-                auto data = encode_msg(msg_type::error, error{"player already exists"});
-                _sock.send_to(addr, port, data);
-                return;
-            }
-        }
+        /* A name of another player (the host's, another client's) gets a number: name2, name3... */
+        auto name = unique_player_name(gs, h.name, client.player_name);
+        if (name != h.name)
+            glog().info("net server: player {} already exists, {}:{} joins as {}", h.name, addr.toString(), port, name);
+        h.name = name;
 
         auto was_new = !client.joined;
         auto old_name = client.player_name;

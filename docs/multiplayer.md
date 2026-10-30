@@ -89,7 +89,7 @@ version is answered with ERROR. The current version is 20.
 | 3 INPUT | C → S | `u32 last_seq`, `u32 client_time_ms`, `u16 rtt_ms`, `vector<u8> bits`: the input ticks not acknowledged yet (up to 64), where `bits[i]` belongs to tick `last_seq - size + 1 + i`; `u32 view_base`, then (if not 0) `size − 1` raw `u8` view steps: the views (see Lag) |
 | 4 STATE | S → C | see below; encoded per client, sent once per server tick (every 100 ms while paused) |
 | 5 LEAVE | C → S | player name |
-| 6 ERROR | S → C | message (duplicate name, version mismatch, ...) |
+| 6 ERROR | S → C | message (version mismatch, empty name, ...) |
 | 7 LOBBY | C → S | `u32 session`, `u32 seq`, `i16 group`, `u8 ready`: the client's lobby choice (see Lobby; seqs restart with a new random session) |
 
 STATE contains:
@@ -127,8 +127,11 @@ Input bits are held states, except edges (`in_edge_bits`), which are set only on
 | 7 | DROP gun (edge) |
 
 Join rules: one client record per address. A name already used by another
-client gets ERROR. A HELLO with a new name from the same address renames
-the client: the old player is deleted.
+player (the host's, another client's) gets the first free number (`name2`,
+`name3`, ...; `net_server::unique_player_name`): WELCOME carries the name
+the client plays as, the client adopts it (its config stays the requested
+name's). A HELLO with a new name from the same address renames the client:
+the old player is deleted.
 
 ## Time and ticks
 

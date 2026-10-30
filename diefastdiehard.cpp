@@ -526,7 +526,8 @@ private:
     std::shared_ptr<net::net_server>        net_srv;
     std::shared_ptr<net::net_client>        net_cli;
     std::shared_ptr<net_player_controller>  net_ctrl;
-    player_name_t                            my_player_name;
+    player_name_t                            my_player_name; /* the client's player in the game (the server's name) */
+    player_name_t                            my_config_name; /* the client's player config: the requested name */
     std::optional<lobby_ui>                  lobby_wnd;
     std::optional<connect_ui>                connect_wnd;
     std::optional<main_menu>                 main_menu_wnd;
@@ -588,9 +589,10 @@ private:
             else
                 gs.sig_shutdown.emit_deferred();
         };
-        act.customize = [this](const player_name_t& name) {
-            customize_player(name, [this, name] {
-                player_configurator pc{name};
+        /* The own config (the server may have renamed the player in the game) */
+        act.customize = [this](const player_name_t&) {
+            customize_player(my_config_name, [this] {
+                player_configurator pc{my_config_name};
                 pc.write_on_delete = false;
                 net_cli->resend_config(pc);
             });
@@ -753,6 +755,7 @@ private:
             return std::format("invalid server address '{}'", host);
 
         my_player_name = name;
+        my_config_name = name;
 
         /* Load skin, tracer and gun settings from the local player config */
         player_configurator pc{name};
@@ -767,6 +770,9 @@ private:
         }
 
         net_cli->sig_joined.attach_function("mp_joined", [this](const player_name_t& pname) {
+            /* The server's name: another number if the requested one is taken */
+            my_player_name = pname;
+
             /*
              * The first server state broadcast may be processed before this
              * deferred WELCOME handler runs (datagrams can be reordered, e.g.
