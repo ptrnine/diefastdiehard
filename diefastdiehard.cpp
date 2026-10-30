@@ -357,6 +357,9 @@ public:
         /* Any configurator (the menu's, the lobby's, the console's) opens where the last one was closed */
         if (gs.pconf_ui && !gs.pconf_ui->on_bounds_save)
             pconf_bounds_persist(*gs.pconf_ui);
+        /* Any configurator's changes show on its player at once */
+        if (gs.pconf_ui && !gs.pconf_ui->on_change)
+            gs.pconf_ui->on_change = [this](const player_configurator& pc) { player_config_changed(pc); };
         gs.ui_update(ui, window_size_float());
         /* Shown out of a game with no window open; drawn first: the windows go over it while it fades */
         main_menu_wnd->show(!net_srv && !net_cli && !gs.lobby.active && !connect_wnd->shown() && !network_wnd->shown() && !controls_wnd.shown() &&
@@ -400,6 +403,23 @@ private:
         else
             return main_menu_wnd->back();
         return true;
+    }
+
+    /*
+     * A configurator change: the player in the game (only an existing one)
+     * takes the new look. A client's own player may be renamed by the server;
+     * players of other clients take their configs from the network
+     */
+    void player_config_changed(const player_configurator& pc) {
+        if (net_cli) {
+            /* The server gets it on close (the lobby's customize) */
+            if (pc.name == my_config_name)
+                gs.player_visuals_apply(my_player_name, pc);
+            return;
+        }
+        auto found = gs.players.find(pc.name);
+        if (found != gs.players.end() && !found->second->net_controlled())
+            gs.player_visuals_apply(pc.name, pc);
     }
 
     /* The configurator window's position and size in [game_settings], saved on close */

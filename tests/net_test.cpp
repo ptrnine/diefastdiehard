@@ -433,6 +433,32 @@ TEST_CASE("weapon slots: secondary guns, respawn with the secondary gun") {
     CHECK(pl->holds_secondary());
 }
 
+TEST_CASE("game_state: a configurator change shows on an existing player only") {
+    game_state gs;
+    REQUIRE(gs.set_level("lvl_aes"));
+    auto pl = gs.player_create("pconf_live");
+    REQUIRE(pl != nullptr);
+    pl->setup_gun("wpn_ak9");
+
+    /* Not written to the settings */
+    player_configurator pc{"pconf_live"};
+    pc.write_on_delete = false;
+    pc.body_color      = sf::Color(10, 20, 30);
+    pc.tracer_color    = sf::Color(40, 50, 60);
+    pc.hat_id          = player_configurator::no_hat;
+    pc.pistol          = "wpn_de";
+
+    gs.player_visuals_apply("pconf_live", pc);
+    CHECK(pl->body_color() == sf::Color(10, 20, 30));
+    CHECK(pl->tracer_color() == sf::Color(40, 50, 60));
+    CHECK(pl->hat_texture_path().empty());
+    /* The held gun stays */
+    CHECK(pl->pistol_section() == "wpn_ak9");
+
+    gs.player_visuals_apply("pconf_missing", pc);
+    CHECK_FALSE(gs.players.contains("pconf_missing"));
+}
+
 TEST_CASE("weapon: a held trigger fires at the configured fire rate") {
     game_state gs;
     REQUIRE(gs.set_level("lvl_aes"));

@@ -105,7 +105,10 @@ instead of sleeping. Use it for any new gameplay/network timer.
   current_player` in `data/settings/players_settings.cfg`, `Player` on the
   first run): hosts and joins lobbies (the connect window has no nickname),
   `--client`'s default `--name`. `player_configurator_ui` saves on every change
-  (no save on close); with `name_edit`, a committed nickname (Enter / focus
+  (no save on close) and `on_change` gives an existing player of the game the
+  new look at once (`game_state::player_visuals_apply`: no gun change, no
+  player created; a client: its own player only, the server gets it on
+  close); with `name_edit`, a committed nickname (Enter / focus
   lost) loads that player's settings and becomes the current player. Any
   configurator opens with the bounds the last one was closed with
   (`pconf_window_pos`/`pconf_window_size` in `[game_settings]`).

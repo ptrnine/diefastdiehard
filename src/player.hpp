@@ -1289,11 +1289,16 @@ public:
     /* magazines_count: ammo limit of the configured gun (see setup_gun) */
     void set_from_config(u32 magazines_count = 0) {
         player_configurator pc{_name};
+        set_visuals(pc);
+        setup_gun(pc.pistol, magazines_count);
+    }
+
+    /* The look of the config (no gun: a held one stays) */
+    void set_visuals(const player_configurator& pc) {
         set_body(pc.body_texture_path(), pc.body_color);
         set_head(pc.head_texture_path());
         set_hat(pc.hat_texture_path());
         set_face(pc.face_texture_path());
-        setup_gun(pc.pistol, magazines_count);
         tracer_color(pc.tracer_color);
     }
 

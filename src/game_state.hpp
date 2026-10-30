@@ -99,6 +99,14 @@ public:
         }
     }
 
+    /* The player configurator changed the config: an existing player shows it (no player is created) */
+    void player_visuals_apply(const player_name_t& player_name, const player_configurator& pc) {
+        auto found = players.find(player_name);
+        if (found == players.end())
+            return;
+        found->second->set_visuals(pc);
+    }
+
     player* player_create(const player_name_t& player_name) {
         if (players.contains(player_name)) {
             glog().error("player {} already exists", player_name);

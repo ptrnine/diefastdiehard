@@ -215,6 +215,8 @@ public:
         if (update_was) {
             pconf.write();
             reload();
+            if (on_change)
+                on_change(pconf);
         }
     }
 
@@ -299,6 +301,8 @@ public:
     std::function<void()> on_close;
     /* Called when the window is closed: its last position and size */
     std::function<void(const struct nk_rect&)> on_bounds_save;
+    /* Any change (already written) */
+    std::function<void(const player_configurator&)> on_change;
     /* name_edit: another player's settings are shown */
     std::function<void(const player_name_t&)> on_name_change;
 
