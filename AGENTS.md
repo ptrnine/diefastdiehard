@@ -111,7 +111,10 @@ instead of sleeping. Use it for any new gameplay/network timer.
   close); with `name_edit`, a committed nickname (Enter / focus
   lost) loads that player's settings and becomes the current player. Any
   configurator opens with the bounds the last one was closed with
-  (`pconf_window_pos`/`pconf_window_size` in `[game_settings]`).
+  (`pconf_window_pos`/`pconf_window_size` in `[game_settings]`), never
+  smaller than `player_configurator_ui::wnd_min_size` (the whole content:
+  grow it when adding settings). Body/head/face/hat choices list
+  `data/textures/player/<body|head|face|hat><N>.png`.
 - Controllers: `[player_controller_<id>]` in `players_settings.cfg`
   (`player_controller::bindings` table; `ids`/`create`/`remove`/`set_key`).
   Only controller 0 gets default keys, new ones start `none` (= -1 =

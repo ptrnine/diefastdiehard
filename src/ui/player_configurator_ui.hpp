@@ -7,6 +7,7 @@
 #include <SFML/Graphics/Sprite.hpp>
 #include <SFML/Graphics/RenderTexture.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <functional>
@@ -23,6 +24,10 @@ public:
 
         for (auto& face_path : pconf.available_face_textures())
             faces.push_back({face_path, load_nk_image(face_path), i32(player_configurator::texture_path_to_index(face_path))});
+        for (auto& body_path : pconf.available_body_textures())
+            bodies.push_back({body_path, load_nk_image(body_path), i32(player_configurator::texture_path_to_index(body_path))});
+        for (auto& head_path : pconf.available_head_textures())
+            heads.push_back({head_path, load_nk_image(head_path), i32(player_configurator::texture_path_to_index(head_path))});
 
         hats.push_back({"", {}, player_configurator::no_hat}); /* "none" */
         for (auto& hat_path : pconf.available_hat_textures())
@@ -149,6 +154,25 @@ public:
                         pconf.tracer_color = *color;
                     }
                     ui.combo_end();
+                }
+                ui.group_end();
+            }
+
+            /* Body and head side by side */
+            ui.layout_row_dynamic(25.f + face_icon_size + 30.f, 2);
+            if (ui.group_begin("body_choice", NK_WINDOW_NO_SCROLLBAR)) {
+                i32 body_id = i32(pconf.body_id);
+                if (image_choice_row(ui, "Body", bodies, body_id)) {
+                    update_was    = true;
+                    pconf.body_id = u32(body_id);
+                }
+                ui.group_end();
+            }
+            if (ui.group_begin("head_choice", NK_WINDOW_NO_SCROLLBAR)) {
+                i32 head_id = i32(pconf.head_id);
+                if (image_choice_row(ui, "Head", heads, head_id)) {
+                    update_was    = true;
+                    pconf.head_id = u32(head_id);
                 }
                 ui.group_end();
             }
@@ -284,8 +308,11 @@ public:
         return wnd_rect;
     }
 
+    /* Not smaller than the whole content (bounds saved before new settings were added) */
     void bounds(const struct nk_rect& value) {
-        wnd_rect = value;
+        wnd_rect   = value;
+        wnd_rect.w = std::max(wnd_rect.w, wnd_min_size.x);
+        wnd_rect.h = std::max(wnd_rect.h, wnd_min_size.y);
     }
 
     void toggle() {
@@ -347,7 +374,8 @@ private:
     std::string         wnd_title;
     bool                reopen = false;
 
-    struct nk_rect wnd_rect{200, 60, 640, 700}; /* the whole content without scrolling */
+    static constexpr vec2f wnd_min_size{640.f, 840.f}; /* the whole content without scrolling */
+    struct nk_rect wnd_rect{200, 60, wnd_min_size.x, wnd_min_size.y};
     bool           wnd_show = false;
 
     sprite_t          sprt_body, sprt_head, sprt_face, sprt_hat;
@@ -361,6 +389,8 @@ private:
     float             face_icon_size = 80.f;
 
     std::vector<image_choice> faces;
+    std::vector<image_choice> bodies;
+    std::vector<image_choice> heads;
     std::vector<image_choice> hats;
 
     struct pistol_param {

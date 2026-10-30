@@ -165,6 +165,10 @@ public:
         return available_textures("body");
     }
 
+    static std::vector<std::string> available_head_textures() {
+        return available_textures("head");
+    }
+
     static std::vector<std::string> available_hat_textures() {
         return available_textures("hat");
     }
