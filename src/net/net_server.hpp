@@ -89,13 +89,13 @@ public:
     struct client_t {
         sf::IpAddress    address      = sf::IpAddress::Any;
         u16              port         = 0;
-        player_name_t    player_name;
+        std::map<u8, player_name_t> players; // the client's local players by slot (0: the main one)
         bool             joined       = false;
         game_clock::time_point joined_time;
 
         /* Received, not yet applied input ticks (seq -> bits), applied one per tick in seq order */
         struct queued_input {
-            u8                    bits;
+            std::map<u8, u8>      bits;     // per local player slot
             clock::time_point     received; // first arrival (the wait in the queue is part of the shooter's lag)
             std::optional<double> view_s;   // the server time the client was showing at the tick
         };
@@ -104,7 +104,7 @@ public:
          * Queued seqs merged away (-> their trigger): a newer window must not
          * queue them again. The weapon runs their ticks with their trigger
          */
-        std::map<u32, bool>         merged_seqs;
+        std::map<u32, std::map<u8, bool>> merged_seqs; // per slot
         float                       input_wait_s = 0.f; // time the last applied input tick waited in the queue
         /*
          * Input margin (sent in STATE, the client aligns its ticks with it):
@@ -116,8 +116,8 @@ public:
         std::optional<float>             late_s;        // how long after that the next seq arrived
         u32                next_seq      = 0; // first seq not applied yet, 0 = none received yet
         u32                ack_seq       = 0; // last applied seq
-        u8                 held_bits     = 0; // held part of the last applied input
-        u8                 pending_edges = 0; // edges of inputs merged away, applied with the next one
+        std::map<u8, u8>   held_bits;     // per slot: held part of the last applied input
+        std::map<u8, u8>   pending_edges; // per slot: edges of inputs merged away, applied with the next one
         bool               buffering     = true; // refilling the jitter buffer
         clock::time_point  last_input_time;
         server_clock       input_jitter;               // input arrivals: offset = arrival - client send time
@@ -132,11 +132,17 @@ public:
         float             rtt_s    = 0.f;
 
         u32 lobby_session = 0; // lobby_request::session
-        u32 lobby_seq     = 0; // last applied lobby_request of the session
+        std::map<u8, u32> lobby_seq; // per slot: last applied lobby_request of the session
 
         [[nodiscard]]
         static std::string key(const sf::IpAddress& addr) {
             return addr.toString();
+        }
+
+        [[nodiscard]]
+        player_name_t main_name() const {
+            auto found = players.find(0);
+            return found != players.end() ? found->second : player_name_t{};
         }
     };
 
@@ -199,7 +205,7 @@ public:
         std::vector<input_stats_t> res;
         for (auto& [_, c] : _clients)
             if (c.joined)
-                res.push_back({c.player_name, c.target_inputs, c.input_jitter.jitter(), c.input_wait_s, c.input_margin_s});
+                res.push_back({c.main_name(), c.target_inputs, c.input_jitter.jitter(), c.input_wait_s, c.input_margin_s});
         return res;
     }
 
@@ -476,8 +482,11 @@ private:
             st.echo_hold_ms        = u16(std::chrono::duration_cast<std::chrono::milliseconds>(
                                       clock::now() - client.echo_recv_time).count());
 
-            auto own      = gs.players.find(client.player_name);
-            st.own_weapon = own != gs.players.end() ? make_weapon_sync(*own->second) : std::nullopt;
+            st.own_weapons.clear();
+            for (auto& [slot, name] : client.players)
+                if (auto own = gs.players.find(name); own != gs.players.end())
+                    if (auto ws = make_weapon_sync(*own->second))
+                        st.own_weapons.push_back({slot, *ws});
 
             /* The configs the client may not know */
             bool new_client = now - client.joined_time < config_resend;
@@ -513,8 +522,12 @@ private:
             if (!client.joined)
                 continue;
 
-            auto found = gs.players.find(client.player_name);
-            if (found == gs.players.end() || !found->second)
+            /* The client's local players (an input tick has the bits of each) */
+            std::vector<std::pair<u8, player*>> pls;
+            for (auto& [slot, name] : client.players)
+                if (auto found = gs.players.find(name); found != gs.players.end() && found->second)
+                    pls.emplace_back(slot, found->second.get());
+            if (pls.empty())
                 continue;
 
             auto& q = client.inputs;
@@ -527,8 +540,19 @@ private:
                 client.target_inputs = target_queued_inputs;
 
             auto merge = [&](auto it) {
-                client.merged_seqs.emplace(it->first, (it->second.bits & in_bit_shot) != 0);
+                std::map<u8, bool> triggers;
+                for (auto& [slot, b] : it->second.bits)
+                    triggers.emplace(slot, (b & in_bit_shot) != 0);
+                client.merged_seqs.emplace(it->first, std::move(triggers));
                 q.erase(it);
+            };
+
+            /* The same input of every local player (a missing slot is no input) */
+            auto same = [&](const std::map<u8, u8>& a, const std::map<u8, u8>& b) {
+                return std::ranges::all_of(client.players, [&](auto& p) { return bits_of(a, p.first) == bits_of(b, p.first); });
+            };
+            auto has_edges = [](const std::map<u8, u8>& bits) {
+                return std::ranges::any_of(bits, [](auto& b) { return (b.second & in_edge_bits) != 0; });
             };
 
             /*
@@ -538,16 +562,16 @@ private:
              * input too
              */
             auto repeated = [&](auto it, bool by_next) {
-                auto bits = it->second.bits;
+                auto& bits = it->second.bits;
                 auto next = std::next(it);
                 bool contiguous = next != q.end() && next->first == it->first + 1;
-                if ((bits & in_edge_bits) != 0 || (by_next && !(contiguous && next->second.bits == bits)))
+                if (has_edges(bits) || (by_next && !(contiguous && same(next->second.bits, bits))))
                     return false;
                 if (it == q.begin())
-                    return client.ack_seq != 0 && it->first == client.ack_seq + 1 && client.pending_edges == 0 &&
-                           bits == client.held_bits;
+                    return client.ack_seq != 0 && it->first == client.ack_seq + 1 && !has_edges(client.pending_edges) &&
+                           same(bits, client.held_bits);
                 auto prev = std::prev(it);
-                return prev->first + 1 == it->first && prev->second.bits == bits;
+                return prev->first + 1 == it->first && same(prev->second.bits, bits);
             };
 
             /*
@@ -565,7 +589,8 @@ private:
                             it = i;
                 if (it == q.end()) {
                     it = q.begin();
-                    client.pending_edges |= u8(it->second.bits & in_edge_bits);
+                    for (auto& [slot, b] : it->second.bits)
+                        client.pending_edges[slot] |= u8(b & in_edge_bits);
                 }
                 merge(it);
             }
@@ -595,20 +620,23 @@ private:
                 }
             }
 
-            u8  bits;
+            std::map<u8, u8>      bits;
             std::optional<double> view_s;
-            std::map<u32, bool>   merged_triggers;
+            std::map<u32, std::map<u8, bool>> merged_triggers;
             if (!client.buffering) {
                 /* Missing seqs before the head are lost for good (they would be in every newer window) */
                 auto head            = q.begin();
                 view_s               = head->second.view_s;
-                bits                 = head->second.bits | client.pending_edges;
+                for (auto& [slot, _] : client.players) {
+                    auto head_bits          = bits_of(head->second.bits, slot);
+                    bits[slot]              = u8(head_bits | bits_of(client.pending_edges, slot));
+                    client.held_bits[slot]  = u8(head_bits & ~in_edge_bits);
+                }
                 client.ack_seq       = head->first;
                 client.next_seq      = head->first + 1;
-                client.held_bits     = u8(head->second.bits & ~in_edge_bits);
-                client.pending_edges = 0;
+                client.pending_edges.clear();
                 auto merged_end = client.merged_seqs.lower_bound(client.next_seq);
-                merged_triggers = std::map<u32, bool>(client.merged_seqs.begin(), merged_end);
+                merged_triggers = std::map<u32, std::map<u8, bool>>(client.merged_seqs.begin(), merged_end);
                 client.merged_seqs.erase(client.merged_seqs.begin(), merged_end);
                 /* Measured at the tick's time (catch-up ticks run late) */
                 client.input_wait_s =
@@ -621,8 +649,7 @@ private:
             }
             else if (q.empty() && now - client.last_input_time > input_timeout) {
                 /* Lost client: release everything */
-                bits             = 0;
-                client.held_bits = 0;
+                client.held_bits.clear();
                 client.starved_since.reset();
             }
             else {
@@ -632,14 +659,29 @@ private:
                     client.starved_since = now;
             }
 
-            found->second->last_input_seq(client.ack_seq);
-            found->second->merged_triggers(std::move(merged_triggers));
-            found->second->apply_input(player_input_state::from_bits(bits));
-
             /* A starving tick keeps the compensation of the last applied one */
+            std::optional<player::lag_compensation_t> lc;
             if (!client.buffering)
-                found->second->lag_compensation(lag_compensation_of(client, gs, view_s));
+                lc = lag_compensation_of(client, gs, view_s);
+
+            for (auto& [slot, pl] : pls) {
+                std::map<u32, bool> triggers;
+                for (auto& [seq, slots] : merged_triggers)
+                    if (auto found = slots.find(slot); found != slots.end())
+                        triggers.emplace(seq, found->second);
+                pl->last_input_seq(client.ack_seq);
+                pl->merged_triggers(std::move(triggers));
+                pl->apply_input(player_input_state::from_bits(bits_of(bits, slot)));
+                if (lc)
+                    pl->lag_compensation(*lc);
+            }
         }
+    }
+
+    [[nodiscard]]
+    static u8 bits_of(const std::map<u8, u8>& bits, u8 slot) {
+        auto found = bits.find(slot);
+        return found != bits.end() ? found->second : u8(0);
     }
 
     /**
@@ -685,6 +727,7 @@ private:
         case msg_type::input: handle_input(datagram.address, datagram.arrival, msg); break;
         case msg_type::leave: handle_leave(gs, datagram.address); break;
         case msg_type::lobby: handle_lobby(gs, datagram.address, msg); break;
+        case msg_type::player_leave: handle_player_leave(gs, datagram.address, msg); break;
         default: break;
         }
     }
@@ -735,29 +778,38 @@ private:
             return;
         }
 
+        if (h.slot != 0) {
+            handle_local_hello(gs, addr, port, h);
+            return;
+        }
+
         /* One client record per address */
         auto& client = _clients[client_t::key(addr)];
 
+        /* Another client program on the address (restarted, the old one never left): its added players are gone */
+        if (client.joined && client.port != port)
+            remove_local_players(gs, client, true);
+
         /* A name of another player (the host's, another client's) gets a number: name2, name3... */
-        auto name = unique_player_name(gs, h.name, client.player_name);
+        auto name = unique_player_name(gs, h.name, client.main_name());
         if (name != h.name)
             glog().info("net server: player {} already exists, {}:{} joins as {}", h.name, addr.toString(), port, name);
         h.name = name;
 
         auto was_new = !client.joined;
-        auto old_name = client.player_name;
-        auto renamed  = !was_new && client.player_name != h.name;
+        auto old_name = client.main_name();
+        auto renamed  = !was_new && old_name != h.name;
         client.address     = addr;
         client.port        = port;
-        client.player_name = h.name;
+        client.players[0]  = h.name;
         client.joined      = true;
         client.joined_time = clock::now();
         client.inputs.clear();
         client.merged_seqs.clear();
         client.next_seq      = 0;
         client.ack_seq       = 0;
-        client.held_bits     = 0;
-        client.pending_edges = 0;
+        client.held_bits.clear();
+        client.pending_edges.clear();
         client.buffering     = true;
         client.echo_seq      = 0;
         client.input_jitter.reset();
@@ -789,7 +841,9 @@ private:
         }
 
         /* A (re)joined client's input seqs start over */
-        pl->reset_input_seq();
+        for (auto& [_, local] : client.players)
+            if (auto lp = gs.players.find(local); lp != gs.players.end())
+                lp->second->reset_input_seq();
         apply_player_config(*pl, h, gs.cur_game_mode.magazines_count);
         pl->set_net_controlled(true);
         gs.player_spawn(pl);
@@ -797,8 +851,92 @@ private:
         if (was_new)
             glog().info("net server: client {}:{} joined as player {}", addr.toString(), port, h.name);
 
-        auto data = encode_msg(msg_type::welcome, welcome{h.name});
+        auto data = encode_msg(msg_type::welcome, welcome{h.name, 0});
         _sock.send_to(addr, port, data);
+    }
+
+    /**
+     * HELLO of an added local player (slot > 0) of a joined client: creates
+     * it, or reconfigures (renames) it. It joins the client's input seqs as
+     * they are (one input tick has the bits of every local player)
+     */
+    void handle_local_hello(game_state& gs, const sf::IpAddress& addr, u16 port, hello& h) {
+        auto client = find_client(addr);
+        if (!client || !client->joined || client->port != port) {
+            glog().warn("net server: local player {} of {}:{} before its client joined", h.name, addr.toString(), port);
+            return;
+        }
+
+        if (!client->players.contains(h.slot) && client->players.size() >= max_local_players) {
+            glog().warn("net server: client {}:{} has too many local players", addr.toString(), port);
+            return;
+        }
+
+        auto old_name = client->players.contains(h.slot) ? client->players.at(h.slot) : player_name_t{};
+        h.name        = unique_player_name(gs, h.name, old_name);
+
+        player* pl      = nullptr;
+        bool    created = false;
+        if (auto found = gs.players.find(h.name); found != gs.players.end())
+            pl = found->second.get();
+        else {
+            pl      = gs.player_create(h.name);
+            created = true;
+        }
+        if (!pl) {
+            glog().error("net server: can't create player {}", h.name);
+            return;
+        }
+
+        if (!old_name.empty() && old_name != h.name) {
+            if (auto old = gs.players.find(old_name); old != gs.players.end()) {
+                pl->group(old->second->get_group());
+                gs.players.erase(old);
+            }
+            if (auto ready = gs.lobby.ready.find(old_name); ready != gs.lobby.ready.end()) {
+                gs.lobby.ready[h.name] = ready->second;
+                gs.lobby.ready.erase(old_name);
+            }
+            glog().info("net server: player {} renamed to {}", old_name, h.name);
+        }
+        client->players[h.slot] = h.name;
+
+        if (created) {
+            pl->reset_input_seq();
+            pl->last_input_seq(client->ack_seq);
+            glog().info("net server: client {}:{} added local player {}", addr.toString(), port, h.name);
+        }
+        apply_player_config(*pl, h, gs.cur_game_mode.magazines_count);
+        pl->set_net_controlled(true);
+
+        _sock.send_to(addr, port, encode_msg(msg_type::welcome, welcome{h.name, h.slot}));
+    }
+
+    /* Delete a client's local player of the slot (the slot's inputs are ignored from now on) */
+    void remove_local_player(game_state& gs, client_t& client, u8 slot) {
+        auto found = client.players.find(slot);
+        if (found == client.players.end())
+            return;
+        auto name = found->second;
+        gs.lobby.ready.erase(name);
+        if (auto pl = gs.players.find(name); pl != gs.players.end()) {
+            gs.players.erase(pl);
+            glog().info("net server: player {} deleted", name);
+        }
+        client.players.erase(found);
+        client.held_bits.erase(slot);
+        client.pending_edges.erase(slot);
+        client.lobby_seq.erase(slot);
+    }
+
+    /* Delete the client's local players: the added ones only, or all of them */
+    void remove_local_players(game_state& gs, client_t& client, bool added_only) {
+        std::vector<u8> slots;
+        for (auto& [slot, _] : client.players)
+            if (slot != 0 || !added_only)
+                slots.push_back(slot);
+        for (auto slot : slots)
+            remove_local_player(gs, client, slot);
     }
 
     void handle_input(const sf::IpAddress& addr, clock::time_point arrival, const net_msg& msg) {
@@ -807,7 +945,7 @@ private:
             return;
 
         input in;
-        if (!try_read_msg(msg.payload, in) || in.bits.empty())
+        if (!try_read_msg(msg.payload, in) || in.ticks() == 0)
             return;
 
         auto now = arrival;
@@ -841,10 +979,16 @@ private:
             client->starved_since.reset();
         }
 
-        for (u32 i = 0; i < in.bits.size(); ++i) {
-            auto seq = in.first_seq() + i;
-            if (seq >= client->next_seq && !client->merged_seqs.contains(seq))
-                client->inputs.emplace(seq, client_t::queued_input{in.bits[i], now, in.view_s(i)});
+        for (u32 t = 0; t < in.ticks(); ++t) {
+            auto seq = in.first_seq() + t;
+            if (seq < client->next_seq || client->merged_seqs.contains(seq))
+                continue;
+            /* Only the slots of the client's players (one removed or not added yet is ignored) */
+            std::map<u8, u8> bits;
+            for (size_t k = 0; k < in.slots.size(); ++k)
+                if (client->players.contains(in.slots[k]))
+                    bits.emplace(in.slots[k], in.bits_of(t, k));
+            client->inputs.emplace(seq, client_t::queued_input{std::move(bits), now, in.view_s(t)});
         }
     }
 
@@ -856,16 +1000,29 @@ private:
         lobby_request req;
         if (!try_read_msg(msg.payload, req))
             return;
+        auto player = client->players.find(req.slot);
+        if (player == client->players.end())
+            return;
         if (req.session != client->lobby_session) {
             client->lobby_session = req.session;
-            client->lobby_seq     = 0;
+            client->lobby_seq.clear();
         }
-        if (req.seq <= client->lobby_seq)
+        auto& seq = client->lobby_seq[req.slot];
+        if (req.seq <= seq)
             return;
-        client->lobby_seq = req.seq;
+        seq = req.seq;
 
-        gs.lobby_player_group(client->player_name, std::clamp(int(req.group), -1, lobby_state::max_group));
-        gs.lobby.ready[client->player_name] = req.ready != 0;
+        gs.lobby_player_group(player->second, std::clamp(int(req.group), -1, lobby_state::max_group));
+        gs.lobby.ready[player->second] = req.ready != 0;
+    }
+
+    /* An added local player removed (repeated until the client sees it gone: done once) */
+    void handle_player_leave(game_state& gs, const sf::IpAddress& addr, const net_msg& msg) {
+        auto client = find_client(addr);
+        player_leave pl;
+        if (!client || !client->joined || !try_read_msg(msg.payload, pl) || pl.slot == 0)
+            return;
+        remove_local_player(gs, *client, pl.slot);
     }
 
     void handle_leave(game_state& gs, const sf::IpAddress& addr) {
@@ -873,12 +1030,7 @@ private:
         if (!client)
             return;
 
-        gs.lobby.ready.erase(client->player_name);
-
-        if (gs.players.contains(client->player_name)) {
-            gs.players.erase(gs.players.find(client->player_name));
-            glog().info("net server: player {} deleted (client left)", client->player_name);
-        }
+        remove_local_players(gs, *client, false);
 
         _clients.erase(client_t::key(addr));
         glog().info("net server: client {} left", addr.toString());

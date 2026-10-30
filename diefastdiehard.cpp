@@ -310,6 +310,7 @@ public:
             server_from_ui = false;
             lobby_wnd.reset();
             net_srv.reset();
+            server_locals_remove();
             if (host_player) {
                 if (gs.has_controller(0))
                     gs.controller_delete(0);
@@ -338,8 +339,9 @@ public:
                 return;
         }
 
-        if (net_ctrl)
-            net_ctrl->track_event(evt);
+        for (auto& [_, cl] : client_locals)
+            if (cl.ctrl)
+                cl.ctrl->track_event(evt);
 
         gs.handle_event(evt);
         lua_handle_event(evt);
@@ -413,8 +415,9 @@ private:
     void player_config_changed(const player_configurator& pc) {
         if (net_cli) {
             /* The server gets it on close (the lobby's customize) */
-            if (pc.name == my_config_name)
-                gs.player_visuals_apply(my_player_name, pc);
+            for (auto& [_, cl] : client_locals)
+                if (pc.name == cl.config_name)
+                    gs.player_visuals_apply(cl.player_name, pc);
             return;
         }
         auto found = gs.players.find(pc.name);
@@ -560,14 +563,21 @@ private:
 
     std::shared_ptr<net::net_server>        net_srv;
     std::shared_ptr<net::net_client>        net_cli;
-    std::shared_ptr<net_player_controller>  net_ctrl;
-    player_name_t                            my_player_name; /* the client's player in the game (the server's name) */
-    player_name_t                            my_config_name; /* the client's player config: the requested name */
+
+    /* A local player of the network client (by slot, 0: the main one) */
+    struct client_local_t {
+        player_name_t                          config_name; /* its config: the requested name */
+        player_name_t                          player_name; /* in the game: the server's name */
+        std::optional<u32>                     controller;
+        std::shared_ptr<net_player_controller> ctrl; /* once the server accepted the player */
+    };
+    std::map<u8, client_local_t>             client_locals;
+    std::vector<player_name_t>               server_locals; /* local players added in the server's lobby */
     std::optional<lobby_ui>                  lobby_wnd;
     std::optional<connect_ui>                connect_wnd;
     std::optional<network_ui>                network_wnd;
     controls_ui                              controls_wnd;
-    u32                                      client_controller = 0; /* the controller of the client's player */
+    u32                                      client_controller = 0; /* the controller of the client's main player */
     std::optional<main_menu>                 main_menu_wnd;
     bool                                     server_from_ui = false; /* hosted from the main menu: cancel lobby stops it */
     bool                                     server_stop    = false; /* the menu's lobby was cancelled */
@@ -603,26 +613,63 @@ private:
             std::vector<player_name_t> res;
             for (auto& [name, _] : gs.controlled_players)
                 res.push_back(name);
+            /* An added one without a controller too */
+            for (auto& name : server_locals)
+                if (std::ranges::find(res, name) == res.end())
+                    res.push_back(name);
             return res;
         };
         act.controllers    = [] { return player_controller::ids(); };
         act.controller_of  = [this](const player_name_t& name) { return gs.player_controller_of(name); };
         act.set_controller = [this](const player_name_t& name, u32 id) { gs.player_controller_set(name, id); };
+        act.add_local      = [this] {
+            auto name = local_player_name();
+            if (server_local_create(name, free_controller([this](u32 id) { return gs.has_controller(id); })))
+                server_locals.push_back(name);
+        };
+        act.removable    = [this](const player_name_t& name) { return std::ranges::find(server_locals, name) != server_locals.end(); };
+        act.remove_local = [this](const player_name_t& name) {
+            server_local_remove(name);
+            std::erase(server_locals, name);
+        };
+        act.rename_local = [this](const player_name_t& name, const player_name_t& new_name) {
+            auto found = std::ranges::find(server_locals, name);
+            if (found == server_locals.end() || !local_name_free(new_name))
+                return false;
+            auto controller = gs.player_controller_of(name);
+            auto old        = gs.players.find(name);
+            auto group      = old != gs.players.end() ? old->second->get_group() : -1;
+            server_local_remove(name);
+            if (!server_local_create(new_name, controller)) {
+                server_locals.erase(found);
+                return false;
+            }
+            gs.lobby_player_group(new_name, group);
+            *found = new_name;
+            return true;
+        };
         lobby_wnd.emplace(lobby_ui::role_t::owner, std::move(act));
         gs.lobby_open();
     }
 
     void init_client_lobby() {
         lobby_ui::actions_t act;
-        act.set_group = [this](const player_name_t&, int group) {
-            net_cli->lobby_request(i16(group), net_cli->last_lobby_request().ready != 0);
+        act.set_group = [this](const player_name_t& name, int group) {
+            if (auto slot = client_slot_of(name))
+                net_cli->lobby_request(*slot, i16(group), net_cli->last_lobby_request(*slot).ready != 0);
         };
-        act.set_ready = [this](bool ready) {
-            auto own   = gs.players.find(my_player_name);
+        act.set_ready = [this](const player_name_t& name, bool ready) {
+            auto slot = client_slot_of(name);
+            if (!slot)
+                return;
+            auto own   = gs.players.find(name);
             auto group = own != gs.players.end() ? own->second->get_group() : -1;
-            net_cli->lobby_request(i16(group), ready);
+            net_cli->lobby_request(*slot, i16(group), ready);
         };
-        act.own_ready = [this] { return net_cli->last_lobby_request().ready != 0; };
+        act.own_ready = [this](const player_name_t& name) {
+            auto slot = client_slot_of(name);
+            return slot && net_cli->last_lobby_request(*slot).ready != 0;
+        };
         /* Leave: back to the connect window, or quit the app if joined with --client (the net client destructor tells the server) */
         act.leave = [this] {
             if (client_from_ui)
@@ -631,24 +678,177 @@ private:
                 gs.sig_shutdown.emit_deferred();
         };
         /* The own config (the server may have renamed the player in the game) */
-        act.customize = [this](const player_name_t&) {
-            customize_player(my_config_name, [this] {
-                player_configurator pc{my_config_name};
+        act.customize = [this](const player_name_t& name) {
+            auto slot = client_slot_of(name);
+            if (!slot)
+                return;
+            auto config_name = client_locals.at(*slot).config_name;
+            customize_player(config_name, [this, slot = *slot, config_name] {
+                player_configurator pc{config_name};
                 pc.write_on_delete = false;
-                net_cli->resend_config(pc);
+                net_cli->resend_config(slot, pc);
             });
         };
-        act.local_players  = [this] { return std::vector<player_name_t>{my_player_name}; };
-        act.controllers    = [] { return player_controller::ids(); };
-        act.controller_of  = [this](const player_name_t&) { return std::optional<u32>(client_controller); };
-        act.set_controller = [this](const player_name_t&, u32 id) {
-            client_controller = id;
-            if (net_ctrl)
-                net_ctrl->load(id);
+        act.local_players = [this] {
+            std::vector<player_name_t> res;
+            for (auto& [slot, cl] : client_locals)
+                if (net_cli->local_joined(slot))
+                    res.push_back(cl.player_name);
+            return res;
+        };
+        act.controllers   = [] { return player_controller::ids(); };
+        act.controller_of = [this](const player_name_t& name) {
+            auto slot = client_slot_of(name);
+            return slot ? client_locals.at(*slot).controller : std::nullopt;
+        };
+        act.set_controller = [this](const player_name_t& name, u32 id) {
+            auto slot = client_slot_of(name);
+            if (!slot)
+                return;
+            auto& cl      = client_locals.at(*slot);
+            cl.controller = id;
+            if (*slot == 0)
+                client_controller = id;
+            if (cl.ctrl)
+                cl.ctrl->load(id);
+        };
+        act.can_add_local = [this] { return client_locals.size() < net::max_local_players; };
+        act.add_local     = [this] {
+            auto controller = free_controller([this](u32 id) {
+                return std::ranges::any_of(client_locals, [id](auto& cl) { return cl.second.controller == id; });
+            });
+            client_local_add(local_player_name(), controller);
+        };
+        act.removable = [this](const player_name_t& name) {
+            auto slot = client_slot_of(name);
+            return slot && *slot != 0;
+        };
+        act.remove_local = [this](const player_name_t& name) {
+            if (auto slot = client_slot_of(name); slot && *slot != 0) {
+                net_cli->remove_local_player(gs, *slot);
+                client_locals.erase(*slot);
+            }
+        };
+        /* The slot's player is removed, a new one joins with the name (and its config) */
+        act.rename_local = [this](const player_name_t& name, const player_name_t& new_name) {
+            auto slot = client_slot_of(name);
+            if (!slot || *slot == 0 || !local_name_free(new_name))
+                return false;
+            auto controller = client_locals.at(*slot).controller;
+            net_cli->remove_local_player(gs, *slot);
+            client_locals.erase(*slot);
+            return client_local_add(new_name, controller);
         };
         lobby_wnd.emplace(lobby_ui::role_t::client, std::move(act));
         gs.lobby_networked = true;
         gs.lobby_open();
+    }
+
+    /* A new local player's name: Player2, Player3... (not a player of the game, nor a local one being added) */
+    player_name_t local_player_name() {
+        for (u32 n = 2;; ++n)
+            if (auto name = player_name_t("Player" + std::to_string(n)); local_name_free(name))
+                return name;
+    }
+
+    [[nodiscard]]
+    bool local_name_free(const player_name_t& name) const {
+        return !std::string_view(name).empty() && !gs.players.contains(name) &&
+               std::ranges::none_of(client_locals, [&](auto& cl) { return cl.second.config_name == name || cl.second.player_name == name; });
+    }
+
+    /* The first configured controller not taken (used) by another local player */
+    static std::optional<u32> free_controller(const std::function<bool(u32)>& used) {
+        for (auto id : player_controller::ids())
+            if (!used(id))
+                return id;
+        return {};
+    }
+
+    /* A local player of the server's lobby: its look and gun are its config's (created on the first use) */
+    bool server_local_create(const player_name_t& name, std::optional<u32> controller) {
+        {
+            player_configurator pc{name};
+        }
+        if (!gs.player_create(name))
+            return false;
+        if (controller)
+            gs.player_controller_set(name, *controller);
+        return true;
+    }
+
+    void server_local_remove(const player_name_t& name) {
+        if (auto controller = gs.player_controller_of(name))
+            gs.controller_delete(*controller);
+        gs.lobby.ready.erase(name);
+        gs.player_remove(name);
+    }
+
+    void server_locals_remove() {
+        for (auto& name : server_locals)
+            server_local_remove(name);
+        server_locals.clear();
+    }
+
+    /* The joined local player of the client */
+    [[nodiscard]]
+    std::optional<u8> client_slot_of(const player_name_t& name) const {
+        for (auto& [slot, cl] : client_locals)
+            if (cl.player_name == name && net_cli && net_cli->local_joined(slot))
+                return slot;
+        return {};
+    }
+
+    /* Join another local player (its config is created on the first use); it shows once the server accepts it */
+    bool client_local_add(const player_name_t& name, std::optional<u32> controller) {
+        player_configurator pc{name};
+        auto slot = net_cli->add_local_player(name, pc);
+        if (!slot)
+            return false;
+        client_locals[*slot] = {name, name, controller, nullptr};
+        return true;
+    }
+
+    /*
+     * The server accepted a local player of the client: it is predicted,
+     * driven by per-tick input sampling of its controller only (the same
+     * input stream the server applies), not as a regular event-driven controller
+     */
+    void client_local_joined(u8 slot, const player_name_t& pname) {
+        auto cl = client_locals.find(slot);
+        if (cl == client_locals.end())
+            return;
+        /* The server's name: another number if the requested one is taken */
+        cl->second.player_name = pname;
+
+        /*
+         * The first server state broadcast may be processed before this
+         * deferred WELCOME handler runs (datagrams can be reordered, e.g.
+         * under DFDH_DEBUG_PING), in which case handle_state has already
+         * created the local player: reuse it instead of failing
+         */
+        auto found = gs.players.find(pname);
+        player* pl = found != gs.players.end() ? found->second.get() : gs.player_create(pname);
+        if (!pl)
+            return;
+
+        /*
+         * The server is authoritative for the local player as well: no local
+         * bullets, the actual ones arrive with the server broadcast
+         */
+        pl->set_server_driven(true);
+
+        if (cl->second.controller) {
+            cl->second.ctrl              = std::make_shared<net_player_controller>(*cl->second.controller);
+            cl->second.ctrl->player_name = pname;
+        }
+        /* No controller: no input until one is chosen */
+        net_cli->input_source(slot, [this, slot] {
+            auto found = client_locals.find(slot);
+            return found != client_locals.end() && found->second.ctrl ? found->second.ctrl->take_input_state()
+                                                                      : net::player_input_state{};
+        });
+        glog().info("multiplayer: controlling player {}", pname);
     }
 
     static constexpr u16 default_port = 10443;
@@ -731,8 +931,9 @@ private:
             if (std::ranges::find(ids, id) == ids.end())
                 return;
             gs.controller_reload(id);
-            if (net_ctrl && net_ctrl->id() == id)
-                net_ctrl->load();
+            for (auto& [_, cl] : client_locals)
+                if (cl.ctrl && cl.ctrl->id() == id)
+                    cl.ctrl->load();
         };
     }
 
@@ -776,7 +977,7 @@ private:
     /* Drop the network client and the players of its game */
     void client_reset() {
         net_cli.reset();
-        net_ctrl.reset();
+        client_locals.clear();
         lobby_wnd.reset();
         if (gs.lobby.active)
             gs.lobby_close();
@@ -831,8 +1032,8 @@ private:
         if (!ip)
             return std::format("invalid server address '{}'", host);
 
-        my_player_name = name;
-        my_config_name = name;
+        client_locals.clear();
+        client_locals[0] = {name, name, client_controller, nullptr};
 
         /* Load skin, tracer and gun settings from the local player config */
         player_configurator pc{name};
@@ -847,40 +1048,14 @@ private:
         }
 
         net_cli->sig_joined.attach_function("mp_joined", [this](const player_name_t& pname) {
-            /* The server's name: another number if the requested one is taken */
-            my_player_name = pname;
-
-            /*
-             * The first server state broadcast may be processed before this
-             * deferred WELCOME handler runs (datagrams can be reordered, e.g.
-             * under DFDH_DEBUG_PING), in which case handle_state has already
-             * created the local player: reuse it instead of failing
-             */
-            auto found = gs.players.find(pname);
-            player* pl = found != gs.players.end() ? found->second.get()
-                                                   : gs.player_create(pname);
-            if (!pl)
-                return;
-
-            /*
-             * The server is authoritative for the local player as well: no local
-             * bullets, the actual ones arrive with the server broadcast
-             */
-            pl->set_server_driven(true);
-
-            /*
-             * The keyboard drives the local player through per-tick input
-             * sampling only (the same input stream the server applies), so the
-             * controller is not attached as a regular event-driven controller
-             */
-            net_ctrl = std::make_shared<net_player_controller>(client_controller);
-            net_ctrl->player_name = pname;
-            net_cli->input_source([ctrl = net_ctrl] { return ctrl->take_input_state(); });
+            client_local_joined(0, pname);
             /* No local spawn: the server spawns the player, the first state places it. The server's lobby starts the game */
-            glog().info("multiplayer: controlling player {}", pname);
 
             /* Crates are server-authoritative: no local spawn, physics or pickup */
             gs.crates_networked = true;
+        });
+        net_cli->sig_local_joined.attach_function("mp_local_joined", [this](u8 slot, const player_name_t& pname) {
+            client_local_joined(slot, pname);
         });
 
         net_cli->sig_error.attach_function("mp_error", [this](const std::string& msg) {

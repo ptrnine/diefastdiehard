@@ -132,7 +132,12 @@ instead of sleeping. Use it for any new gameplay/network timer.
   `--server`/`--client` launch, console `lobby [start]`): the owner picks the
   level/mode/groups and starts (`game_state::lobby_start`); closing the window
   is cancel lobby (owner) / leave (client); nothing is
-  simulated while `game_state::lobby.active`. The UI only calls
+  simulated while `game_state::lobby.active`. "add player" adds a local player
+  (another controller on this PC; name `Player<N>`, look/gun from its name's
+  config); the added ones can be renamed (name field) and removed, the main
+  one can't. Server: `server_locals` in `diefastdiehard.cpp`. Client: a slot of
+  the connection (`client_locals`, `net_client::add_local_player`, predicted
+  like the main player, see `docs/multiplayer.md`). The UI only calls
   `lobby_ui::actions_t` callbacks (wired in `diefastdiehard.cpp`).
   `src/ui/connect_ui.hpp`: "Connect to lobby" window (console `ui connect`):
   address/port, a loader until the server's WELCOME (timeout
@@ -149,7 +154,9 @@ instead of sleeping. Use it for any new gameplay/network timer.
   player's (future) frame and test hits on it exactly like the server
   (`net_client::tick_hit`). Details in `docs/multiplayer.md`. Server
   players of clients are `player::net_controlled()`, client mirrors of
-  server players are `player::server_driven()`. Simulated latency:
+  server players are `player::server_driven()`. A connection carries
+  local player slots (0 = main): input windows hold every slot's bits on one
+  seq, the client's per-player prediction state is `net_client::local_t`. Simulated latency:
   `udp_channel::set_simulated_latency` / `--define=DFDH_DEBUG_PING`.
   Latency settings (input jitter buffer, interpolation delay, input
   margin): console `net` (on the screen: `hud net`), see `docs/multiplayer.md`.

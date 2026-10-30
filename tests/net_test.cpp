@@ -132,8 +132,8 @@ TEST_CASE("protocol: message round-trips") {
         st.ack_seq             = 77;
         st.echo_client_time_ms = 900;
         st.echo_hold_ms        = 16;
-        st.own_weapon          = weapon_sync{.ammo = 5, .anim = 2, .anim_time = 0.25f, .since_shot = 1.5f,
-                                             .flags = weapon_sync::flag_reloading, .shot_index = 3, .seed_base = 99};
+        st.own_weapons.push_back({2, weapon_sync{.ammo = 5, .anim = 2, .anim_time = 0.25f, .since_shot = 1.5f,
+                                                 .flags = weapon_sync::flag_reloading, .shot_index = 3, .seed_base = 99}});
         st.configs.push_back(player_config{.id = 2, .name = "p2", .pistol = "wpn_m40", .face_id = 3,
                                            .head_id = 1, .hat_id = 0, .tracer_color = 0xFF00FF00, .group = -1});
         st.players.push_back(state_player{.id = 1, .pos_x = 10.f, .pos_y = 20.f, .vel_x = -3.f, .vel_y = 4.f,
@@ -155,14 +155,16 @@ TEST_CASE("protocol: message round-trips") {
         CHECK(r.echo_client_time_ms == 900);
         CHECK(r.echo_hold_ms == 16);
 
-        REQUIRE(r.own_weapon);
-        CHECK(r.own_weapon->ammo == 5);
-        CHECK(r.own_weapon->anim == 2);
-        CHECK(r.own_weapon->anim_time == 0.25f);
-        CHECK(r.own_weapon->since_shot == 1.5f);
-        CHECK(r.own_weapon->flags == weapon_sync::flag_reloading);
-        CHECK(r.own_weapon->shot_index == 3);
-        CHECK(r.own_weapon->seed_base == 99);
+        CHECK_FALSE(r.own_weapon_of(0));
+        auto own_weapon = r.own_weapon_of(2);
+        REQUIRE(own_weapon);
+        CHECK(own_weapon->ammo == 5);
+        CHECK(own_weapon->anim == 2);
+        CHECK(own_weapon->anim_time == 0.25f);
+        CHECK(own_weapon->since_shot == 1.5f);
+        CHECK(own_weapon->flags == weapon_sync::flag_reloading);
+        CHECK(own_weapon->shot_index == 3);
+        CHECK(own_weapon->seed_base == 99);
 
         REQUIRE(r.configs.size() == 1);
         CHECK(r.configs[0] == st.configs[0]);
@@ -247,7 +249,7 @@ TEST_CASE("protocol: message round-trips") {
     SECTION("a typical state fits in a few hundred bytes") {
         /* 4 players, a 7 pellet shot, 30 bullets alive, 2 crates, 1 dropped gun (1131 bytes in protocol v6) */
         state st;
-        st.own_weapon = weapon_sync{};
+        st.own_weapons.push_back({0, weapon_sync{}});
         for (u16 id = 1; id <= 4; ++id)
             st.players.push_back(state_player{.id = id, .hits = {101}});
         st.shots.push_back(shot_info{.owner = 2, .first_id = 200, .pellets = std::vector<pellet_info>(7)});
@@ -4077,4 +4079,156 @@ TEST_CASE("level: jump speed from the level config") {
     REQUIRE(gs.set_level("lvl_aes"));
     CHECK(pl->get_jump_speed() == player::default_jump_speed);
     CHECK(pl2->get_jump_speed() == player::default_jump_speed);
+}
+
+TEST_CASE("net: input window of several local players") {
+    using namespace net;
+    input in;
+    in.last_seq = 10;
+    in.slots    = {0, 3};
+    in.bits     = {in_bit_left, in_bit_right, 0, in_bit_jump}; /* tick 9: left / right, tick 10: - / jump */
+    in.set_views({1.0, 1.01});
+
+    auto data = encode_msg(msg_type::input, in);
+    auto r    = read_msg<input>(decode_msg({data.data(), data.size()}).payload);
+    CHECK(r.slots == std::vector<u8>{0, 3});
+    CHECK(r.ticks() == 2);
+    CHECK(r.first_seq() == 9);
+    CHECK(r.bits_of(0, 1) == in_bit_right);
+    CHECK(r.bits_of(1, 0) == 0);
+    CHECK(r.bits_of(1, 1) == in_bit_jump);
+    REQUIRE(r.view_s(0));
+    CHECK(*r.view_s(1) == Catch::Approx(1.01).margin(2e-4));
+
+    auto rejected = [](const input& bad) {
+        input res;
+        auto  data = encode_msg(msg_type::input, bad);
+        return !try_read_msg(decode_msg({data.data(), data.size()}).payload, res);
+    };
+    CHECK(rejected(input{.last_seq = 10, .bits = {0, 0, 0}, .slots = {0, 1}}));      /* not whole ticks */
+    CHECK(rejected(input{.last_seq = 10, .bits = {0, 0}, .slots = {1, 1}}));         /* a slot twice */
+    CHECK(rejected(input{.last_seq = 10, .bits = {0}, .slots = {}}));                /* no slots */
+    CHECK_FALSE(rejected(input{.last_seq = 10, .bits = {0, 0}, .slots = {0, 7}}));
+
+    auto req  = encode_msg(msg_type::lobby, lobby_request{1, 2, 3, 1, 5});
+    CHECK(read_msg<lobby_request>(decode_msg({req.data(), req.size()}).payload).slot == 5);
+    auto wlc  = encode_msg(msg_type::welcome, welcome{"p2", 4});
+    auto wr   = read_msg<welcome>(decode_msg({wlc.data(), wlc.size()}).payload);
+    CHECK(std::string(wr.name) == "p2");
+    CHECK(wr.slot == 4);
+}
+
+/* A local player added to the fixture's client (named like the main one: the server numbers it), set up like the game does on its WELCOME */
+static std::pair<u8, player_name_t> add_local_player(net_game_fixture& f, std::function<net::player_input_state()> source) {
+    player_configurator pc{"me"};
+    pc.write_on_delete = false;
+    auto slot = f.cli->add_local_player("me", pc);
+    REQUIRE(slot);
+    for (int i = 0; i < 400 && !f.cli->local_joined(*slot); ++i)
+        f.frame();
+    REQUIRE(f.cli->local_joined(*slot));
+    auto name = f.cli->local_players().back().second;
+    if (!f.gs_cli.players.contains(name))
+        REQUIRE(f.gs_cli.player_create(name));
+    f.gs_cli.players.at(name)->set_server_driven(true);
+    f.cli->input_source(*slot, std::move(source));
+    return {*slot, name};
+}
+
+TEST_CASE("net: an added local player is predicted on the client's connection") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{20, 30};
+
+    net::player_input_state input2;
+    auto [slot, name2] = add_local_player(f, [&] { return input2; });
+    CHECK(slot == 1);
+    CHECK(std::string(name2) == "me2"); /* "me" is the main player */
+    REQUIRE(f.gs_srv.players.contains(name2));
+    CHECK(f.gs_srv.players.at(name2)->net_controlled());
+    CHECK(f.gs_cli.players.at(name2)->predicted() == false); /* not before its first input tick */
+
+    f.run_for(3000ms);
+    auto& srv2 = *f.gs_srv.players.at(name2);
+    auto& cli2 = *f.gs_cli.players.at(name2);
+    CHECK(cli2.predicted());
+    REQUIRE(srv2.collision_box()->is_lock_y());
+
+    /* Each local player is driven by its own input */
+    f.cli->reset_correction_stats();
+    auto x1 = f.server_side().get_position().x;
+    auto x2 = srv2.get_position().x;
+    f.input = {.left = true};
+    input2  = {.right = true};
+    f.run_for(400ms);
+    f.input = {};
+    input2  = {};
+    f.run_for(500ms);
+    CHECK(f.server_side().get_position().x < x1 - 20.f);
+    CHECK(srv2.get_position().x > x2 + 20.f);
+    CHECK(f.local().get_position().x == Catch::Approx(f.server_side().get_position().x).margin(1.f));
+    CHECK(cli2.get_position().x == Catch::Approx(srv2.get_position().x).margin(1.f));
+    CHECK(f.cli->corrections() == 0);
+
+    /* Both shoot at once: the same shot keys, every prediction is confirmed by its own player's bullet */
+    f.input = {.shot = true};
+    input2  = {.shot = true};
+    f.run_for(300ms);
+    f.input = {};
+    input2  = {};
+    f.run_for(1000ms);
+    CHECK(f.cli->pending_predicted_bullets() == 0);
+    CHECK(f.cli->max_bullet_correction() < 2.f);
+
+    /* The server ignores a removal of the main player (it leaves with the connection) */
+    REQUIRE(f.cli->channel().send(net::encode_msg(net::msg_type::player_leave, net::player_leave{0})));
+    f.run_for(200ms);
+    CHECK(f.gs_srv.players.contains("me"));
+
+    /* Removed: at once on the client, then on the server; the main player stays */
+    f.cli->remove_local_player(f.gs_cli, slot);
+    CHECK_FALSE(f.gs_cli.players.contains(name2));
+    f.run_for(1500ms);
+    CHECK_FALSE(f.gs_srv.players.contains(name2));
+    CHECK_FALSE(f.gs_cli.players.contains(name2));
+    CHECK(f.cli->local_players().size() == 1);
+
+    x1      = f.server_side().get_position().x;
+    f.input = {.right = true};
+    f.run_for(300ms);
+    CHECK(f.server_side().get_position().x > x1 + 10.f);
+
+    /* A new local player takes a new slot */
+    auto [slot3, name3] = add_local_player(f, [] { return net::player_input_state{}; });
+    CHECK(slot3 == 2);
+    CHECK(f.gs_srv.players.contains(name3));
+}
+
+TEST_CASE("net: lobby requests of the local players") {
+    using namespace std::chrono_literals;
+    net_game_fixture f{20, 30};
+
+    auto [slot, name2] = add_local_player(f, [] { return net::player_input_state{}; });
+    f.gs_srv.lobby_open();
+    f.run_for(500ms);
+    REQUIRE(f.gs_cli.lobby.active);
+
+    f.cli->lobby_request(slot, 3, true);
+    f.cli->lobby_request(2, true);
+    f.run_for(500ms);
+    CHECK(f.gs_srv.players.at(name2)->get_group() == 3);
+    CHECK(f.server_side().get_group() == 2);
+    CHECK(f.gs_srv.lobby.is_ready(name2));
+    CHECK(f.gs_srv.lobby.is_ready("me"));
+    CHECK(f.gs_cli.lobby.is_ready(name2));
+
+    f.cli->lobby_request(slot, 3, false);
+    f.run_for(500ms);
+    CHECK_FALSE(f.gs_srv.lobby.is_ready(name2));
+    CHECK(f.gs_srv.lobby.is_ready("me"));
+
+    /* Another client sees the players that are gone */
+    f.cli->remove_local_player(f.gs_cli, slot);
+    f.run_for(1500ms);
+    CHECK_FALSE(f.gs_srv.players.contains(name2));
+    CHECK_FALSE(f.gs_srv.lobby.ready.contains(name2));
 }

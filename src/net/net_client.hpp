@@ -107,6 +107,10 @@ inline weapon_instance::sync_state to_weapon_state(const weapon_sync& ws) {
  * (rollback). Remote players are interpolated between server snapshots,
  * slightly in the past (server_clock::interp_delay).
  *
+ * The connection may carry more local players (slots, see
+ * add_local_player): each one is predicted the same way, one input tick
+ * samples all of them (the input seqs are per connection).
+ *
  * Sends HELLO on creation, call update(game_state) once per game frame
  * (from the main thread).
  */
@@ -122,7 +126,8 @@ public:
                i32                  hat_id,
                const sf::Color&     body_color,
                const sf::Color&     tracer_color):
-        _server_ip(server_ip), _server_port(server_port), _name(name) {
+        _server_ip(server_ip), _server_port(server_port) {
+        _locals[0].name = name;
         if (!_sock.connect(server_ip, server_port)) {
             glog().error("net client: can't connect to {}:{} (udp)", server_ip, server_port);
             return;
@@ -144,32 +149,98 @@ public:
                     i32                hat_id,
                     const sf::Color&   body_color,
                     const sf::Color&   tracer_color) {
-        hello h;
-        h.name         = _name;
-        h.pistol       = pistol;
-        h.face_id      = face_id;
-        h.body_id      = body_id;
-        h.head_id      = head_id;
-        h.hat_id       = hat_id;
-        h.body_color   = pack_color(body_color);
-        h.tracer_color = pack_color(tracer_color);
-        _sock.send(encode_msg(msg_type::hello, h));
+        _sock.send(encode_msg(msg_type::hello, make_hello(0, name(), pistol, face_id, body_id, head_id, hat_id, body_color, tracer_color)));
     }
 
     /* The local player config changed (player configurator): send it to the server */
     void resend_config(const player_configurator& pc) {
-        send_hello(pc.pistol, pc.face_id, pc.body_id, pc.head_id, pc.hat_id, pc.body_color, pc.tracer_color);
+        resend_config(0, pc);
+    }
+
+    /* The config of the local player of the slot changed (an added one's is resent until the server answers) */
+    void resend_config(u8 slot, const player_configurator& pc) {
+        auto lt = _locals.find(slot);
+        if (lt == _locals.end())
+            return;
+        auto h = make_hello(slot, lt->second.name, pc.pistol, pc.face_id, pc.body_id, pc.head_id, pc.hat_id, pc.body_color, pc.tracer_color);
+        if (slot == 0) {
+            _sock.send(encode_msg(msg_type::hello, h));
+            return;
+        }
+        lt->second.hello_pending = h;
+        lt->second.hello_sent.reset();
+    }
+
+    /**
+     * Add a local player to the joined connection (another controller on
+     * this PC): HELLO of a new slot, resent until the server's WELCOME
+     * (sig_local_joined). Returns the slot, empty if there is no free one
+     */
+    std::optional<u8> add_local_player(const player_name_t& name, const player_configurator& pc) {
+        if (!_joined || _locals.size() >= max_local_players || _next_slot == 0)
+            return {};
+        auto  slot = _next_slot++; /* never reused (wraps to 0: no more slots) */
+        auto& lt   = _locals[slot];
+        lt.slot    = slot;
+        lt.name    = name;
+        resend_config(slot, pc);
+        glog().info("net client: adding local player {} (slot {})", name, slot);
+        return slot;
+    }
+
+    /**
+     * Remove an added local player (slot > 0): its player is deleted here
+     * at once, the server is told until it no longer lists it
+     */
+    void remove_local_player(game_state& gs, u8 slot) {
+        auto lt = _locals.find(slot);
+        if (slot == 0 || lt == _locals.end())
+            return;
+        auto name = lt->second.name;
+        if (lt->second.joined) {
+            gs.lobby.ready.erase(name);
+            gs.player_remove(name);
+            forget_remote(name);
+        }
+        _leaving.push_back({slot, name, clock::now(), {}});
+        _locals.erase(lt);
+        glog().info("net client: removing local player {} (slot {})", name, slot);
+    }
+
+    /* The local players by slot (0: the main one) and their names (the server's once joined) */
+    [[nodiscard]]
+    std::vector<std::pair<u8, player_name_t>> local_players() const {
+        std::vector<std::pair<u8, player_name_t>> res;
+        for (auto& [slot, lt] : _locals)
+            res.emplace_back(slot, lt.name);
+        return res;
+    }
+
+    [[nodiscard]]
+    bool local_joined(u8 slot) const {
+        auto lt = _locals.find(slot);
+        return lt != _locals.end() && lt->second.joined;
     }
 
     /* The local player's lobby choice: sent right away, then resent until the lobby closes */
     void lobby_request(i16 group, bool ready) {
-        _lobby_req = net::lobby_request{_lobby_session, _lobby_req.seq + 1, group, u8(ready ? 1 : 0)};
-        _lobby_req_sent.reset();
+        lobby_request(0, group, ready);
+    }
+
+    void lobby_request(u8 slot, i16 group, bool ready) {
+        auto lt = _locals.find(slot);
+        if (lt == _locals.end())
+            return;
+        auto& req = lt->second.lobby_req;
+        req       = net::lobby_request{_lobby_session, req.seq + 1, group, u8(ready ? 1 : 0), slot};
+        lt->second.lobby_req_sent.reset();
     }
 
     [[nodiscard]]
-    const net::lobby_request& last_lobby_request() const {
-        return _lobby_req;
+    const net::lobby_request& last_lobby_request(u8 slot = 0) const {
+        static const net::lobby_request none;
+        auto lt = _locals.find(slot);
+        return lt != _locals.end() ? lt->second.lobby_req : none;
     }
 
     net_client(const net_client&) = delete;
@@ -195,13 +266,16 @@ public:
         return _joined;
     }
 
+    /* The main local player's name (the server's once joined) */
     [[nodiscard]]
     const player_name_t& name() const {
-        return _name;
+        return _locals.at(0).name;
     }
 
     /** Fired (deferred) when the server accepted the client */
     signal<void(player_name_t)> sig_joined;
+    /** Fired (deferred) when the server accepted an added local player (slot, the server's name) */
+    signal<void(u8, player_name_t)> sig_local_joined;
     /** Fired (deferred) when the server rejected the client */
     signal<void(std::string)>    sig_error;
 
@@ -212,7 +286,12 @@ public:
      * (e.g. net_player_controller::take_input_state)
      */
     void input_source(input_source_t source) {
-        _input_source = std::move(source);
+        input_source(0, std::move(source));
+    }
+
+    void input_source(u8 slot, input_source_t source) {
+        if (auto lt = _locals.find(slot); lt != _locals.end())
+            lt->second.input_source = std::move(source);
     }
 
     /** Smoothed round-trip time to the server, seconds */
@@ -372,6 +451,7 @@ public:
         apply_remote_snapshots(gs);
         send_input_window();
         send_lobby_request(gs);
+        send_local_players();
         align_ticks(gs);
     }
 
@@ -428,7 +508,7 @@ public:
             return;
 
         leave_sent = true;
-        _sock.send(encode_msg(msg_type::leave, net::leave{_name}));
+        _sock.send(encode_msg(msg_type::leave, net::leave{name()}));
         glog().info("net client: left the game");
     }
 
@@ -447,6 +527,111 @@ private:
 
     using history_t = input_history<player_input_state, player::physic_state, tick_extra>;
 
+    /* Lag-compensated hits predicted on a local player, by bullet id, until the server registers them */
+    struct rewound_hit_t {
+        u32 seq;         /* the tick the hit is applied in */
+        u32 confirm_seq; /* the first acknowledged tick whose state has it */
+    };
+
+    /* A predicted local player (a slot of the connection) */
+    struct local_t {
+        u8                                                  slot = 0;
+        player_name_t                                       name;   /* the server's once joined */
+        bool                                                joined = false;
+        input_source_t                                      input_source;
+        history_t                                           history;
+        u32                                                 last_ack = 0; /* the newest reconciled ack */
+        std::optional<u16>                                  local_teleports;
+        std::optional<std::pair<u32, player::physic_state>> ack_state; /* the server state at the newest ack */
+        std::map<u32, rewound_hit_t>                        rewound_hits;
+        net::lobby_request                                  lobby_req; /* seq 0: nothing to request */
+        std::optional<clock::time_point>                    lobby_req_sent;
+        std::optional<hello>                                hello_pending; /* an added player: resent until WELCOME */
+        std::optional<clock::time_point>                    hello_sent;
+    };
+
+    /* A removed local player: PLAYER_LEAVE is resent until the server no longer lists it */
+    struct leaving_t {
+        u8                               slot;
+        player_name_t                    name;
+        clock::time_point                since;
+        std::optional<clock::time_point> sent;
+    };
+
+    /* Resend period of the HELLO of an added local player and of PLAYER_LEAVE */
+    static constexpr auto local_resend = std::chrono::milliseconds(200);
+    /* PLAYER_LEAVE is resent at least this long (the server may get the slot's HELLO later), at most leave_timeout */
+    static constexpr auto leave_min_resend = std::chrono::seconds(1);
+    static constexpr auto leave_timeout    = std::chrono::seconds(5);
+
+    static hello make_hello(u8                   slot,
+                            const player_name_t& name,
+                            const std::string&   pistol,
+                            u32                  face_id,
+                            u32                  body_id,
+                            u32                  head_id,
+                            i32                  hat_id,
+                            const sf::Color&     body_color,
+                            const sf::Color&     tracer_color) {
+        hello h;
+        h.slot         = slot;
+        h.name         = name;
+        h.pistol       = pistol;
+        h.face_id      = face_id;
+        h.body_id      = body_id;
+        h.head_id      = head_id;
+        h.hat_id       = hat_id;
+        h.body_color   = pack_color(body_color);
+        h.tracer_color = pack_color(tracer_color);
+        return h;
+    }
+
+    /* The joined local player of the name */
+    [[nodiscard]]
+    local_t* local_of(const player_name_t& name) {
+        for (auto& [_, lt] : _locals)
+            if (lt.joined && lt.name == name)
+                return &lt;
+        return nullptr;
+    }
+
+    [[nodiscard]]
+    bool is_local(const player& pl) {
+        return local_of(pl.name()) != nullptr;
+    }
+
+    [[nodiscard]]
+    bool is_leaving(const player_name_t& name) const {
+        return std::ranges::any_of(_leaving, [&](const leaving_t& l) { return l.name == name; });
+    }
+
+    /* The interpolation state of a player that is no longer remote */
+    void forget_remote(const player_name_t& name) {
+        _remote.erase(name);
+        _knockbacks.erase(name);
+        _remote_teleports.erase(name);
+        _remote_applied.erase(name);
+    }
+
+    /* HELLOs of the added local players until they are accepted, PLAYER_LEAVEs of the removed ones */
+    void send_local_players() {
+        if (!_joined)
+            return;
+        auto now = clock::now();
+        for (auto& [slot, lt] : _locals) {
+            if (lt.joined || !lt.hello_pending || (lt.hello_sent && now - *lt.hello_sent < local_resend))
+                continue;
+            lt.hello_sent = now;
+            _sock.send(encode_msg(msg_type::hello, *lt.hello_pending));
+        }
+        for (auto& l : _leaving) {
+            if (l.sent && now - *l.sent < local_resend)
+                continue;
+            l.sent = now;
+            _sock.send(encode_msg(msg_type::player_leave, player_leave{l.slot}));
+        }
+    }
+
 
     [[nodiscard]]
     u32 time_ms() const {
@@ -459,21 +644,23 @@ private:
     }
 
     [[nodiscard]]
-    player* local_player(game_state& gs) const {
-        auto found = gs.players.find(_name);
+    static player* local_player(game_state& gs, const local_t& lt) {
+        auto found = gs.players.find(lt.name);
         return found == gs.players.end() ? nullptr : found->second.get();
     }
 
-    /* Simulation tick begin: sample the local input and apply it to the local player */
+    /* Simulation tick begin: sample the local players' inputs and apply them (one input tick for all of them) */
     void sample_input(game_state& gs, float timestep) {
-        if (!_joined || !_input_source)
+        if (!_joined)
             return;
 
-        auto pl = local_player(gs);
-        if (!pl)
+        std::vector<std::pair<local_t*, player*>> active;
+        for (auto& [_, lt] : _locals)
+            if (auto pl = lt.joined && lt.input_source ? local_player(gs, lt) : nullptr)
+                active.emplace_back(&lt, pl);
+        if (active.empty())
             return;
 
-        auto in = _input_source();
         ++_input_seq;
         _input_tick_s = std::chrono::duration<double>(gs.sim.current_update_time() - _start_time).count();
         /* How much later than without the tick alignment this tick runs (and its input leaves) */
@@ -481,18 +668,23 @@ private:
         _tick_shifts.emplace_back(_input_seq, _tick_shift_s);
         if (_tick_shifts.size() > history_t::max_size)
             _tick_shifts.pop_front();
-        pl->set_predicted(true);
-        pl->last_input_seq(_input_seq);
-        pl->apply_input(in);
 
-        _sent_inputs.push_back(in.to_bits());
+        std::map<u8, u8> bits;
+        for (auto& [lt, pl] : active) {
+            auto in = lt->input_source();
+            pl->set_predicted(true);
+            pl->last_input_seq(_input_seq);
+            pl->apply_input(in);
+            bits[lt->slot] = in.to_bits();
+            lt->history.push({_input_seq, in, {}, timestep});
+        }
+
+        _sent_inputs.push_back(std::move(bits));
         _sent_views.push_back(_shown_time); /* what the player was looking at: the last frame's remote players */
         if (_sent_inputs.size() > input::max_window) {
             _sent_inputs.pop_front();
             _sent_views.pop_front();
         }
-
-        _history.push({_input_seq, in, {}, timestep});
     }
 
     /*
@@ -501,26 +693,28 @@ private:
      * the tick's movement) and the recoil of the tick's shots (after it)
      */
     void record_prediction(game_state& gs) {
-        auto entry = _history.back();
-        auto pl    = local_player(gs);
-        if (!entry || !pl || entry->seq != _input_seq)
-            return;
-
         /* The own bullets fired in this tick: their hits are tested at this tick's view (own_bullet_hit) */
         if (auto view = _sent_views.empty() ? std::nullopt : _sent_views.back())
             for (auto& be : gs.cur_frame_bullets)
-                if (be.predicted && be.owner == _name)
+                if (be.predicted && local_of(be.owner))
                     if (auto ph = be.physic.lock())
                         for (auto& blt : gs.blt_mgr.bullets())
                             if (blt.physic() == ph && blt.framed() && !blt.framed()->view)
                                 blt.framed()->view = view;
 
-        entry->extra.impulse = pl->take_pending_impulse();
-        for (auto& hit : pl->take_predicted_hits())
-            entry->extra.hits.emplace_back(hit.ref, hit.impulse);
-        entry->state = pl->get_physic_state();
-        if (pl->get_gun())
-            entry->extra.weapon = pl->get_gun().get_sync_state();
+        for (auto& [_, lt] : _locals) {
+            auto entry = lt.history.back();
+            auto pl    = lt.joined ? local_player(gs, lt) : nullptr;
+            if (!entry || !pl || entry->seq != _input_seq)
+                continue;
+
+            entry->extra.impulse = pl->take_pending_impulse();
+            for (auto& hit : pl->take_predicted_hits())
+                entry->extra.hits.emplace_back(hit.ref, hit.impulse);
+            entry->state = pl->get_physic_state();
+            if (pl->get_gun())
+                entry->extra.weapon = pl->get_gun().get_sync_state();
+        }
     }
 
     /* Direction of the recoil of a replayed shot: the tick's movement input, else the recorded recoil or the facing */
@@ -548,18 +742,18 @@ private:
      * The weapon (ammo, reload, fire rate) is reconciled the same way with
      * server_wpn, its server state (if it holds the same gun)
      */
-    void reconcile(game_state& gs, player& pl, const player::physic_state& server_st, u32 ack_seq,
+    void reconcile(game_state& gs, local_t& lt, player& pl, const player::physic_state& server_st, u32 ack_seq,
                    const std::vector<u32>& server_hits, u16 teleports,
                    const std::optional<weapon_instance::sync_state>& server_wpn) {
         /* Teleported on the server (respawn): jump there right away, even without a new ack */
-        bool teleported = !_local_teleports || counter_newer(teleports, *_local_teleports);
+        bool teleported = !lt.local_teleports || counter_newer(teleports, *lt.local_teleports);
 
         /* Reordered older state, or the same ack again (already reconciled) */
-        if (!teleported && (ack_seq < _last_ack || (ack_seq == _last_ack && ack_seq != 0)))
+        if (!teleported && (ack_seq < lt.last_ack || (ack_seq == lt.last_ack && ack_seq != 0)))
             return;
-        _last_ack = std::max(_last_ack, ack_seq);
+        lt.last_ack = std::max(lt.last_ack, ack_seq);
         if (teleported) {
-            _local_teleports = teleports;
+            lt.local_teleports = teleports;
             pl.restore_hat(); /* respawn */
         }
 
@@ -568,11 +762,11 @@ private:
          * registers it retroactively, when it sweeps the bullet rewind_ticks
          * later. Its states until then lack the hit: compare with a later one
          */
-        std::erase_if(_rewound_hits, [&](const auto& hit) {
+        std::erase_if(lt.rewound_hits, [&](const auto& hit) {
             return ack_seq >= hit.second.confirm_seq || std::ranges::find(server_hits, hit.first) != server_hits.end();
         });
         if (!teleported &&
-            std::ranges::any_of(_rewound_hits, [&](const auto& hit) { return hit.second.seq <= ack_seq; }))
+            std::ranges::any_of(lt.rewound_hits, [&](const auto& hit) { return hit.second.seq <= ack_seq; }))
             return;
 
         /*
@@ -580,13 +774,13 @@ private:
          * the prediction of them again (it was predicted later than the server
          * had it, otherwise its tick would be acknowledged already)
          */
-        for (auto& e : _history)
+        for (auto& e : lt.history)
             if (e.seq > ack_seq)
                 std::erase_if(e.extra.hits, [&](const auto& hit) {
                     return hit.first.id != 0 && std::ranges::find(server_hits, hit.first.id) != server_hits.end();
                 });
 
-        auto predicted = _history.find(ack_seq);
+        auto predicted = lt.history.find(ack_seq);
 
         /* The weapon fires and reloads differently than predicted: replay it too (its shots' recoil included) */
         auto& gun          = pl.get_gun();
@@ -608,7 +802,7 @@ private:
                               server_wpn->reserve);
             }
 
-            replay_history(gs, pl, ack_seq, replay_weapon);
+            replay_history(gs, lt, pl, ack_seq, replay_weapon);
 
             auto correction = old_pos - pl.get_position();
             if (teleported)
@@ -626,10 +820,10 @@ private:
          * bullet that arrives now may still hit them (predict_past_hit). Not
          * across a teleport (the server's position trace is cleared)
          */
-        if (auto acked = _history.find(ack_seq))
+        if (auto acked = lt.history.find(ack_seq))
             acked->state = server_st;
-        _history.drop_before(teleported ? ack_seq + 1 : ack_seq - std::min(ack_seq, acked_ticks_kept));
-        _ack_state = {ack_seq, server_st};
+        lt.history.drop_before(teleported ? ack_seq + 1 : ack_seq - std::min(ack_seq, acked_ticks_kept));
+        lt.ack_state = {ack_seq, server_st};
     }
 
     /* Acknowledged ticks kept in the history: more than the longest rewind (max_lag_compensation) */
@@ -642,10 +836,10 @@ private:
      * recoil. With replay_weapon the weapon is replayed too (its recoil
      * replaces the recorded one)
      */
-    void replay_history(game_state& gs, player& pl, u32 seq, bool replay_weapon) {
+    void replay_history(game_state& gs, local_t& lt, player& pl, u32 seq, bool replay_weapon) {
         auto& gun = pl.get_gun();
         pl.replaying(true);
-        for (auto& e : _history) {
+        for (auto& e : lt.history) {
             if (e.seq <= seq)
                 continue;
             pl.apply_movement_input(e.input);
@@ -676,11 +870,11 @@ private:
 
     /* The local player's predicted state after the tick seq (or the server's one at the acknowledged tick) */
     [[nodiscard]]
-    const player::physic_state* tick_state(u32 seq) {
-        if (auto e = _history.find(seq))
+    static const player::physic_state* tick_state(local_t& lt, u32 seq) {
+        if (auto e = lt.history.find(seq))
             return &e->state;
-        if (_ack_state && _ack_state->first == seq)
-            return &_ack_state->second;
+        if (lt.ack_state && lt.ack_state->first == seq)
+            return &lt.ack_state->second;
         return nullptr;
     }
 
@@ -734,9 +928,9 @@ private:
      *   goes before the movement of the tick itself
      */
     [[nodiscard]]
-    std::optional<tick_hit_t> tick_hit(const player& pl, u32 seq, const vec2f& a, const vec2f& b,
+    std::optional<tick_hit_t> tick_hit(local_t& lt, const player& pl, u32 seq, const vec2f& a, const vec2f& b,
                                        const hit_test_t& test) {
-        auto end = tick_state(seq);
+        auto end = tick_state(lt, seq);
         if (!end)
             return {};
         auto size = pl.get_size();
@@ -745,7 +939,7 @@ private:
             auto pos      = end->pos;
             auto hit_tick = seq + 1;
             if (test.rewind_lead > 1e-3f) {
-                auto begin = tick_state(seq - 1);
+                auto begin = tick_state(lt, seq - 1);
                 if (!begin)
                     return {};
                 pos      = lerp(end->pos, begin->pos, test.rewind_lead);
@@ -756,7 +950,7 @@ private:
             return {};
         }
 
-        auto begin = tick_state(seq - 1);
+        auto begin = tick_state(lt, seq - 1);
         if (!begin)
             return {};
         auto vel = begin->lock_y ? vec2f{begin->vel.x, 0.f} : begin->vel;
@@ -822,10 +1016,10 @@ private:
      * the tick its bullet was swept in: its states until then lack it
      * (see reconcile)
      */
-    void apply_tick_hit(game_state& gs, player& pl, const tick_hit_t& hit, const vec2f& impulse, const bullet_ref& ref,
-                        const hit_test_t& test) {
+    void apply_tick_hit(game_state& gs, local_t& lt, player& pl, const tick_hit_t& hit, const vec2f& impulse,
+                        const bullet_ref& ref, const hit_test_t& test) {
         if (!test.physical && ref.id != 0)
-            _rewound_hits[ref.id] = {hit.seq, hit.swept_at + test.rewind_ticks};
+            lt.rewound_hits[ref.id] = {hit.seq, hit.swept_at + test.rewind_ticks};
 
         auto seq = hit.seq;
         auto pos = hit.position;
@@ -834,8 +1028,8 @@ private:
             return;
         }
 
-        auto e     = _history.find(seq);
-        auto begin = tick_state(seq - 1);
+        auto e     = lt.history.find(seq);
+        auto begin = tick_state(lt, seq - 1);
         if (!e || !begin)
             return;
         e->extra.hits.emplace_back(ref, impulse);
@@ -843,7 +1037,7 @@ private:
         pl.hit_feedback(impulse, pos, ref);
         auto old_pos = pl.get_position();
         pl.restore_physic_state(*begin);
-        replay_history(gs, pl, seq - 1, false);
+        replay_history(gs, lt, pl, seq - 1, false);
         pl.add_render_offset(old_pos - pl.get_position());
     }
 
@@ -861,14 +1055,15 @@ private:
      * the tick it flew in, so the server registers the hit later.
      * A bullet dead on the server (alive) already hit: never again here
      */
-    bool predict_past_hit(game_state& gs, player& pl, const vec2f& start, const vec2f& vel, bool gravity, float flight,
-                          float mass, float max_flight, const hit_test_t& test, const bullet_ref& ref, bool alive) {
+    bool predict_past_hit(game_state& gs, local_t& lt, player& pl, const vec2f& start, const vec2f& vel, bool gravity,
+                          float flight, float mass, float max_flight, const hit_test_t& test, const bullet_ref& ref,
+                          bool alive) {
         if (!alive)
             return false;
-        for (auto& e : _history) {
+        for (auto& e : lt.history) {
             if (e.seq >= _input_seq)
                 break;
-            if (e.seq <= _last_ack && (test.physical || ref.id == 0 || e.seq + test.rewind_ticks <= _last_ack))
+            if (e.seq <= lt.last_ack && (test.physical || ref.id == 0 || e.seq + test.rewind_ticks <= lt.last_ack))
                 continue;
             auto f = flight - float(_input_seq - e.seq) * _tick_dt;
             if (f <= 0.f)
@@ -878,8 +1073,8 @@ private:
 
             auto a       = gs.ballistic_forward(start, vel, gravity, std::max(f - _tick_dt, 0.f)).first;
             auto [b, bv] = gs.ballistic_forward(start, vel, gravity, f);
-            if (auto hit = tick_hit(pl, e.seq, a, b, test)) {
-                apply_tick_hit(gs, pl, *hit, bv * mass, ref, test);
+            if (auto hit = tick_hit(lt, pl, e.seq, a, b, test)) {
+                apply_tick_hit(gs, lt, pl, *hit, bv * mass, ref, test);
                 return true;
             }
         }
@@ -916,17 +1111,16 @@ private:
         auto flight   = frame_ahead ? shot.forward_s() + *frame_ahead + test.ahead_s(_tick_dt) : shot.forward_s() + lag;
         auto [pos, fwd_vel] = gs.ballistic_forward(start, vel, gravity, flight);
 
-        if (_joined && owner_cfg != _configs.end() && owner_cfg->second.name == _name &&
-            confirm_predicted_bullet(gs, key, id, start, vel, gravity, alive))
+        if (owner_cfg != _configs.end() && local_of(owner_cfg->second.name) &&
+            confirm_predicted_bullet(gs, key, owner_cfg->second.name, id, start, vel, gravity, alive))
             return;
 
-        auto local        = frame_ahead ? local_player(gs) : nullptr;
         auto shown_flight = std::max(flight - test.ahead_s(_tick_dt) + test.rewind_s(_tick_dt) - shown_delay(), 0.f);
         std::optional<game_state::hitscan_hit_t> shown_hit;
         auto shown_hit_flight = std::numeric_limits<float>::max();
         if (owner != gs.players.end()) {
             auto shown_pos = frame_ahead ? gs.ballistic_forward(start, vel, gravity, shown_flight).first : pos;
-            auto shown     = [local](const player& p) { return &p != local; };
+            auto shown     = [&](const player& p) { return !frame_ahead || !is_local(p); };
             shown_hit = gs.hitscan_if(start, shown_pos, 0.f, owner->second.get(), owner->second->get_group(), shown);
             if (shown_hit)
                 shown_hit_flight =
@@ -935,10 +1129,14 @@ private:
 
         /* Whichever the bullet reaches first in its flight. Like on the server: never its owner nor the owner's group */
         auto owner_pl = owner != gs.players.end() ? owner->second.get() : nullptr;
-        if (local && may_hit(*local, owner_pl, owner_pl ? owner_pl->get_group() : -1) &&
-            predict_past_hit(gs, *local, start, vel, gravity, flight, shot.hit_mass, shown_hit_flight, test,
-                             bullet_ref{id, {}, owner_pl ? owner_pl->name() : player_name_t{}}, alive))
-            return;
+        if (frame_ahead)
+            for (auto& [_, lt] : _locals) {
+                auto local = lt.joined ? local_player(gs, lt) : nullptr;
+                if (local && may_hit(*local, owner_pl, owner_pl ? owner_pl->get_group() : -1) &&
+                    predict_past_hit(gs, lt, *local, start, vel, gravity, flight, shot.hit_mass, shown_hit_flight, test,
+                                     bullet_ref{id, {}, owner_pl ? owner_pl->name() : player_name_t{}}, alive))
+                    return;
+            }
 
         if (shown_hit) {
             shown_hit->target->on_bullet_hit(vel * shot.hit_mass, shown_hit->position, bullet_ref{id, {}});
@@ -1018,7 +1216,7 @@ private:
     };
 
     std::optional<own_hit_t> own_bullet_hit(game_state& gs, const vec2f& a, const vec2f& b, float flight,
-                                            std::optional<double> view, const player* local, int group) {
+                                            std::optional<double> view, int group) {
         if (!view && !_shown_time)
             return {};
         auto t = view ? *view + double(flight) : *_shown_time;
@@ -1027,7 +1225,7 @@ private:
         auto best = std::numeric_limits<float>::max();
         for (auto& [name, snaps] : _remote) {
             auto found = gs.players.find(name);
-            if (found == gs.players.end() || found->second.get() == local)
+            if (found == gs.players.end() || is_local(*found->second))
                 continue;
             auto& pl = *found->second;
             if (group != -1 && pl.get_group() != -1 && pl.get_group() == group)
@@ -1069,7 +1267,6 @@ private:
      * (own_bullet_hit). Then the bullets fly the tick starting now
      */
     void sweep_framed_bullets(game_state& gs) {
-        auto local = local_player(gs);
         auto delay = shown_delay();
         for (auto& blt : gs.blt_mgr.bullets()) {
             auto& fr = blt.framed();
@@ -1089,22 +1286,28 @@ private:
             auto flight     = std::exchange(fr->flight, fr->flight + _tick_dt);
 
             if (fr->own) {
-                if (auto hit = own_bullet_hit(gs, from, to, flight, fr->view, local, blt.group())) {
+                if (auto hit = own_bullet_hit(gs, from, to, flight, fr->view, blt.group())) {
                     hit->target->on_bullet_hit(ph->impulse(), hit->position, bullet_ref::of(ph.get()), hit->time);
                     ph->delete_later();
                 }
                 continue;
             }
 
-            auto test       = hit_test_t::of(fr->rewind, _tick_dt);
-            auto hits_local = local && may_hit(*local, owner, blt.group());
-            if (hits_local) {
-                if (auto hit = tick_hit(*local, _input_seq, from, to, test)) {
-                    apply_tick_hit(gs, *local, *hit, ph->impulse(), bullet_ref::of(ph.get()), test);
-                    ph->delete_later();
+            auto test     = hit_test_t::of(fr->rewind, _tick_dt);
+            bool hit_local = false;
+            for (auto& [_, lt] : _locals) {
+                auto local = lt.joined ? local_player(gs, lt) : nullptr;
+                if (!local || !may_hit(*local, owner, blt.group()))
                     continue;
+                if (auto hit = tick_hit(lt, *local, _input_seq, from, to, test)) {
+                    apply_tick_hit(gs, lt, *local, *hit, ph->impulse(), bullet_ref::of(ph.get()), test);
+                    ph->delete_later();
+                    hit_local = true;
+                    break;
                 }
             }
+            if (hit_local)
+                continue;
 
             auto shown = std::max(flight - test.ahead_s(_tick_dt) + test.rewind_s(_tick_dt) - delay, 0.f);
             if (shown <= fr->shown_flight)
@@ -1112,13 +1315,14 @@ private:
             auto a = gs.ballistic_forward(fr->start, fr->velocity, fr->gravity, fr->shown_flight).first;
             auto b = gs.ballistic_forward(fr->start, fr->velocity, fr->gravity, shown).first;
             fr->shown_flight = shown;
-            if (auto hit = gs.hitscan_if(a, b, 0.f, owner, blt.group(), [local](const player& p) { return &p != local; }))
+            if (auto hit = gs.hitscan_if(a, b, 0.f, owner, blt.group(), [this](const player& p) { return !is_local(p); }))
                 hit_by(*hit);
         }
     }
 
     struct predicted_bullet_t {
         shot_key_t      key;
+        player_name_t   owner; /* the local player (the shot keys of two of them may be the same) */
         std::weak_ptr<physic_point> physic;
         double                      time_s;
     };
@@ -1126,8 +1330,8 @@ private:
     /* Track the own bullets the local weapon spawned this frame (game_state::spawn_bullet) */
     void register_predicted_bullets(game_state& gs) {
         for (auto& be : gs.cur_frame_bullets)
-            if (be.predicted && be.owner == _name)
-                _predicted.push_back({be.key, be.physic, time_s()});
+            if (be.predicted && local_of(be.owner))
+                _predicted.push_back({be.key, be.owner, be.physic, time_s()});
     }
 
     /**
@@ -1137,9 +1341,10 @@ private:
      * than the server's lag estimate), or disappears if the bullet is already
      * dead on the server. Returns false if nothing was predicted for the key
      */
-    bool confirm_predicted_bullet(game_state& gs, const shot_key_t& key, u32 id, const vec2f& start, const vec2f& vel,
-                                  bool gravity, bool alive) {
-        auto found = std::ranges::find_if(_predicted, [&](const predicted_bullet_t& p) { return p.key == key; });
+    bool confirm_predicted_bullet(game_state& gs, const shot_key_t& key, const player_name_t& owner, u32 id,
+                                  const vec2f& start, const vec2f& vel, bool gravity, bool alive) {
+        auto found =
+            std::ranges::find_if(_predicted, [&](const predicted_bullet_t& p) { return p.key == key && p.owner == owner; });
         if (found == _predicted.end())
             return false;
 
@@ -1248,7 +1453,7 @@ private:
         _shown_time = t;
         for (auto& [name, snaps] : _remote) {
             /* A state received before WELCOME could not tell the local player apart */
-            if (_joined && name == _name)
+            if (local_of(name))
                 continue;
 
             auto found = gs.players.find(name);
@@ -1388,7 +1593,16 @@ private:
         msg.rtt_ms         = u16(std::min(_rtt_s * 1000.f, 65535.f));
         /* The ticks the server did not acknowledge yet */
         auto count = std::clamp<size_t>(_input_seq - std::min(_last_ack, _input_seq), 1, _sent_inputs.size());
-        msg.bits.assign(_sent_inputs.end() - std::ptrdiff_t(count), _sent_inputs.end());
+        /* Every joined local player's input of each tick (none before it joined) */
+        msg.slots.clear();
+        for (auto& [slot, lt] : _locals)
+            if (lt.joined)
+                msg.slots.push_back(slot);
+        for (auto it = _sent_inputs.end() - std::ptrdiff_t(count); it != _sent_inputs.end(); ++it)
+            for (auto slot : msg.slots) {
+                auto found = it->find(slot);
+                msg.bits.push_back(found != it->end() ? found->second : u8(0));
+            }
         /* The views of the ticks (all or none: nothing shown yet) */
         std::vector<double> views;
         for (auto it = _sent_views.end() - std::ptrdiff_t(count); it != _sent_views.end() && *it; ++it)
@@ -1482,13 +1696,15 @@ private:
     static constexpr auto lobby_resend = std::chrono::milliseconds(100);
 
     void send_lobby_request(game_state& gs) {
-        if (!_joined || !gs.lobby.active || _lobby_req.seq == 0)
+        if (!_joined || !gs.lobby.active)
             return;
         auto now = clock::now();
-        if (_lobby_req_sent && now - *_lobby_req_sent < lobby_resend)
-            return;
-        _lobby_req_sent = now;
-        _sock.send(encode_msg(msg_type::lobby, _lobby_req));
+        for (auto& [_, lt] : _locals) {
+            if (!lt.joined || lt.lobby_req.seq == 0 || (lt.lobby_req_sent && now - *lt.lobby_req_sent < lobby_resend))
+                continue;
+            lt.lobby_req_sent = now;
+            _sock.send(encode_msg(msg_type::lobby, lt.lobby_req));
+        }
     }
 
     /* The server's lobby phase: the game starts, or everyone is back in the lobby */
@@ -1500,10 +1716,12 @@ private:
         if (active && !was_active) {
             gs.lobby_open();
             /* Not ready in the new lobby */
-            auto group = _lobby_req.seq ? _lobby_req.group : i16(-1);
-            if (auto own = gs.players.find(_name); own != gs.players.end())
-                group = i16(own->second->get_group());
-            lobby_request(group, false);
+            for (auto& [slot, lt] : _locals) {
+                auto group = lt.lobby_req.seq ? lt.lobby_req.group : i16(-1);
+                if (auto own = gs.players.find(lt.name); own != gs.players.end())
+                    group = i16(own->second->get_group());
+                lobby_request(slot, group, false);
+            }
         }
 
         gs.lobby.level = lobby.level;
@@ -1525,8 +1743,19 @@ private:
         if (!try_read_msg(msg.payload, w))
             return;
 
+        auto lt = _locals.find(w.slot);
+        if (lt == _locals.end() || (w.slot != 0 && (!_joined || lt->second.joined)))
+            return; /* removed, or a repeated WELCOME of an added player */
+
         /* The server may rename the player (the name is taken): the server's name from now on */
-        _name   = w.name;
+        lt->second.name   = w.name;
+        lt->second.joined = true;
+        lt->second.hello_pending.reset();
+        if (w.slot != 0) {
+            glog().info("net client: local player {} joined the game", w.name);
+            sig_local_joined.emit_deferred(w.slot, w.name);
+            return;
+        }
         _joined = true;
         glog().info("net client: joined the game as {}", w.name);
         sig_joined.emit_deferred(w.name);
@@ -1576,8 +1805,13 @@ private:
             if (known != _configs.end() && (known->second == cfg || !newest))
                 continue;
             _configs[cfg.id] = cfg;
-            apply_player_config(gs, cfg);
+            /* A removed local player is not brought back while the server still has it */
+            if (!is_leaving(cfg.name))
+                apply_player_config(gs, cfg);
         }
+
+        /* The acknowledged input tick of the connection (sizes the input window) */
+        _last_ack = std::max(_last_ack, st.ack_seq);
 
         for (auto& sp : st.players) {
             /* Not known yet: its config arrives within config_resend after the join */
@@ -1585,7 +1819,10 @@ private:
             if (cfg == _configs.end())
                 continue;
             auto& name     = cfg->second.name;
-            auto  is_local = _joined && name == _name;
+            auto  local    = local_of(name);
+            auto  is_local = local != nullptr;
+            if (is_leaving(name))
+                continue;
 
             if (!gs.players.contains(name))
                 apply_player_config(gs, cfg->second);
@@ -1613,11 +1850,13 @@ private:
                 st.ack_seq > pl->predicted_switch_seq() + predicted_switch_confirm_ticks)
                 pl->setup_pistol_on_release(cfg->second.pistol, gs.cur_game_mode.magazines_count);
 
-            if (is_local)
-                reconcile(gs, *pl, to_physic_state(sp), st.ack_seq, sp.hits, sp.teleports,
-                          st.own_weapon && cfg->second.pistol == pl->pistol_section()
-                              ? std::optional{to_weapon_state(*st.own_weapon)}
+            if (is_local) {
+                auto own_weapon = st.own_weapon_of(local->slot);
+                reconcile(gs, *local, *pl, to_physic_state(sp), st.ack_seq, sp.hits, sp.teleports,
+                          own_weapon && cfg->second.pistol == pl->pistol_section()
+                              ? std::optional{to_weapon_state(*own_weapon)}
                               : std::nullopt);
+            }
             else
                 _remote[name].push(st.server_time_s(),
                                    remote_player_snapshot{to_physic_state(sp),
@@ -1641,6 +1880,8 @@ private:
 
         if (!newest)
             return;
+
+        players_gone(gs, st);
 
         /*
          * Drop local bullets the server no longer lists as alive: they hit
@@ -1689,8 +1930,8 @@ private:
 
             /* The authoritative counterpart of the local player's predicted throw */
             auto owner = _configs.find(gi.owner);
-            if (!local && _joined && gi.owner != 0 && owner != _configs.end() && owner->second.name == _name)
-                local = confirm_predicted_gun(gs, gi.id);
+            if (!local && gi.owner != 0 && owner != _configs.end() && local_of(owner->second.name))
+                local = confirm_predicted_gun(gs, gi.id, owner->second.name);
 
             if (!local) {
                 local = gs.dropped_guns.spawn_net(gi.id, gi.section, {gi.pos_x, gi.pos_y},
@@ -1721,11 +1962,47 @@ private:
         }
     }
 
-    /* The server's gun of the local player's throw arrived: the oldest unconfirmed prediction takes its id */
-    dropped_gun* confirm_predicted_gun(game_state& gs, u32 id) {
+    /*
+     * The newest state no longer lists these players: they left the server
+     * (a client left, a local player was removed). The removed local players
+     * of this client are told to the server until it does
+     */
+    void players_gone(game_state& gs, const state& st) {
+        std::set<u16>           listed;
+        std::set<player_name_t> listed_names;
+        for (auto& sp : st.players) {
+            listed.insert(sp.id);
+            if (auto cfg = _configs.find(sp.id); cfg != _configs.end())
+                listed_names.insert(cfg->second.name);
+        }
+
+        auto now = clock::now();
+        std::erase_if(_leaving, [&](const leaving_t& l) {
+            return now - l.since >= leave_timeout || (now - l.since >= leave_min_resend && !listed_names.contains(l.name));
+        });
+
+        for (auto it = _configs.begin(); it != _configs.end();) {
+            if (listed.contains(it->first)) {
+                ++it;
+                continue;
+            }
+            auto name = it->second.name;
+            it        = _configs.erase(it);
+            /* The name may be another player's now; the own local players stay (the server is told otherwise) */
+            if (listed_names.contains(name) || local_of(name))
+                continue;
+            gs.lobby.ready.erase(name);
+            if (gs.player_remove(name))
+                glog().info("net client: player {} left the game", name);
+            forget_remote(name);
+        }
+    }
+
+    /* The server's gun of a local player's throw arrived: its oldest unconfirmed prediction takes its id */
+    dropped_gun* confirm_predicted_gun(game_state& gs, u32 id, const player_name_t& owner) {
         dropped_gun* oldest = nullptr;
         for (auto& g : gs.dropped_guns.guns())
-            if (g->predicted() && !g->confirmed() && (!oldest || g->age() > oldest->age()))
+            if (g->predicted() && !g->confirmed() && g->owner() == owner && (!oldest || g->age() > oldest->age()))
                 oldest = g.get();
 
         if (oldest) {
@@ -1809,14 +2086,15 @@ private:
     udp_channel     _sock;
     sf::IpAddress   _server_ip;
     u16             _server_port  = 0;
-    player_name_t   _name;
-    bool            _joined       = false;
+    bool            _joined       = false; // the main local player joined (the connection)
     bool            leave_sent    = false;
+    std::map<u8, local_t>  _locals;        // the local players by slot (0: the main one)
+    std::vector<leaving_t> _leaving;       // removed local players the server may still have
+    u8                     _next_slot = 1; // the next added local player's slot (0: no more)
 
     game_state*       _gs = nullptr;
     clock::time_point _start_time = clock::now();
-    input_source_t    _input_source;
-    std::deque<u8>    _sent_inputs;       // the last input::max_window input ticks
+    std::deque<std::map<u8, u8>> _sent_inputs; // the last input::max_window input ticks (slot -> bits)
     std::deque<std::optional<double>> _sent_views; // their views: the server time shown at the tick (input::view_base)
     u32               _input_seq     = 0; // seq of the newest input tick
     double            _input_tick_s  = 0.0; // its scheduled (real) time, time_s()
@@ -1826,8 +2104,7 @@ private:
     float             _rtt_min_s     = 0.f;
     std::deque<std::pair<double, float>> _rtt_samples;
 
-    history_t    _history;
-    u32          _last_ack        = 0;
+    u32          _last_ack        = 0; // the newest acknowledged input tick
     std::map<u16, player_config> _configs; // the players' configs by id
     u32          _last_state_tick = 0;
     u64          _corrections     = 0;
@@ -1841,7 +2118,6 @@ private:
     std::map<player_name_t, knockback_t>                             _knockbacks;
     std::map<player_name_t, std::optional<u16>>                      _remote_teleports;
     std::map<player_name_t, std::optional<player::physic_state>>     _remote_applied; // the last state shown
-    std::optional<u16>                                               _local_teleports;
     double                                                           _last_remote_apply_s = 0.0;
     std::deque<predicted_bullet_t>                                   _predicted;
     float                                                            _max_bullet_correction = 0.f;
@@ -1850,7 +2126,6 @@ private:
     std::optional<double>                                            _tick_time_offset; // server time of input tick 0, s
     u32                                                              _tick_time_ack = 0;
     std::optional<double>                                            _shown_time; // server time the remote players are shown at, s
-    std::optional<std::pair<u32, player::physic_state>>              _ack_state;  // the server state at the newest ack
 
     /* Tick alignment (see input_margin) */
     static constexpr double              max_frame_s = 0.05;
@@ -1863,20 +2138,11 @@ private:
     double                               _frame_s    = 1.0 / 60.0;
     std::optional<double>                _last_update_s;
 
-    /* Lag-compensated hits predicted on the local player, by bullet id, until the server registers them */
-    struct rewound_hit_t {
-        u32 seq;         /* the tick the hit is applied in */
-        u32 confirm_seq; /* the first acknowledged tick whose state has it */
-    };
-    std::map<u32, rewound_hit_t> _rewound_hits;
-
     std::vector<shot_key_t> _own_hit_keys; // own bullets predicted to hit remote players, not confirmed yet
     std::vector<u32>        _own_hit_ids;  // ... and confirmed
     std::set<u32>           _own_bullet_ids; // confirmed own bullets
 
     u32                              _lobby_session = std::random_device{}();
-    net::lobby_request               _lobby_req; // seq 0: nothing to request
-    std::optional<clock::time_point> _lobby_req_sent;
 };
 
 } // namespace dfdh::net

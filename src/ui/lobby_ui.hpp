@@ -6,6 +6,8 @@
 #include <SFML/Graphics/RenderTexture.hpp>
 #include <SFML/Graphics/Sprite.hpp>
 
+#include <array>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <memory>
@@ -18,7 +20,9 @@ namespace dfdh {
 /**
  * Multiplayer lobby window: every player in a row (name, sprite, group,
  * ready), the level and game mode choice, the start button. The server owner
- * edits everything, a client its own player's group and ready flag only.
+ * edits everything, a client its own players' groups and ready flags only.
+ * Local players can be added ("add player", another controller on this PC):
+ * the added ones are renamed and removed in their columns, the main one stays.
  * The UI does not know about the network: the actions are callbacks
  */
 class lobby_ui {
@@ -29,8 +33,8 @@ public:
         std::function<void(const std::string&)>          set_level;
         std::function<void(const std::string&)>          set_mode;
         std::function<void(const player_name_t&, int)>   set_group;
-        std::function<void(bool)>                        set_ready;  /* client: the own player */
-        std::function<bool()>                            own_ready;  /* client: the own player's requested flag */
+        std::function<void(const player_name_t&, bool)>  set_ready;  /* client: a local player */
+        std::function<bool(const player_name_t&)>        own_ready;  /* client: a local player's requested flag */
         std::function<void(const player_name_t&)>        customize;  /* opens the player configurator */
         std::function<void()>                            start;          /* owner */
         std::function<void()>                            cancel_lobby;   /* owner: close the lobby without starting */
@@ -39,6 +43,11 @@ public:
         std::function<std::vector<u32>()>                controllers;   /* the configured controller ids */
         std::function<std::optional<u32>(const player_name_t&)> controller_of; /* a local player's controller */
         std::function<void(const player_name_t&, u32)>  set_controller;
+        std::function<bool()>                            can_add_local;  /* another local player may be added */
+        std::function<void()>                            add_local;      /* a new local player */
+        std::function<bool(const player_name_t&)>        removable;      /* an added local player (not the main one) */
+        std::function<void(const player_name_t&)>        remove_local;
+        std::function<bool(const player_name_t&, const player_name_t&)> rename_local; /* false: the name is not free */
     };
 
     lobby_ui(role_t role, actions_t actions): _role(role), _act(std::move(actions)) {
@@ -147,14 +156,16 @@ private:
         auto sprite_h = icon_height();
         auto cols = int(std::max<size_t>(columns.size(), 1));
 
-        ui.layout_row_dynamic(sprite_h + 6.f * row_height + 44.f, 1);
+        ui.layout_row_dynamic(sprite_h + 7.f * row_height + 48.f, 1);
         if (!ui.group_begin("lobby_players", NK_WINDOW_BORDER))
             return;
 
-        /* Names (the local ones are marked, they are the only ones with controls) */
+        /* Names (the local ones are marked, they are the only ones with controls; the added ones are edited) */
         ui.layout_row_static(row_height, int(col_w), cols);
         for (auto& [pl, _] : columns) {
-            if (is_local(pl->name()))
+            if (removable(pl->name()))
+                name_edit_draw(ui, pl->name());
+            else if (is_local(pl->name()))
                 ui.label_colored((std::string(pl->name()) + "  (you)").data(), NK_TEXT_CENTERED, sf::Color(255, 220, 120));
             else
                 ui.label(std::string(pl->name()).data(), NK_TEXT_CENTERED);
@@ -184,9 +195,9 @@ private:
         ui.layout_row_static(row_height, int(col_w), cols);
         for (auto& [pl, _] : columns) {
             if (!owner() && is_local(pl->name())) {
-                nk_bool ready = _act.own_ready && _act.own_ready() ? nk_true : nk_false;
+                nk_bool ready = _act.own_ready && _act.own_ready(pl->name()) ? nk_true : nk_false;
                 if (ui.checkbox_label("ready", &ready) && _act.set_ready)
-                    _act.set_ready(ready == nk_true);
+                    _act.set_ready(pl->name(), ready == nk_true);
             }
             else if (owner() && !pl->net_controlled())
                 ui.label_colored("host", NK_TEXT_CENTERED, sf::Color(200, 200, 200));
@@ -221,7 +232,49 @@ private:
             }
         }
 
+        /* Remove: the added local players */
+        ui.layout_row_static(row_height, int(col_w), cols);
+        for (auto& [pl, _] : columns) {
+            if (!removable(pl->name()))
+                ui.spacing(1);
+            else if (ui.button_label("remove") && _act.remove_local)
+                _act.remove_local(pl->name());
+        }
+
         ui.group_end();
+
+        /* Forget the edited names of the players that are gone */
+        std::erase_if(_name_bufs, [&](auto& buf) { return !gs.players.contains(buf.first); });
+    }
+
+    [[nodiscard]]
+    bool removable(const player_name_t& name) const {
+        return _act.removable && _act.removable(name);
+    }
+
+    using name_buf_t = std::array<char, 23>; /* the nickname: 22 chars (as in the player configurator) */
+
+    static void set_name_buf(name_buf_t& buf, const player_name_t& name) {
+        std::string str = name;
+        std::strncpy(buf.data(), str.data(), buf.size() - 1);
+        buf.back() = '\0';
+    }
+
+    /* An added local player's name: renamed on Enter or when the focus is lost (not per typed char) */
+    void name_edit_draw(ui_ctx& ui, const player_name_t& name) {
+        auto [it, inserted] = _name_bufs.try_emplace(name);
+        auto& buf           = it->second;
+        if (inserted)
+            set_name_buf(buf, name);
+        auto res = ui.edit_string_zero_terminated(nk_flags(NK_EDIT_FIELD) | nk_flags(NK_EDIT_SIG_ENTER), buf.data(),
+                                                  int(buf.size()), nk_filter_ascii);
+        if (!(res & (NK_EDIT_COMMITED | NK_EDIT_DEACTIVATED)))
+            return;
+        auto new_name = player_name_t(std::string(buf.data()));
+        if (new_name == name)
+            return;
+        if (std::string_view(new_name).empty() || !_act.rename_local || !_act.rename_local(name, new_name))
+            set_name_buf(buf, name);
     }
 
     static void ready_label_draw(ui_ctx& ui, bool ready) {
@@ -232,7 +285,7 @@ private:
     }
 
     void bottom_draw(ui_ctx& ui, game_state& gs) {
-        ui_layout_row(ui, 30.f, {ui_row::dynamic, 200.f, 150.f});
+        ui_layout_row(ui, 30.f, {ui_row::dynamic, 150.f, 200.f, 150.f});
         if (owner()) {
             size_t ready = 0, clients = 0;
             for (auto& [name, pl] : gs.players)
@@ -243,6 +296,7 @@ private:
                 }
             auto text = "ready: " + std::to_string(ready) + "/" + std::to_string(clients);
             ui.label(text.data(), NK_TEXT_LEFT);
+            add_local_draw(ui);
 
             if (gs.lobby.level.empty())
                 ui.label("choose a map", NK_TEXT_CENTERED);
@@ -254,11 +308,19 @@ private:
         }
         else {
             ui.label("waiting for the host to start the game", NK_TEXT_LEFT);
+            add_local_draw(ui);
             ui.spacing(1);
 
             if (ui.button_label("leave") && _act.leave)
                 _act.leave();
         }
+    }
+
+    void add_local_draw(ui_ctx& ui) {
+        if (!_act.add_local || (_act.can_add_local && !_act.can_add_local()))
+            ui.spacing(1);
+        else if (ui.button_label("add player"))
+            _act.add_local();
     }
 
     /* Player sprite (the player configurator's look) centered in a column wide icon, redrawn when the appearance changes */
@@ -319,6 +381,7 @@ private:
     std::vector<std::string>         _levels;
     std::vector<std::string>         _modes;
     std::map<player_name_t, icon_t>  _icons;
+    std::map<player_name_t, name_buf_t> _name_bufs;
     bool                             _reopen = false;
 };
 

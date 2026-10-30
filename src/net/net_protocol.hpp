@@ -27,7 +27,7 @@ namespace dfdh::net {
 inline constexpr size_t net_header_size = 2 * sizeof(u16);
 
 /* Bumped on every incompatible protocol change; HELLO with another version is rejected */
-inline constexpr u16 protocol_version = 26;
+inline constexpr u16 protocol_version = 27;
 inline constexpr size_t net_max_msg_size = 1024;
 
 enum class msg_type : u16 {
@@ -38,7 +38,15 @@ enum class msg_type : u16 {
     leave   = 5,
     error   = 6,
     lobby   = 7,
+    player_leave = 8,
 };
+
+/*
+ * Local players of a client connection, by slot: 0 is the main one (it
+ * joins the connection), the others are added to it (a removed slot is not
+ * reused by the connection: a late datagram of it can't hit a new player)
+ */
+inline constexpr size_t max_local_players = 8;
 
 /* Input bits */
 inline constexpr u8  in_bit_left         = 1 << 0;
@@ -98,6 +106,7 @@ struct player_input_state {
 
 struct hello {
     u16           version = protocol_version;
+    u8            slot    = 0; // the client's local player (0: the main one, joins the connection)
     player_name_t name;
     std::string   pistol;
     u32           face_id      = 0;
@@ -108,7 +117,7 @@ struct hello {
     u32           tracer_color = 0; // packed 0xRRGGBBAA
 
     void serialize(auto& s) const {
-        s.write(version, std::string(name), pistol, face_id, body_id, head_id, hat_id, body_color, tracer_color);
+        s.write(version, slot, std::string(name), pistol, face_id, body_id, head_id, hat_id, body_color, tracer_color);
     }
 
     void deserialize(auto& d) {
@@ -116,22 +125,36 @@ struct hello {
         d.read(version);
         if (version != protocol_version)
             return; /* the rest of the layout is unknown */
-        d.read(n, pistol, face_id, body_id, head_id, hat_id, body_color, tracer_color);
+        d.read(slot, n, pistol, face_id, body_id, head_id, hat_id, body_color, tracer_color);
         name = n;
     }
 };
 
 struct welcome {
     player_name_t name;
+    u8            slot = 0;
 
     void serialize(auto& s) const {
-        s.write(std::string(name));
+        s.write(slot, std::string(name));
     }
 
     void deserialize(auto& d) {
         std::string n;
-        d.read(n);
+        d.read(slot, n);
         name = n;
+    }
+};
+
+/* A client removes one of its added local players (slot > 0; the main one leaves with the connection: leave) */
+struct player_leave {
+    u8 slot = 0;
+
+    void serialize(auto& s) const {
+        s.write(slot);
+    }
+
+    void deserialize(auto& d) {
+        d.read(slot);
     }
 };
 
@@ -139,7 +162,9 @@ struct welcome {
  * Client input: a window of the per-tick input states the server did not
  * acknowledge yet, up to the last 64 (~0.53 s of 120 Hz ticks; redundant, so a lost or reordered
  * datagram costs nothing: every datagram repeats them until they are
- * acknowledged). bits[i] is the input of tick seq first_seq() + i
+ * acknowledged). One tick samples every local player of the client (the
+ * seqs are per client): bits[t * slots.size() + k] is the input of the
+ * local player slots[k] at the tick seq first_seq() + t
  */
 struct input {
     static constexpr size_t max_window = 64;
@@ -151,24 +176,36 @@ struct input {
     u32              client_time_ms = 0; // echoed back in the state for RTT measurement
     u16              rtt_ms         = 0; // client-measured round-trip time
     std::vector<u8>  bits;
+    std::vector<u8>  slots = {0}; // the local players in bits, in order
     /*
      * The server time the client was showing (its render time) at each tick
      * of bits: the newest one (view_base, 0: unknown, nothing shown yet),
      * and view_steps[i] from tick i to i + 1 (a tick ~8.3 ms, the ticks of
-     * one frame 0; sent without a length: bits.size() - 1 of them). The
+     * one frame 0; sent without a length: ticks() - 1 of them). The
      * server tests the client's shots against the players at that time
      */
     u32             view_base  = 0;
     std::vector<u8> view_steps = {};
 
     [[nodiscard]]
+    size_t ticks() const {
+        return slots.empty() ? 0 : bits.size() / slots.size();
+    }
+
+    [[nodiscard]]
     u32 first_seq() const {
-        return last_seq + 1 - u32(bits.size());
+        return last_seq + 1 - u32(ticks());
+    }
+
+    /* The input of the local player slots[k] at the tick t */
+    [[nodiscard]]
+    u8 bits_of(size_t t, size_t k) const {
+        return bits[t * slots.size() + k];
     }
 
     [[nodiscard]]
     std::optional<double> view_s(size_t i) const {
-        if (view_base == 0 || i >= bits.size() || view_steps.size() + 1 != bits.size())
+        if (view_base == 0 || i >= ticks() || view_steps.size() + 1 != ticks())
             return {};
         auto q = i64(view_base);
         for (size_t j = i; j < view_steps.size(); ++j)
@@ -176,11 +213,11 @@ struct input {
         return double(q) / view_scale;
     }
 
-    /* Set the views of bits (the same count), server times in s; a step over 64 ms (a frame hitch) is cut */
+    /* Set the views of the ticks (the same count), server times in s; a step over 64 ms (a frame hitch) is cut */
     void set_views(const std::vector<double>& views_s) {
         view_steps.clear();
         view_base = 0;
-        if (views_s.size() != bits.size() || views_s.empty())
+        if (views_s.size() != ticks() || views_s.empty())
             return;
         std::vector<i64> q;
         for (auto v : views_s)
@@ -191,21 +228,29 @@ struct input {
     }
 
     void serialize(auto& s) const {
-        s.write(last_seq, client_time_ms, rtt_ms, bits, view_base);
+        s.write(last_seq, client_time_ms, rtt_ms, slots, bits, view_base);
         if (view_base != 0)
-            for (size_t i = 0; i + 1 < bits.size(); ++i)
+            for (size_t i = 0; i + 1 < ticks(); ++i)
                 s.write(i < view_steps.size() ? view_steps[i] : u8(0));
     }
 
     void deserialize(auto& d) {
-        d.read(last_seq, client_time_ms, rtt_ms, bits, view_base);
-        if (bits.size() > max_window || bits.size() > size_t(last_seq))
+        /* A vector is read appended (slots has a default) */
+        slots.clear();
+        bits.clear();
+        d.read(last_seq, client_time_ms, rtt_ms, slots, bits, view_base);
+        if (slots.empty() || slots.size() > max_local_players || bits.size() % slots.size() != 0)
+            throw std::out_of_range("net: bad input slots");
+        for (auto it = slots.begin(); it != slots.end(); ++it)
+            if (std::find(slots.begin(), it, *it) != it)
+                throw std::out_of_range("net: bad input slots");
+        if (ticks() > max_window || ticks() > size_t(last_seq))
             throw std::out_of_range("net: bad input window");
         view_steps.clear();
         if (view_base != 0) {
-            if (bits.empty())
+            if (ticks() == 0)
                 throw std::out_of_range("net: bad input views");
-            view_steps.resize(bits.size() - 1);
+            view_steps.resize(ticks() - 1);
             for (auto& step : view_steps)
                 d.read(step);
         }
@@ -507,16 +552,31 @@ struct lobby_info {
  */
 struct lobby_request {
     u32 session = 0; // random per client
-    u32 seq     = 0;
+    u32 seq     = 0; // per local player
     i16 group   = -1;
     u8  ready   = 0;
+    u8  slot    = 0; // the client's local player
 
     void serialize(auto& s) const {
-        s.write(session, seq, group, ready);
+        s.write(session, seq, group, ready, slot);
     }
 
     void deserialize(auto& d) {
-        d.read(session, seq, group, ready);
+        d.read(session, seq, group, ready, slot);
+    }
+};
+
+/* The weapon state of one of the receiving client's local players */
+struct own_weapon {
+    u8          slot = 0;
+    weapon_sync ws;
+
+    void serialize(auto& s) const {
+        s.write(slot, ws);
+    }
+
+    void deserialize(auto& d) {
+        d.read(slot, ws);
     }
 };
 
@@ -557,7 +617,16 @@ struct state {
             return {};
         return double(input_margin) / input_margin_scale;
     }
-    std::optional<weapon_sync> own_weapon; // the client's player's weapon (if it has a gun)
+    std::vector<own_weapon>       own_weapons; // the client's local players' weapons (those with a gun)
+
+    [[nodiscard]]
+    std::optional<weapon_sync> own_weapon_of(u8 slot) const {
+        for (auto& w : own_weapons)
+            if (w.slot == slot)
+                return w.ws;
+        return {};
+    }
+
     std::optional<game_mode_info> mode;    // only when the client may not know it (see net_server)
     std::optional<lobby_info>     lobby;   // same policy as mode
 
@@ -574,12 +643,12 @@ struct state {
     alive_set alive_bullets;
 
     void serialize(auto& s) const {
-        s.write(tick, server_time, ack_seq, echo_client_time_ms, echo_hold_ms, input_margin, own_weapon, mode, lobby,
+        s.write(tick, server_time, ack_seq, echo_client_time_ms, echo_hold_ms, input_margin, own_weapons, mode, lobby,
                 configs, players, shots, crates, guns, alive_bullets);
     }
 
     void deserialize(auto& d) {
-        d.read(tick, server_time, ack_seq, echo_client_time_ms, echo_hold_ms, input_margin, own_weapon, mode, lobby,
+        d.read(tick, server_time, ack_seq, echo_client_time_ms, echo_hold_ms, input_margin, own_weapons, mode, lobby,
                configs, players, shots, crates, guns, alive_bullets);
     }
 };

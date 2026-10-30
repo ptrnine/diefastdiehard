@@ -37,6 +37,15 @@ while `lobby_state::active`.
   and ready flag (LOBBY request), and "customize" opens the player
   configurator. Closing the configurator resends HELLO, which reconfigures
   the joined player.
+- **Local players:** "add player" adds another player on this PC, driven by
+  its own controller (the first configured one no other local player uses;
+  else none until one is picked). Its look and gun come from its name's
+  config (`player_configurator`), and "customize" edits that config. An added
+  player can be renamed (its name field: Enter or focus lost; the new name's
+  config applies) and removed. The main local player can do neither. On the
+  server, an added player is an ordinary local player (`game_state::player_create`
+  + `player_controller_set`). On a client it is a slot of the connection
+  (see Local players of a client).
 - **Requests:** the client resends its latest LOBBY request every 100 ms
   while the lobby is active. The server applies each `seq` once, so a resend
   never overrides a group the owner changed in between. It ignores requests
@@ -80,21 +89,22 @@ Every datagram has a header `u16 type, u16 payload_size`, then an
 `ss::serializer` payload: little endian, with **u16** string and vector
 length prefixes (`net::wire_size_type`; the serializer default is u64).
 **Bump `net::protocol_version`** on any wire change: a HELLO with another
-version is answered with ERROR. The current version is 20.
+version is answered with ERROR. The current version is 27.
 
 | id | dir | payload |
 |----|-----|---------|
-| 1 HELLO | C → S | `u16 version`, name, pistol section, face_id, body_id, body color, tracer color |
-| 2 WELCOME | S → C | player name |
-| 3 INPUT | C → S | `u32 last_seq`, `u32 client_time_ms`, `u16 rtt_ms`, `vector<u8> bits`: the input ticks not acknowledged yet (up to 64), where `bits[i]` belongs to tick `last_seq - size + 1 + i`; `u32 view_base`, then (if not 0) `size − 1` raw `u8` view steps: the views (see Lag) |
+| 1 HELLO | C → S | `u16 version`, `u8 slot` (the local player, 0: the main one), name, pistol section, face_id, body_id, body color, tracer color |
+| 2 WELCOME | S → C | `u8 slot`, player name |
+| 3 INPUT | C → S | `u32 last_seq`, `u32 client_time_ms`, `u16 rtt_ms`, `vector<u8> slots` (the local players in the window), `vector<u8> bits`: the input ticks not acknowledged yet (up to 64), tick-major: `bits[t * slots.size() + k]` belongs to the local player `slots[k]` at the tick `last_seq - ticks + 1 + t`; `u32 view_base`, then (if not 0) `ticks − 1` raw `u8` view steps: the views (see Lag) |
 | 4 STATE | S → C | see below; encoded per client, sent once per server tick (every 100 ms while paused) |
 | 5 LEAVE | C → S | player name |
 | 6 ERROR | S → C | message (version mismatch, empty name, ...) |
-| 7 LOBBY | C → S | `u32 session`, `u32 seq`, `i16 group`, `u8 ready`: the client's lobby choice (see Lobby; seqs restart with a new random session) |
+| 7 LOBBY | C → S | `u32 session`, `u32 seq`, `i16 group`, `u8 ready`, `u8 slot`: a local player's lobby choice (see Lobby; seqs are per slot and restart with a new random session) |
+| 8 PLAYER_LEAVE | C → S | `u8 slot`: an added local player is removed (slot 0 is ignored: the main one leaves with LEAVE) |
 
 STATE contains:
 - **Header:** `tick` (broadcast sequence number), `server_time` (time of the simulated tick, 1/10000 s: ticks are 1/120 s apart; at 60 Hz whole ms were up to 0.67 ms early), `ack_seq` (the last input tick applied to this client's player), `echo_client_time_ms` + `echo_hold_ms` (RTT echo of the newest input), and `input_margin` (`i16`, 1/10 ms: how long before the server needed it the tick `ack_seq` arrived, negative if the queue ran dry waiting for it; see Tick alignment).
-- **`own_weapon`:** the client's own player's weapon logic state (`weapon_sync`: ammo, logic animation id and time, time since the last shot, reloading/trigger flags, shot index and seed), if it holds a gun. Only the recipient's player is reconciled, so other players' weapons are not sent.
+- **`own_weapons`:** per local player of the client (`u8 slot`), its weapon logic state (`weapon_sync`: ammo, logic animation id and time, time since the last shot, reloading/trigger flags, shot index and seed), if it holds a gun. Only the recipient's players are reconciled, so other players' weapons are not sent.
 - **`mode`, the game mode, only when the client may not know it:** section name, bullet gravity, crate drop period (see `src/game_mode.hpp`). It is sent with the same policy as the player configs (1 s after the join or a change, every 30th broadcast); the client applies the newest one with `game_state::game_mode_set` and sets `game_mode_networked`, so its console cannot change the game mode.
 - **`lobby`, only when the client may not know it (the same policy as `mode`):** `u8 active`, level and game mode sections. While active, these are the owner's choices; in game, what is played.
 - **`player_config`, only the ones the client may not know:**
@@ -132,6 +142,34 @@ player (the host's, another client's) gets the first free number (`name2`,
 the client plays as, the client adopts it (its config stays the requested
 name's). A HELLO with a new name from the same address renames the client:
 the old player is deleted.
+
+### Local players of a client
+
+A client connection can carry more local players: slot 0 is the main one
+(its HELLO joins the connection), and `net_client::add_local_player` adds
+others. The server keeps `client_t::players` (slot → name).
+- **Joining:** the HELLO of a new slot (only from a joined client, at most
+  `max_local_players`) is resent every 200 ms until its WELCOME
+  (`sig_local_joined`). The server numbers a taken name the same way as for
+  the main player.
+- **Inputs:** one input tick samples every joined local player. The seqs,
+  the jitter buffer, merging, ack_seq, tick alignment, RTT and lag
+  compensation all stay per connection. A tick from before a slot joined is
+  0, and the server ignores slots it does not have.
+- **Prediction:** each slot keeps its own `local_t` on the client (history,
+  ack, teleports, rewound hits, lobby request) and is reconciled with its
+  `own_weapons` entry. A server bullet is hit-tested against every local
+  player (the first hit wins), and the shown hit-scans skip all of them.
+  Predicted own bullets are matched by shot key **and** owner, since two
+  local players fire with the same keys.
+- **Removing:** `remove_local_player` deletes the player locally at once.
+  PLAYER_LEAVE is resent for at least 1 s and until the newest STATE no
+  longer lists it (5 s at most); meanwhile the STATE does not bring it back.
+  Slots are never reused within a connection, so a late datagram can't hit a
+  new player.
+- **Players gone:** a client deletes the players (other than its own local
+  ones) that the newest STATE no longer lists: clients that left, removed
+  local players, a renamed player's old name.
 
 ## Time and ticks
 
