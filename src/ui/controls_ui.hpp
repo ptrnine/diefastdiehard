@@ -33,20 +33,34 @@ public:
         }
 
         auto cols  = float(_ctrls.size());
-        auto wnd_w = std::min(window_size.x - 40.f, std::max(400.f, cols * column_w + 40.f));
-        /* The bindings, the header and the bottom rows (with the row spacing), the title and the padding */
-        auto wnd_h = std::min(window_size.y - 40.f, (row_height + 4.f) * float(std::size(player_controller::bindings) + 2) + 60.f);
+        auto content_w = std::max(400.f, cols * column_w + 40.f);
+        auto wnd_w     = std::min(window_size.x - 40.f, content_w);
+        /* The bindings, the header and the bottom rows (with the row spacing), the two section gaps, the title and the padding */
+        auto wnd_h = std::min(window_size.y - 40.f,
+                              (row_height + row_spacing) * float(std::size(player_controller::bindings) + 2) +
+                                  2.f * (section_gap + row_spacing) + 64.f);
         auto rect  = nk_rect((window_size.x - wnd_w) * 0.5f, (window_size.y - wnd_h) * 0.5f, wnd_w, wnd_h);
         ui.window_set_bounds(wnd_name, rect);
-        if (ui.begin_titled(wnd_name, "Controls", rect, NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_CLOSABLE)) {
+        auto style = &ui.nk_ctx()->style;
+        ui.style_push_vec2(&style->window.spacing, {style->window.spacing.x, row_spacing});
+        /* A scrollbar only when the columns don't fit across (nuklear draws a vertical one anyway) */
+        nk_flags flags = NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_CLOSABLE | (content_w > wnd_w ? 0 : NK_WINDOW_NO_SCROLLBAR);
+        if (ui.begin_titled(wnd_name, "Controls", rect, flags)) {
             header_draw(ui);
+            /* The delete buttons apart from the bindings */
+            ui.layout_row_dynamic(section_gap, 1);
+            ui.label("", NK_TEXT_LEFT);
             bindings_draw(ui);
+            /* add controller apart from the bindings */
+            ui.layout_row_dynamic(section_gap, 1);
+            ui.label("", NK_TEXT_LEFT);
             bottom_draw(ui);
         }
         else {
             close();
         }
         ui.end();
+        ui.style_pop_vec2();
     }
 
     /**
@@ -91,7 +105,9 @@ public:
 
 private:
     static constexpr const char* wnd_name   = "controls";
-    static constexpr float       row_height = 25.f;
+    static constexpr float       row_height  = 25.f;
+    static constexpr float       row_spacing = 8.f;  /* between the button rows */
+    static constexpr float       section_gap = 10.f; /* header / bindings / bottom */
     static constexpr float       label_w    = 90.f;
     static constexpr float       key_w      = 130.f;
     static constexpr float       gap_w      = 24.f;
