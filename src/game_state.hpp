@@ -1547,7 +1547,7 @@ public:
             }
 
             try {
-                auto effect = efx_editor::efx_builder{texture_mgr(), entry.path()}.build();
+                auto effect = efx_editor::efx_builder{texture_mgr(), entry.path().string()}.build();
                 efxmgr().add_effect(effect.name, std::move(effect.effect));
             } catch (const std::exception& e) {
                 glog().error("Cannot load effect '{}': {}", entry.path(), e.what());
