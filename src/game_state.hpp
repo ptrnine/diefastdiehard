@@ -220,6 +220,30 @@ public:
         return true;
     }
 
+    /* The controller driving the player */
+    [[nodiscard]]
+    std::optional<u32> player_controller_of(const player_name_t& player_name) const {
+        for (auto& [id, controller] : controllers)
+            if (controller->player_name == player_name)
+                return id;
+        return {};
+    }
+
+    /* Drive the player with the controller id instead of its current one (a player on that id loses it) */
+    bool player_controller_set(const player_name_t& player_name, u32 controller_id) {
+        std::erase_if(controllers, [&](const auto& entry) { return entry.second->player_name == player_name; });
+        controllers.erase(controller_id);
+        bool ok = controller_bind(controller_id, player_name);
+        rebuild_controlled_players();
+        return ok;
+    }
+
+    /* Re-read the bindings of the controller id (changed in the settings) */
+    void controller_reload(u32 controller_id) {
+        if (auto found = controllers.find(controller_id); found != controllers.end())
+            found->second->load();
+    }
+
     void rebuild_controlled_players() {
         controlled_players.clear();
         std::vector<u32> to_delete;

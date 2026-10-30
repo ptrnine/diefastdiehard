@@ -153,6 +153,7 @@ public:
         std::function<void()> host;    /* start a server and open its lobby */
         std::function<void()> connect; /* open the connect window */
         std::function<void()> player;  /* settings: open the player configurator */
+        std::function<void()> controls; /* settings: open the key bindings */
         std::function<void()> network; /* settings: open the network settings */
         std::function<void()> exit;
     };
@@ -187,7 +188,8 @@ public:
         if (auto clicked = _settings.update(ui, sub_bounds, _show && settings ? 1.f : 0.f, dt)) {
             switch (*clicked) {
             case 0: call(_act.player); break;
-            case 1: call(_act.network); break;
+            case 1: call(_act.controls); break;
+            case 2: call(_act.network); break;
             default: _page = page_t::main; break;
             }
         }
@@ -225,7 +227,7 @@ private:
 
     actions_t   _act;
     menu_column _main{"main_menu", {"Host Lobby", "Connect Lobby", "Settings", "Exit"}};
-    menu_column _settings{"main_menu_settings", {"Player", "Network", "Back"}};
+    menu_column _settings{"main_menu_settings", {"Player", "Controls", "Network", "Back"}};
     timer       _frame_timer;
     page_t      _page = page_t::main;
     bool        _show = false;

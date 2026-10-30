@@ -176,6 +176,12 @@ public:
     bool update_input(const player_controller& ks, sf::Event evt) {
         bool update_was = false;
 
+        /* An unset binding is Unknown: it never matches */
+        if (auto key = evt.getIf<sf::Event::KeyPressed>(); key && int(key->code) == player_controller::unset)
+            return false;
+        if (auto key = evt.getIf<sf::Event::KeyReleased>(); key && int(key->code) == player_controller::unset)
+            return false;
+
         if (auto pressed = evt.getIf<sf::Event::KeyPressed>()) {
             auto c = int(pressed->code);
             if (c == ks.up && !_jump_pressed) {

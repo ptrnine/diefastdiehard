@@ -1441,9 +1441,10 @@ TEST_CASE("net_client: join and state application") {
         auto host = gs_srv.player_create("hostp");
         REQUIRE(host != nullptr);
         host->setup_gun("wpn_glk17");
-        auto ctrl = std::make_shared<player_controller>(5);
+        /* Controller 0: its section always exists, no test controller is left in the settings */
+        auto ctrl = std::make_shared<player_controller>(0);
         ctrl->player_name = "hostp";
-        REQUIRE(gs_srv.controller_attach(5, ctrl));
+        REQUIRE(gs_srv.controller_attach(0, ctrl));
         gs_srv.rebuild_controlled_players();
 
         REQUIRE(host->shot());
@@ -2268,9 +2269,9 @@ TEST_CASE("net: clients see server bullets in the local player's frame") {
     auto host = f.gs_srv.player_create("hostp");
     REQUIRE(host != nullptr);
     host->setup_gun("wpn_glk17");
-    auto ctrl = std::make_shared<player_controller>(5);
+    auto ctrl = std::make_shared<player_controller>(0);
     ctrl->player_name = "hostp";
-    REQUIRE(f.gs_srv.controller_attach(5, ctrl));
+    REQUIRE(f.gs_srv.controller_attach(0, ctrl));
     f.gs_srv.rebuild_controlled_players();
     f.run_for(500ms);
 
@@ -2355,9 +2356,9 @@ struct hit_fixture : net_game_fixture {
         REQUIRE(bot);
         bot->setup_gun("wpn_glk17");
         bot->group(1);
-        auto ctrl         = std::make_shared<player_controller>(5);
+        auto ctrl         = std::make_shared<player_controller>(0);
         ctrl->player_name = "bot";
-        REQUIRE(gs_srv.controller_attach(5, ctrl));
+        REQUIRE(gs_srv.controller_attach(0, ctrl));
         gs_srv.rebuild_controlled_players();
 
         server_side().position({700.f, 1040.f});
@@ -3262,16 +3263,16 @@ TEST_CASE("weapon: seeded shots are deterministic") {
         pl.last_input_seq(42);
         pl.lag_compensation({});
         REQUIRE(pl.shot());
-        auto ctrl = std::make_shared<player_controller>(7);
+        auto ctrl = std::make_shared<player_controller>(0);
         ctrl->player_name = pl.name();
-        gs.controller_attach(7, ctrl);
+        gs.controller_attach(0, ctrl);
         gs.rebuild_controlled_players();
         for (int i = 0; i < 200 && gs.cur_frame_bullets.empty(); ++i) {
             game_clock::advance(std::chrono::milliseconds(5));
             gs.game_update();
         }
         pl.relax();
-        gs.controller_delete(7);
+        gs.controller_delete(0);
         gs.rebuild_controlled_players();
         REQUIRE(!gs.cur_frame_bullets.empty());
         return gs.cur_frame_bullets;

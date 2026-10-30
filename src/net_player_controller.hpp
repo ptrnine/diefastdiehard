@@ -23,6 +23,12 @@ struct net_player_controller : public player_controller {
      * Feed SFML key events (mirrors player::update_input handling)
      */
     void track_event(const sf::Event& evt) {
+        /* An unset binding is Unknown: it never matches */
+        if (auto key = evt.getIf<sf::Event::KeyPressed>(); key && int(key->code) == unset)
+            return;
+        if (auto key = evt.getIf<sf::Event::KeyReleased>(); key && int(key->code) == unset)
+            return;
+
         if (auto pressed = evt.getIf<sf::Event::KeyPressed>()) {
             auto c = int(pressed->code);
             if (c == up) {

@@ -6,6 +6,7 @@
 #include "ui/connect_ui.hpp"
 #include "ui/main_menu.hpp"
 #include "ui/network_ui.hpp"
+#include "ui/controls_ui.hpp"
 
 #include "engine.hpp"
 #include "command_buffer.hpp"
@@ -249,6 +250,7 @@ public:
         init_connect_ui();
         init_main_menu();
         init_network_ui();
+        init_controls_ui();
 
         /* Taken before init_client: it reads the server address with args.next() */
         auto lua_fifo_path = args.by_key_opt<std::string>("--lua-exec-fifo");
@@ -328,8 +330,13 @@ public:
     }
 
     void handle_event(const sf::Event& evt) final {
-        if (auto key = evt.getIf<sf::Event::KeyPressed>(); key && key->code == sf::Keyboard::Key::Escape && close_top_window())
-            return;
+        if (auto key = evt.getIf<sf::Event::KeyPressed>()) {
+            /* A binding of the controls window waits for this key */
+            if (controls_wnd.handle_key(key->code))
+                return;
+            if (key->code == sf::Keyboard::Key::Escape && close_top_window())
+                return;
+        }
 
         if (net_ctrl)
             net_ctrl->track_event(evt);
@@ -352,11 +359,12 @@ public:
             pconf_bounds_persist(*gs.pconf_ui);
         gs.ui_update(ui, window_size_float());
         /* Shown out of a game with no window open; drawn first: the windows go over it while it fades */
-        main_menu_wnd->show(!net_srv && !net_cli && !gs.lobby.active && !connect_wnd->shown() && !network_wnd->shown() &&
+        main_menu_wnd->show(!net_srv && !net_cli && !gs.lobby.active && !connect_wnd->shown() && !network_wnd->shown() && !controls_wnd.shown() &&
                             !(gs.pconf_ui && gs.pconf_ui->shown()));
         main_menu_wnd->update(ui, window_size_float());
         connect_wnd->update(ui, window_size_float());
         network_wnd->update(ui, window_size_float());
+        controls_wnd.update(ui, window_size_float());
         if (lobby_shown())
             lobby_wnd->update(ui, gs, window_size_float());
     }
@@ -385,6 +393,8 @@ private:
             connect_wnd->close();
         else if (network_wnd->shown())
             network_wnd->close();
+        else if (controls_wnd.shown())
+            controls_wnd.close();
         else if (lobby_shown())
             lobby_wnd->close();
         else
@@ -536,6 +546,8 @@ private:
     std::optional<lobby_ui>                  lobby_wnd;
     std::optional<connect_ui>                connect_wnd;
     std::optional<network_ui>                network_wnd;
+    controls_ui                              controls_wnd;
+    u32                                      client_controller = 0; /* the controller of the client's player */
     std::optional<main_menu>                 main_menu_wnd;
     bool                                     server_from_ui = false; /* hosted from the main menu: cancel lobby stops it */
     bool                                     server_stop    = false; /* the menu's lobby was cancelled */
@@ -573,6 +585,9 @@ private:
                 res.push_back(name);
             return res;
         };
+        act.controllers    = [] { return player_controller::ids(); };
+        act.controller_of  = [this](const player_name_t& name) { return gs.player_controller_of(name); };
+        act.set_controller = [this](const player_name_t& name, u32 id) { gs.player_controller_set(name, id); };
         lobby_wnd.emplace(lobby_ui::role_t::owner, std::move(act));
         gs.lobby_open();
     }
@@ -603,7 +618,14 @@ private:
                 net_cli->resend_config(pc);
             });
         };
-        act.local_players = [this] { return std::vector<player_name_t>{my_player_name}; };
+        act.local_players  = [this] { return std::vector<player_name_t>{my_player_name}; };
+        act.controllers    = [] { return player_controller::ids(); };
+        act.controller_of  = [this](const player_name_t&) { return std::optional<u32>(client_controller); };
+        act.set_controller = [this](const player_name_t&, u32 id) {
+            client_controller = id;
+            if (net_ctrl)
+                net_ctrl->load(id);
+        };
         lobby_wnd.emplace(lobby_ui::role_t::client, std::move(act));
         gs.lobby_networked = true;
         gs.lobby_open();
@@ -666,7 +688,8 @@ private:
             gs.pconf_ui->on_name_change = [](const player_name_t& name) { player_configurator::current_player(name); };
             gs.pconf_ui->show(true);
         };
-        act.network = [this] { network_wnd->show(true); };
+        act.controls = [this] { controls_wnd.show(true); };
+        act.network  = [this] { network_wnd->show(true); };
         act.exit    = [this] { gs.sig_shutdown.emit_deferred(); };
         main_menu_wnd.emplace(std::move(act));
     }
@@ -679,6 +702,18 @@ private:
             game_settings_commit();
         };
         network_wnd.emplace(std::move(act));
+    }
+
+    void init_controls_ui() {
+        /* A running game (e.g. --server behind the menu) uses the new bindings; a deleted controller keeps the old ones */
+        controls_wnd.on_change = [this](u32 id) {
+            auto ids = player_controller::ids();
+            if (std::ranges::find(ids, id) == ids.end())
+                return;
+            gs.controller_reload(id);
+            if (net_ctrl && net_ctrl->id() == id)
+                net_ctrl->load();
+        };
     }
 
     void init_connect_ui() {
@@ -818,7 +853,7 @@ private:
              * sampling only (the same input stream the server applies), so the
              * controller is not attached as a regular event-driven controller
              */
-            net_ctrl = std::make_shared<net_player_controller>(1000);
+            net_ctrl = std::make_shared<net_player_controller>(client_controller);
             net_ctrl->player_name = pname;
             net_cli->input_source([ctrl = net_ctrl] { return ctrl->take_input_state(); });
             /* No local spawn: the server spawns the player, the first state places it. The server's lobby starts the game */

@@ -90,7 +90,7 @@ instead of sleeping. Use it for any new gameplay/network timer.
   (`game_state::game_mode_apply`). The server sends it to clients in STATE.
 - `src/ui/main_menu.hpp` — main menu ("Host Lobby", "Connect Lobby",
   "Settings", "Exit"; columns are `menu_column`s; Settings opens a "Player",
-  "Network", "Back" submenu right of the dimmed main column):
+  "Controls", "Network", "Back" submenu right of the dimmed main column):
   shown out of a game with no window open (no server/client, no lobby,
   connect window or player configurator), fades in/out; hovered options grow
   via a scaled copy of `ui_ctx::menu_font()` (nuklear scales baked fonts by
@@ -109,8 +109,18 @@ instead of sleeping. Use it for any new gameplay/network timer.
   lost) loads that player's settings and becomes the current player. Any
   configurator opens with the bounds the last one was closed with
   (`pconf_window_pos`/`pconf_window_size` in `[game_settings]`).
+- Controllers: `[player_controller_<id>]` in `players_settings.cfg`
+  (`player_controller::bindings` table; `ids`/`create`/`remove`/`set_key`).
+  Only controller 0 gets default keys, new ones start `none` (= -1 =
+  `sf::Keyboard::Key::Unknown`, which the input ignores). Settings -> Controls
+  (`src/ui/controls_ui.hpp`): a column per controller ("Controller <id+1>"),
+  click a key + press one (`controls_ui::handle_key`, first in
+  `diefastdiehard::handle_event`; Esc cancels), saved at once; keys bound
+  twice across controllers are red. The lobby picks each local player's
+  controller (`game_state::player_controller_set`; a client's `net_ctrl`).
+  Tests use controller 0 only: other ids would land in the user's settings.
 - Esc (`diefastdiehard::close_top_window`): closes the topmost window — player
-  configurator, connect window, network window, lobby (= its close button: cancel lobby /
+  configurator, connect window, network window, controls window, lobby (= its close button: cancel lobby /
   leave) — else the settings submenu; windows expose `close()` for it.
 - `src/lobby.hpp` + `src/ui/lobby_ui.hpp` — multiplayer lobby (opened on
   `--server`/`--client` launch, console `lobby [start]`): the owner picks the

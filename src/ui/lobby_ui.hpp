@@ -36,6 +36,9 @@ public:
         std::function<void()>                            cancel_lobby;   /* owner: close the lobby without starting */
         std::function<void()>                            leave;          /* client: leave the game */
         std::function<std::vector<player_name_t>()>      local_players; /* players with the customize button */
+        std::function<std::vector<u32>()>                controllers;   /* the configured controller ids */
+        std::function<std::optional<u32>(const player_name_t&)> controller_of; /* a local player's controller */
+        std::function<void(const player_name_t&, u32)>  set_controller;
     };
 
     lobby_ui(role_t role, actions_t actions): _role(role), _act(std::move(actions)) {
@@ -49,7 +52,7 @@ public:
         /* One column per player: as wide as the columns need (up to the screen, at least the settings row) */
         auto cols  = std::max<size_t>(gs.players.size(), 1);
         auto wnd_w = std::min(window_size.x - 40.f, std::max(640.f, float(cols) * column_width + 40.f));
-        auto wnd_h = std::min(window_size.y - 40.f, 520.f);
+        auto wnd_h = std::min(window_size.y - 40.f, 560.f);
         auto rect  = nk_rect((window_size.x - wnd_w) * 0.5f, (window_size.y - wnd_h) * 0.5f, wnd_w, wnd_h);
 
         if (_reopen) {
@@ -91,6 +94,10 @@ private:
     [[nodiscard]]
     bool owner() const {
         return _role == role_t::owner;
+    }
+
+    static std::string controller_name(u32 id) {
+        return "Controller " + std::to_string(id + 1);
     }
 
     static std::string group_name(int group) {
@@ -140,7 +147,7 @@ private:
         auto sprite_h = icon_height();
         auto cols = int(std::max<size_t>(columns.size(), 1));
 
-        ui.layout_row_dynamic(sprite_h + 5.f * row_height + 40.f, 1);
+        ui.layout_row_dynamic(sprite_h + 6.f * row_height + 44.f, 1);
         if (!ui.group_begin("lobby_players", NK_WINDOW_BORDER))
             return;
 
@@ -194,6 +201,24 @@ private:
                 ui.spacing(1);
             else if (ui.button_label("customize") && _act.customize)
                 _act.customize(pl->name());
+        }
+
+        /* Controller: the local players only */
+        ui.layout_row_static(row_height, int(col_w), cols);
+        for (auto& [pl, _] : columns) {
+            if (!is_local(pl->name()) || !_act.controllers) {
+                ui.spacing(1);
+                continue;
+            }
+            auto current = _act.controller_of ? _act.controller_of(pl->name()) : std::optional<u32>{};
+            auto text    = current ? controller_name(*current) : std::string("no controller");
+            if (ui.combo_begin_label(text.data(), {col_w, 250.f})) {
+                ui.layout_row_dynamic(22.f, 1);
+                for (auto id : _act.controllers())
+                    if (ui.combo_item_label(controller_name(id).data(), NK_TEXT_LEFT) && _act.set_controller)
+                        _act.set_controller(pl->name(), id);
+                ui.combo_end();
+            }
         }
 
         ui.group_end();
