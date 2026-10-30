@@ -64,17 +64,21 @@ public:
             bottom_draw(ui, gs);
         }
         else {
-            /* Closed: the same as the cancel lobby / leave button */
-            _reopen = true;
-            if (owner() && _act.cancel_lobby)
-                _act.cancel_lobby();
-            else if (!owner() && _act.leave)
-                _act.leave();
+            close();
         }
         ui.end();
 
         /* Forget the icons of the players that are gone */
         std::erase_if(_icons, [&](auto& icon) { return !gs.players.contains(icon.first); });
+    }
+
+    /* The same as the window's close button: cancel lobby (owner) / leave (client) */
+    void close() {
+        _reopen = true;
+        if (owner() && _act.cancel_lobby)
+            _act.cancel_lobby();
+        else if (!owner() && _act.leave)
+            _act.leave();
     }
 
 private:

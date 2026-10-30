@@ -64,13 +64,17 @@ public:
                 connect();
         }
         else {
-            /* Closed */
-            if (_connecting && _act.cancel)
-                _act.cancel();
-            _connecting = false;
-            show(false);
+            close();
         }
         ui.end();
+    }
+
+    /* The same as the window's close button: the connection in progress is aborted */
+    void close() {
+        if (_connecting && _act.cancel)
+            _act.cancel();
+        _connecting = false;
+        show(false);
     }
 
     void show(bool value) {

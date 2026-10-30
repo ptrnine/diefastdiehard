@@ -326,6 +326,9 @@ public:
     }
 
     void handle_event(const sf::Event& evt) final {
+        if (auto key = evt.getIf<sf::Event::KeyPressed>(); key && key->code == sf::Keyboard::Key::Escape && close_top_window())
+            return;
+
         if (net_ctrl)
             net_ctrl->track_event(evt);
 
@@ -342,15 +345,16 @@ public:
         engine::ui_update();
         if (net_hud)
             net_hud_draw();
+        /* Any configurator (the menu's, the lobby's, the console's) opens where the last one was closed */
+        if (gs.pconf_ui && !gs.pconf_ui->on_bounds_save)
+            pconf_bounds_persist(*gs.pconf_ui);
         gs.ui_update(ui, window_size_float());
         /* Shown out of a game with no window open; drawn first: the windows go over it while it fades */
         main_menu_wnd->show(!net_srv && !net_cli && !gs.lobby.active && !connect_wnd->shown() &&
                             !(gs.pconf_ui && gs.pconf_ui->shown()));
         main_menu_wnd->update(ui, window_size_float());
-        /* The player configurator is drawn instead of the lobby while it is open */
         connect_wnd->update(ui, window_size_float());
-        /* A client's lobby is shown once the server accepted it */
-        if (lobby_wnd && gs.lobby.active && !(gs.pconf_ui && gs.pconf_ui->shown()) && (!net_cli || net_cli->joined()))
+        if (lobby_shown())
             lobby_wnd->update(ui, gs, window_size_float());
     }
 
@@ -364,6 +368,40 @@ public:
     }
 
 private:
+    /* The player configurator is drawn instead of the lobby while it is open. A client's lobby is shown once the server accepted it */
+    [[nodiscard]]
+    bool lobby_shown() const {
+        return lobby_wnd && gs.lobby.active && !(gs.pconf_ui && gs.pconf_ui->shown()) && (!net_cli || net_cli->joined());
+    }
+
+    /* Esc: close the topmost window or the settings submenu. Returns false if there was nothing to close */
+    bool close_top_window() {
+        if (gs.pconf_ui && gs.pconf_ui->shown())
+            gs.pconf_ui->close();
+        else if (connect_wnd->shown())
+            connect_wnd->close();
+        else if (lobby_shown())
+            lobby_wnd->close();
+        else
+            return main_menu_wnd->back();
+        return true;
+    }
+
+    /* The configurator window's position and size in [game_settings], saved on close */
+    void pconf_bounds_persist(player_configurator_ui& pconf) {
+        auto& p    = game_settings();
+        auto  r    = pconf.bounds();
+        auto  pos  = p.value_or_default("pconf_window_pos", vec2f{r.x, r.y});
+        auto  size = p.value_or_default("pconf_window_size", vec2f{r.w, r.h});
+        pconf.bounds(nk_rect(pos.x, pos.y, size.x, size.y));
+        pconf.on_bounds_save = [this](const struct nk_rect& bounds) {
+            auto& p = game_settings();
+            p.set("pconf_window_pos", vec2f{bounds.x, bounds.y});
+            p.set("pconf_window_size", vec2f{bounds.w, bounds.h});
+            game_settings_commit();
+        };
+    }
+
     void init_lua() {
         lua.emplace(luactx_mgr::global(true));
 

@@ -201,6 +201,14 @@ public:
         return _show;
     }
 
+    /* Close the settings submenu: false if it is not open */
+    bool back() {
+        if (!_show || _page != page_t::settings)
+            return false;
+        _page = page_t::main;
+        return true;
+    }
+
 private:
     enum class page_t { main, settings };
 

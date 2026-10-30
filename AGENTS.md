@@ -104,7 +104,12 @@ instead of sleeping. Use it for any new gameplay/network timer.
   first run): hosts and joins lobbies (the connect window has no nickname),
   `--client`'s default `--name`. `player_configurator_ui` saves on every change
   (no save on close); with `name_edit`, a committed nickname (Enter / focus
-  lost) loads that player's settings and becomes the current player.
+  lost) loads that player's settings and becomes the current player. Any
+  configurator opens with the bounds the last one was closed with
+  (`pconf_window_pos`/`pconf_window_size` in `[game_settings]`).
+- Esc (`diefastdiehard::close_top_window`): closes the topmost window — player
+  configurator, connect window, lobby (= its close button: cancel lobby /
+  leave) — else the settings submenu; windows expose `close()` for it.
 - `src/lobby.hpp` + `src/ui/lobby_ui.hpp` — multiplayer lobby (opened on
   `--server`/`--client` launch, console `lobby [start]`): the owner picks the
   level/mode/groups and starts (`game_state::lobby_start`); closing the window
@@ -149,7 +154,7 @@ instead of sleeping. Use it for any new gameplay/network timer.
 - `src/base/` — utilities: cfg, serialization, signals, tasks, args_view,
   fixed_string, log, types.
 - `data/` — runtime assets; `data/settings/` is written by the game at
-  runtime (`game_settings.cfg`: window, connect window fields — `engine::game_settings()`). `fs.cfg` sits at the **repo root** (global config).
+  runtime (`game_settings.cfg`: window, connect window fields, configurator bounds — `engine::game_settings()`). `fs.cfg` sits at the **repo root** (global config).
 
 ## API pitfalls (costly to rediscover)
 

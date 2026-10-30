@@ -102,8 +102,9 @@ public:
             return;
 
         if (reopen) {
-            /* Nuklear keeps a closed window hidden */
+            /* Nuklear keeps a closed window hidden, with the bounds of the last configurator */
             ui.window_show(wnd_name, NK_SHOWN);
+            ui.window_set_bounds(wnd_name, wnd_rect);
             reopen = false;
         }
 
@@ -113,6 +114,9 @@ public:
                              NK_WINDOW_SCALABLE | NK_WINDOW_CLOSABLE;
 
         if (ui.begin_titled(wnd_name, wnd_title.data(), wnd_rect, wnd_flags)) {
+            /* Moved / resized by the user */
+            wnd_rect = ui.window_get_bounds();
+
             if (name_edit)
                 name_draw(ui);
 
@@ -203,11 +207,7 @@ public:
             }
         }
         else {
-            if (name_edit)
-                name_apply();
-            wnd_show = false;
-            if (on_close)
-                on_close();
+            close();
         }
         ui.end();
 
@@ -263,6 +263,29 @@ public:
         wnd_show = value;
     }
 
+    /* The same as the window's close button */
+    void close() {
+        if (!wnd_show)
+            return;
+        if (name_edit)
+            name_apply();
+        wnd_show = false;
+        if (on_bounds_save)
+            on_bounds_save(wnd_rect);
+        if (on_close)
+            on_close();
+    }
+
+    /* The window position and size (applied when the window is shown) */
+    [[nodiscard]]
+    struct nk_rect bounds() const {
+        return wnd_rect;
+    }
+
+    void bounds(const struct nk_rect& value) {
+        wnd_rect = value;
+    }
+
     void toggle() {
         show(!wnd_show);
     }
@@ -274,6 +297,8 @@ public:
 
     /* Called when the window is closed */
     std::function<void()> on_close;
+    /* Called when the window is closed: its last position and size */
+    std::function<void(const struct nk_rect&)> on_bounds_save;
     /* name_edit: another player's settings are shown */
     std::function<void(const player_name_t&)> on_name_change;
 
