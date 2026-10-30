@@ -1,0 +1,4 @@
+libudev-dev
+libglew-dev
+bc
+xvfb
