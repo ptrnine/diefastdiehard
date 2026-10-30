@@ -1,7 +1,10 @@
 #pragma once
 
+#include <array>
+#include <cstring>
 #include <optional>
 #include "nuklear.hpp"
+#include "base/ston.hpp"
 
 namespace dfdh {
 
@@ -62,6 +65,32 @@ inline void ui_layout_row(ui_ctx& ui, float row_height, std::initializer_list<ui
     }
 
     ui.layout_row_template_end();
+}
+
+/* A port typed in a field: 1..65535 */
+inline std::optional<u16> ui_parse_port(const std::string& text) {
+    try {
+        auto value = ston<u64>(text);
+        if (value > 0 && value <= 65535)
+            return u16(value);
+    }
+    catch (const std::exception&) {
+    }
+    return {};
+}
+
+/* Set a text field's buffer (truncated to fit) */
+template <size_t S>
+void ui_set_text(std::array<char, S>& buf, const char* text) {
+    std::strncpy(buf.data(), text, S - 1);
+    buf[S - 1] = '\0';
+}
+
+/* A text field: returns true if enter was pressed in it */
+template <size_t S>
+bool ui_edit_text(ui_ctx& ui, std::array<char, S>& buf, bool read_only, nk_plugin_filter filter) {
+    nk_flags flags = nk_flags(NK_EDIT_FIELD) | nk_flags(NK_EDIT_SIG_ENTER) | (read_only ? nk_flags(NK_EDIT_READ_ONLY) : 0);
+    return ui.edit_string_zero_terminated(flags, buf.data(), int(S), filter) & NK_EDIT_COMMITED;
 }
 
 } // namespace dfdh

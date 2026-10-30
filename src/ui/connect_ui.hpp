@@ -1,7 +1,6 @@
 #pragma once
 
 #include "base/game_clock.hpp"
-#include "base/ston.hpp"
 #include "ui_pressets.hpp"
 
 #include <array>
@@ -95,8 +94,8 @@ public:
     }
 
     void params(const params_t& value) {
-        set_text(_host, value.host.data());
-        set_text(_port, value.port.data());
+        ui_set_text(_host, value.host.data());
+        ui_set_text(_port, value.port.data());
     }
 
     [[nodiscard]]
@@ -138,27 +137,15 @@ private:
     using host_buf_t = std::array<char, 256>;
     using port_buf_t = std::array<char, 6>;
 
-    template <size_t S>
-    static void set_text(std::array<char, S>& buf, const char* text) {
-        std::strncpy(buf.data(), text, S - 1);
-        buf[S - 1] = '\0';
-    }
-
-    template <size_t S>
-    static bool edit(ui_ctx& ui, std::array<char, S>& buf, bool read_only, nk_plugin_filter filter) {
-        nk_flags flags = nk_flags(NK_EDIT_FIELD) | nk_flags(NK_EDIT_SIG_ENTER) | (read_only ? nk_flags(NK_EDIT_READ_ONLY) : 0);
-        return ui.edit_string_zero_terminated(flags, buf.data(), int(S), filter) & NK_EDIT_COMMITED;
-    }
-
     /* Returns true if enter was pressed in a field */
     bool fields_draw(ui_ctx& ui) {
         bool submit = false;
         ui_layout_row(ui, row_height, {90.f, ui_row::dynamic});
 
         ui.label("address", NK_TEXT_LEFT);
-        submit = edit(ui, _host, _connecting, nk_filter_ascii) || submit;
+        submit = ui_edit_text(ui, _host, _connecting, nk_filter_ascii) || submit;
         ui.label("port", NK_TEXT_LEFT);
-        submit = edit(ui, _port, _connecting, nk_filter_decimal) || submit;
+        submit = ui_edit_text(ui, _port, _connecting, nk_filter_decimal) || submit;
         return submit;
     }
 
@@ -208,21 +195,15 @@ private:
             _error = "enter the server address";
             return;
         }
-        u16 port_num = 0;
-        try {
-            auto value = ston<u64>(port);
-            if (value == 0 || value > 65535)
-                throw std::out_of_range("port");
-            port_num = u16(value);
-        }
-        catch (const std::exception&) {
+        auto port_num = ui_parse_port(port);
+        if (!port_num) {
             _error = "invalid port '" + port + "'";
             return;
         }
 
         _target = host + ":" + port;
         _error.clear();
-        if (auto error = _act.connect ? _act.connect(host, port_num) : std::optional<std::string>("can't connect")) {
+        if (auto error = _act.connect ? _act.connect(host, *port_num) : std::optional<std::string>("can't connect")) {
             _error = std::move(*error);
             return;
         }

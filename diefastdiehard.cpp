@@ -5,6 +5,7 @@
 #include "ui/lobby_ui.hpp"
 #include "ui/connect_ui.hpp"
 #include "ui/main_menu.hpp"
+#include "ui/network_ui.hpp"
 
 #include "engine.hpp"
 #include "command_buffer.hpp"
@@ -247,6 +248,7 @@ public:
         }
         init_connect_ui();
         init_main_menu();
+        init_network_ui();
 
         /* Taken before init_client: it reads the server address with args.next() */
         auto lua_fifo_path = args.by_key_opt<std::string>("--lua-exec-fifo");
@@ -350,10 +352,11 @@ public:
             pconf_bounds_persist(*gs.pconf_ui);
         gs.ui_update(ui, window_size_float());
         /* Shown out of a game with no window open; drawn first: the windows go over it while it fades */
-        main_menu_wnd->show(!net_srv && !net_cli && !gs.lobby.active && !connect_wnd->shown() &&
+        main_menu_wnd->show(!net_srv && !net_cli && !gs.lobby.active && !connect_wnd->shown() && !network_wnd->shown() &&
                             !(gs.pconf_ui && gs.pconf_ui->shown()));
         main_menu_wnd->update(ui, window_size_float());
         connect_wnd->update(ui, window_size_float());
+        network_wnd->update(ui, window_size_float());
         if (lobby_shown())
             lobby_wnd->update(ui, gs, window_size_float());
     }
@@ -380,6 +383,8 @@ private:
             gs.pconf_ui->close();
         else if (connect_wnd->shown())
             connect_wnd->close();
+        else if (network_wnd->shown())
+            network_wnd->close();
         else if (lobby_shown())
             lobby_wnd->close();
         else
@@ -530,6 +535,7 @@ private:
     player_name_t                            my_config_name; /* the client's player config: the requested name */
     std::optional<lobby_ui>                  lobby_wnd;
     std::optional<connect_ui>                connect_wnd;
+    std::optional<network_ui>                network_wnd;
     std::optional<main_menu>                 main_menu_wnd;
     bool                                     server_from_ui = false; /* hosted from the main menu: cancel lobby stops it */
     bool                                     server_stop    = false; /* the menu's lobby was cancelled */
@@ -616,8 +622,13 @@ private:
         return true;
     }
 
+    /* Settings -> Network: the port of the hosted servers */
+    u16 server_port() {
+        return u16(game_settings().value_or_default_and_set<u32>("host_port", default_port));
+    }
+
     void init_server(args_view& args) {
-        u16 port = default_port;
+        u16 port = server_port();
         if (auto port_arg = args.by_key_opt<std::string>("--port"))
             port = ston<u16>(*port_arg);
 
@@ -635,7 +646,7 @@ private:
     void init_main_menu() {
         main_menu::actions_t act;
         act.host = [this] {
-            if (!server_start(u16(game_settings().value_or_default_and_set<u32>("host_port", default_port)))) {
+            if (!server_start(server_port())) {
                 net_srv.reset();
                 return;
             }
@@ -655,8 +666,19 @@ private:
             gs.pconf_ui->on_name_change = [](const player_name_t& name) { player_configurator::current_player(name); };
             gs.pconf_ui->show(true);
         };
+        act.network = [this] { network_wnd->show(true); };
         act.exit    = [this] { gs.sig_shutdown.emit_deferred(); };
         main_menu_wnd.emplace(std::move(act));
+    }
+
+    void init_network_ui() {
+        network_ui::actions_t act;
+        act.load = [this] { return server_port(); };
+        act.save = [this](u16 port) {
+            game_settings().set("host_port", u32(port));
+            game_settings_commit();
+        };
+        network_wnd.emplace(std::move(act));
     }
 
     void init_connect_ui() {
@@ -681,7 +703,7 @@ private:
             auto& p = game_settings();
             p.set("connect_host", params.host);
             /* An invalid port is not kept */
-            if (auto port = parse_count(params.port); port && *port > 0 && *port <= 65535)
+            if (auto port = ui_parse_port(params.port))
                 p.set("connect_port", u32(*port));
             game_settings_commit();
         };
@@ -927,7 +949,7 @@ void print_usage(const std::string& program) {
         "\n"
         "Multiplayer server:\n"
         "  --server                run a multiplayer server\n"
-        "  --port=N                server port (default 10443)\n"
+        "  --port=N                server port (default: Settings -> Network, 10443)\n"
         "  --input-buffer=auto|N   client input jitter buffer in ticks\n"
         "\n"
         "Multiplayer client:\n"

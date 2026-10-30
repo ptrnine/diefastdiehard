@@ -90,12 +90,14 @@ instead of sleeping. Use it for any new gameplay/network timer.
   (`game_state::game_mode_apply`). The server sends it to clients in STATE.
 - `src/ui/main_menu.hpp` — main menu ("Host Lobby", "Connect Lobby",
   "Settings", "Exit"; columns are `menu_column`s; Settings opens a "Player",
-  "Back" submenu right of the dimmed main column):
+  "Network", "Back" submenu right of the dimmed main column):
   shown out of a game with no window open (no server/client, no lobby,
   connect window or player configurator), fades in/out; hovered options grow
   via a scaled copy of `ui_ctx::menu_font()` (nuklear scales baked fonts by
   `nk_user_font::height`; the copy must outlive `ui.render()`). Host starts a
-  server (`host_port` in `[game_settings]`, default 10443) and opens its
+  server on `host_port` (`[game_settings]`, default 10443; also `--server`'s
+  default `--port`; edited in Settings -> Network, `src/ui/network_ui.hpp`,
+  saved on enter / focus lost / close when valid) and opens its
   lobby with the current player; cancelling (or closing) that lobby stops the
   server and removes the player. Settings -> Player: the player configurator
   with a nickname field.
@@ -108,7 +110,7 @@ instead of sleeping. Use it for any new gameplay/network timer.
   configurator opens with the bounds the last one was closed with
   (`pconf_window_pos`/`pconf_window_size` in `[game_settings]`).
 - Esc (`diefastdiehard::close_top_window`): closes the topmost window — player
-  configurator, connect window, lobby (= its close button: cancel lobby /
+  configurator, connect window, network window, lobby (= its close button: cancel lobby /
   leave) — else the settings submenu; windows expose `close()` for it.
 - `src/lobby.hpp` + `src/ui/lobby_ui.hpp` — multiplayer lobby (opened on
   `--server`/`--client` launch, console `lobby [start]`): the owner picks the
