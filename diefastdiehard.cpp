@@ -613,6 +613,9 @@ private:
             std::vector<player_name_t> res;
             for (auto& [name, _] : gs.controlled_players)
                 res.push_back(name);
+            /* The main player is local even without a controller (another player may have taken its) */
+            if (host_player && std::ranges::find(res, *host_player) == res.end())
+                res.push_back(*host_player);
             /* An added one without a controller too */
             for (auto& name : server_locals)
                 if (std::ranges::find(res, name) == res.end())
